@@ -1,0 +1,726 @@
+// =========================================================
+// Giving Out WMS — Prisma Schema
+// PostgreSQL on Supabase
+// Multi-client warehouse: Ropa (2-3K SKUs) + Comida (lotes)
+// =========================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------
+// 0. WAREHOUSES
+// ---------------------------------------------------------
+
+model Warehouse {
+  id          String   @id @default(uuid())
+  codigo      String   @unique  // ALM-TEPOZ, etc.
+  nombre      String
+  direccion   String?
+  ciudad      String?
+  metrosCuadrados Float?
+  activo      Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  zones       Zone[]
+  locations   Location[]
+  movements   InventoryMovement[]
+}
+
+// ---------------------------------------------------------
+// 1. ZONES (logical areas of a warehouse)
+// ---------------------------------------------------------
+
+model Zone {
+  id              String   @id @default(uuid())
+  codigo          String   @unique   // RECIBO, ALMACEN-A, PICKING, STAGING, etc.
+  nombre          String
+  almacenId       String
+  tipoZona        String   // RECIBO, ALMACENAMIENTO, PICKING, STAGING, CUARENTENA, DEVOLUCION
+  temperatura     String   @default("AMBIENTE")  // AMBIENTE, REFRIGERADO, CONGELADO
+  activo          Boolean  @default(true)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  almacen         Warehouse @relation(fields: [almacenId], references: [id])
+  locations       Location[]
+}
+
+// ---------------------------------------------------------
+// 2. LOCATIONS (physical positions: rack-level-position)
+// ---------------------------------------------------------
+
+model Location {
+  id               String   @id @default(uuid())
+  codigo           String   @unique   // A01-R01-N1, B02-R03-N2, etc.
+  almacenId        String
+  zonaId           String?
+  pasillo          String
+  rack             String
+  nivel            String
+  posicion         String   @default("01")
+  tipoUbicacion    String   // PISO, RACK, ESTANTERIA, STAGING, RECIBO
+  temperatura      String   @default("AMBIENTE")
+  capacidadKg      Float?
+  capacidadVolM3   Float?
+  capacidadUnits   Int      @default(100)
+  ocupacion        Int      @default(0)
+  estado           String   @default("LIBRE")    // LIBRE, OCUPADO, BLOQUEADO
+  activo           Boolean  @default(true)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  almacen          Warehouse @relation(fields: [almacenId], references: [id])
+  zona             Zone?     @relation(fields: [zonaId], references: [id])
+  lotes            LotInventory[]
+  movimientosDesde InventoryMovement[] @relation("FromLocation")
+  movimientosHacia InventoryMovement[] @relation("ToLocation")
+}
+
+// ---------------------------------------------------------
+// 3. CLIENTS (multi-tenant: each client owns their inventory)
+// ---------------------------------------------------------
+
+model Client {
+  id                String   @id @default(uuid())
+  codigo            String   @unique   // ROPA-01, COMIDA-01
+  razonSocial       String
+  nombreComercial   String
+  rfc               String?
+  tipoCliente       String   @default("ALMACENAJE")  // ALMACENAJE, DISTRIBUCION, CROSSDOCK
+  giro              String?  // ROPA, COMIDA, GENERAL
+  direccionFiscal   String?
+  ciudad            String?
+  estado            String?
+  codigoPostal      String?
+  telefono          String?
+  email             String?
+  contactoPrincipal String?
+  condicionesComerciales String?
+  descuentoPorcentaje Float?  @default(0)
+  requiereLote      Boolean  @default(false)
+  requiereSerie     Boolean  @default(false)
+  requiereCaducidad Boolean  @default(false)
+  activo            Boolean  @default(true)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  contactos         ClientContact[]
+  direccionesEntrega ClientAddress[]
+  skus              SkuMaster[]
+  lotes             LotInventory[]
+  handlingUnits     HandlingUnit[]
+  ordenesSalida     SalesOrder[]
+  recepciones       Receipt[]
+  cotizaciones      SalesQuote[]
+  reservas          Reservation[]
+}
+
+model ClientContact {
+  id          String   @id @default(uuid())
+  clienteId   String
+  nombre      String
+  cargo       String?
+  telefono    String?
+  email       String?
+  esPrincipal Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  cliente     Client @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+}
+
+model ClientAddress {
+  id          String   @id @default(uuid())
+  clienteId   String
+  alias       String   // "Oficina Central", "Sucursal Norte"
+  calle       String
+  colonia     String?
+  ciudad      String?
+  estado      String?
+  cp          String?
+  referencia  String?
+  esDefault   Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  cliente     Client @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------
+// 4. SUPPLIERS
+// ---------------------------------------------------------
+
+model Supplier {
+  id          String   @id @default(uuid())
+  codigo      String   @unique
+  nombre      String
+  rfc         String?
+  telefono    String?
+  email       String?
+  direccion   String?
+  contacto    String?
+  activo      Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  recepciones Receipt[]
+}
+
+// ---------------------------------------------------------
+// 5. SKU MASTER (product catalog, scoped per client)
+// ---------------------------------------------------------
+
+model SkuMaster {
+  id                    String   @id @default(uuid())
+  codigo                String   @unique   // Unique product code
+  clienteId             String              // Belongs to which client
+  descripcion           String
+  descripcionCorta      String?
+  categoria             String              // PRENDA, ALIMENTO, EMPAQUE, ACCESORIO
+  subcategoria          String?             // CAMISETA, PANTALON, SNACK, etc.
+  marca                 String?
+  modelo                String?
+  color                 String?
+  talla                 String?             // S, M, L, XL, 28, 30, etc.
+  uomBase               String   @default("PZA")  // PZA, KG, LT, CAJA, PAQUETE
+  pesoKg                Float?
+  volumenM3             Float?
+  codigoBarras          String?             // EAN-13 or internal barcode
+  requiereLote          Boolean  @default(false)
+  requiereSerie         Boolean  @default(false)
+  requiereCaducidad     Boolean  @default(false)
+  capacidadEmpaque      Int?               // Pieces per box/package
+  descripcionEmpaque    String?            // "Caja x12", "Paquete x6"
+  precioReferencia      Float?
+  stockMinimo           Int?
+  stockMaximo           Int?
+  puntoReorden          Int?
+  temperaturaRequerida  String   @default("AMBIENTE")
+  activo                Boolean  @default(true)
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  cliente               Client @relation(fields: [clienteId], references: [id])
+  lotes                 LotInventory[]
+  movimientos           InventoryMovement[]
+  lineasSalida          SalesOrderLine[]
+  lineasRecepcion       ReceiptLine[]
+  trazabilidad          TraceabilityLink[]
+  cycleCountLineas      CycleCountLine[]
+  cotizacionLineas      SalesQuoteLine[]
+  reservaLineas         ReservationLine[]
+
+  @@index([clienteId])
+  @@index([codigo])
+  @@index([categoria])
+}
+
+// ---------------------------------------------------------
+// 6. INVENTORY: Lots, Handling Units, Movements
+// ---------------------------------------------------------
+
+model LotInventory {
+  id                String   @id @default(uuid())
+  skuId             String
+  clienteId         String
+  lote              String?                  // Lot number (required for food)
+  serie             String?                  // Serial number (if applicable)
+  fechaVencimiento  DateTime?                // Expiry (required for food)
+  fechaProduccion   DateTime?
+  proveedorNombre   String?
+  estadoCalidad     String   @default("LIBERADO")  // LIBERADO, CUARENTENA, BLOQUEADO
+  cantidadDisponible Float    @default(0)
+  cantidadReservada  Float    @default(0)
+  cantidadBloqueada  Float    @default(0)
+  ubicacionId       String?
+  notas             String?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  sku               SkuMaster @relation(fields: [skuId], references: [id])
+  cliente           Client    @relation(fields: [clienteId], references: [id])
+  ubicacion         Location?  @relation(fields: [ubicacionId], references: [id])
+  handlingUnits     HandlingUnit[]
+  movimientos       InventoryMovement[]
+  lineasSalida      SalesOrderLine[]
+  trazabilidad      TraceabilityLink[]
+
+  @@index([clienteId])
+  @@index([skuId])
+}
+
+model HandlingUnit {
+  id              String   @id @default(uuid())
+  codigo          String   @unique @default(uuid())   // HU-2026-0001
+  tipoHu          String   // PALLET, CAJA, BULTO, PIEZA, PAQUETE
+  lotId           String
+  clienteId       String
+  cantidad        Float
+  uom             String
+  ubicacionActual String
+  estadoHu        String   @default("ACTIVO")  // ACTIVO, INACTIVO, DAÑADO, EN_TRANSITO
+  parentHuId      String?                       // Nested HU (boxes in pallet)
+  pesoKg          Float?
+  etiquetaImpresa Boolean  @default(false)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  lote            LotInventory @relation(fields: [lotId], references: [id])
+  cliente         Client       @relation(fields: [clienteId], references: [id])
+  movimientos     InventoryMovement[]
+  lineasSalida    SalesOrderLine[]
+
+  @@index([clienteId])
+  @@index([codigo])
+}
+
+model InventoryMovement {
+  id               String   @id @default(uuid())
+  fechaHora        DateTime @default(now())
+  tipoMovimiento   String   // ENTRADA, SALIDA, TRASIEGO, AJUSTE, TRANSFERENCIA
+  almacenId        String?
+  skuId            String
+  clienteId        String?
+  lotId            String?
+  huId             String?
+  fromLocationId   String?
+  toLocationId     String?
+  cantidad         Float
+  usuario          String
+  motivo           String?
+  documentoOrigen  String?
+
+  almacen          Warehouse?    @relation(fields: [almacenId], references: [id])
+  sku              SkuMaster     @relation(fields: [skuId], references: [id])
+  lote             LotInventory? @relation(fields: [lotId], references: [id])
+  hu               HandlingUnit? @relation(fields: [huId], references: [id])
+  fromLocation     Location?     @relation("FromLocation", fields: [fromLocationId], references: [id])
+  toLocation       Location?     @relation("ToLocation", fields: [toLocationId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 7. RECEPTION (Inbound)
+// ---------------------------------------------------------
+
+model Receipt {
+  id               String   @id @default(uuid())
+  codigo           String   @unique          // REC-2026-0001
+  clienteId        String
+  proveedorId      String?
+  proveedorNombre  String?
+  fechaRecepcion   DateTime @default(now())
+  estado           String   @default("PENDIENTE")  // PENDIENTE, EN_PROCESO, COMPLETO, CERRADO
+  tipoRecepcion    String   @default("NORMAL")     // NORMAL, DEVOLUCION, TRANSFERENCIA
+  ocReferencia     String?                          // Purchase order reference
+  notas            String?
+  evidenciaUrl     String?                          // Photo evidence URL
+  recibidoPor      String?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  cliente          Client    @relation(fields: [clienteId], references: [id])
+  proveedor        Supplier? @relation(fields: [proveedorId], references: [id])
+  lineas           ReceiptLine[]
+}
+
+model ReceiptLine {
+  id                 String   @id @default(uuid())
+  recepcionId        String
+  skuId              String
+  cantidadEsperada   Float?
+  cantidadRecibida   Float    @default(0)
+  cantidadDanada     Float    @default(0)
+  estado             String   @default("PENDIENTE")  // PENDIENTE, PARCIAL, COMPLETO, DISCREPANCIA
+  loteAsignado       String?
+  serieAsignada      String?
+  fechaVencimiento   DateTime?
+  ubicacionId        String?
+  notas              String?
+
+  recepcion          Receipt   @relation(fields: [recepcionId], references: [id])
+  sku                SkuMaster @relation(fields: [skuId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 8. SALES ORDERS (Outbound)
+// ---------------------------------------------------------
+
+model SalesOrder {
+  id               String   @id @default(uuid())
+  codigo           String   @unique          // PED-2026-0001
+  clienteId        String
+  destinatario     String?                   // Who receives the shipment
+  direccionEntrega String?
+  prioridad        Int      @default(3)      // 1=Urgente, 2=Alta, 3=Normal
+  fechaCompromiso  DateTime
+  estado           String   @default("PENDIENTE")
+  // PENDIENTE, CONFIRMADO, EN_PICKING, CONSOLIDADO, DESPACHADO, ENTREGADO, CANCELADO
+  reservaId        String?                   // Link to reservation
+  cotizacionId     String?                   // Link to quote
+
+  // Dispatch tracking
+  despachador          String?
+  fechaDespacho        DateTime?
+  vehiculoPlaca        String?
+
+  // Delivery confirmation
+  estadoEntrega        String?
+  fechaEntrega         DateTime?
+  firmaReceptor        String?
+  nombreReceptor       String?
+  notasEntrega         String?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  cliente          Client @relation(fields: [clienteId], references: [id])
+  lineas           SalesOrderLine[]
+  trackingEvents   DispatchTracking[]
+}
+
+model SalesOrderLine {
+  id                String   @id @default(uuid())
+  orderId           String
+  skuId             String
+  cantidadSolicitada Float
+  cantidadAsignada   Float    @default(0)
+  lotId             String?
+  huId              String?
+
+  orden             SalesOrder    @relation(fields: [orderId], references: [id])
+  sku               SkuMaster     @relation(fields: [skuId], references: [id])
+  lote              LotInventory? @relation(fields: [lotId], references: [id])
+  hu                HandlingUnit? @relation(fields: [huId], references: [id])
+}
+
+model DispatchTracking {
+  id               String   @id @default(uuid())
+  orderId          String
+  estado           String   // SALIDA_ALMACEN, EN_RUTA, LLEGADA, ENTREGADO, RECHAZADO
+  usuario          String
+  notas            String?
+  latitud          Float?
+  longitud         Float?
+  firmaBase64      String?
+  nombreFirmante   String?
+
+  createdAt        DateTime @default(now())
+
+  orden            SalesOrder @relation(fields: [orderId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 9. COMMERCIAL: Quotes & Reservations
+// ---------------------------------------------------------
+
+model SalesQuote {
+  id              String   @id @default(uuid())
+  codigo          String   @unique            // COT-2026-0001
+  clienteId       String
+  destinatario    String?
+  estado          String   @default("BORRADOR") // BORRADOR, ENVIADA, ACEPTADA, RECHAZADA, VENCIDA
+  validezDias     Int      @default(15)
+  fechaVencimiento DateTime?
+  notas           String?
+  creadoPor       String?
+  total           Float?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cliente         Client @relation(fields: [clienteId], references: [id])
+  lineas          SalesQuoteLine[]
+}
+
+model SalesQuoteLine {
+  id              String   @id @default(uuid())
+  cotizacionId    String
+  skuId           String
+  cantidad        Float
+  precioUnitario  Float?
+  subtotal        Float?
+
+  cotizacion      SalesQuote @relation(fields: [cotizacionId], references: [id])
+  sku             SkuMaster  @relation(fields: [skuId], references: [id])
+}
+
+model Reservation {
+  id              String   @id @default(uuid())
+  codigo          String   @unique            // RES-2026-0001
+  clienteId       String
+  estado          String   @default("DRAFT")
+  // DRAFT, HOLD, CONFIRMED, PICKING, PACKED, READY_TO_SHIP, SHIPPED, CANCELLED, EXPIRED
+  fechaExpiracion DateTime?                    // Auto-release after this
+  notas           String?
+  creadoPor       String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cliente         Client @relation(fields: [clienteId], references: [id])
+  lineas          ReservationLine[]
+}
+
+model ReservationLine {
+  id              String   @id @default(uuid())
+  reservaId       String
+  skuId           String
+  cantidadReservada Float
+
+  reserva         Reservation @relation(fields: [reservaId], references: [id])
+  sku             SkuMaster   @relation(fields: [skuId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 10. TRACEABILITY
+// ---------------------------------------------------------
+
+model TraceabilityLink {
+  id               String   @id @default(uuid())
+  documentoEntrada String?
+  documentoSalida  String?
+  skuId            String
+  lotId            String?
+  clienteId        String?
+  cantidad         Float
+
+  createdAt        DateTime @default(now())
+
+  sku              SkuMaster     @relation(fields: [skuId], references: [id])
+  lote             LotInventory? @relation(fields: [lotId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 11. CYCLE COUNTING
+// ---------------------------------------------------------
+
+model CycleCount {
+  id             String   @id @default(uuid())
+  codigo         String   @unique
+  nombre         String
+  tipo           String   @default("SKU")      // SKU, UBICACION, LOTE
+  clasificacion  String   @default("A")
+  estado         String   @default("PROGRAMADO") // PROGRAMADO, EN_PROGRESO, COMPLETADO, CERRADO
+  fechaProgramada DateTime
+  fechaInicio    DateTime?
+  fechaCierre    DateTime?
+  almacenId      String?
+  asignadoA      String?
+  notas          String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lineas         CycleCountLine[]
+}
+
+model CycleCountLine {
+  id               String   @id @default(uuid())
+  cycleCountId     String
+  skuId            String
+  ubicacionId      String?
+  lote             String?
+  cantidadSistema  Float
+  cantidadFisica   Float?
+  discrepancia     Float?
+  porcentajeDisc   Float?
+  estado           String   @default("PENDIENTE")
+  contadoPor       String?
+  contadoEn        DateTime?
+  notas            String?
+
+  cycleCount       CycleCount @relation(fields: [cycleCountId], references: [id])
+  sku              SkuMaster  @relation(fields: [skuId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 12. AUDIT & GOVERNANCE
+// ---------------------------------------------------------
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  usuario      String
+  accion       String
+  entidad      String
+  entidadId    String?
+  detalle      String?
+  ipAddress    String?
+
+  createdAt    DateTime @default(now())
+}
+
+model PrintLog {
+  id           String   @id @default(uuid())
+  usuario      String
+  tipoEtiqueta String   // HU, SKU, UBICACION, PALLET, RECEPCION
+  referencia   String   // ID of what was printed
+  reimpresion  Boolean  @default(false)
+  motivo       String?
+
+  createdAt    DateTime @default(now())
+}
+
+// ---------------------------------------------------------
+// 13. AUTH & RBAC
+// ---------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  nombre       String
+  passwordHash String
+  rolId        String?
+  almacenId    String?
+  clienteId    String?  // If client portal user, scoped to this client
+  activo       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  rol          Role?    @relation(fields: [rolId], references: [id])
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  nombre      String   @unique
+  descripcion String?
+  nivel       Int      @default(5)    // 1=SuperAdmin, 2=Director, ... 10=Portal
+  createdAt   DateTime @default(now())
+
+  permisos    RolePermission[]
+  usuarios    User[]
+}
+
+model RolePermission {
+  id       String @id @default(uuid())
+  rolId    String
+  modulo   String  // dashboard, inventario, ubicaciones, recepcion, picking, despacho, etc.
+  accion   String  @default("ver")  // ver, crear, editar, aprobar, imprimir, cancelar, ajustar, exportar
+
+  rol      Role @relation(fields: [rolId], references: [id], onDelete: Cascade)
+
+  @@unique([rolId, modulo, accion])
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  email     String
+  code      String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model PlatformSettings {
+  id        String  @id @default(uuid())
+  logoUrl   String?
+  nombre    String  @default("Giving Out WMS")
+  subtitulo String  @default("Sistema de Gestión de Almacén")
+  colorPrimario String? @default("#2563EB")
+  colorSecundario String? @default("#7C3AED")
+}
+
+// ---------------------------------------------------------
+// 14. ALERTS
+// ---------------------------------------------------------
+
+model Alert {
+  id          String   @id @default(uuid())
+  tipo        String   // STOCK_BAJO, RESERVA_VENCIDA, PEDIDO_ATRASADO, DISCREPANCIA, UBICACION_SATURADA
+  prioridad   String   @default("MEDIA")  // BAJA, MEDIA, ALTA, CRITICA
+  titulo      String
+  detalle     String?
+  entidad     String?
+  entidadId   String?
+  clienteId   String?
+  resuelta    Boolean  @default(false)
+  resueltaPor String?
+  resueltaEn  DateTime?
+
+  createdAt   DateTime @default(now())
+  tasks       Task[]
+}
+
+model Task {
+  id            String    @id @default(uuid())
+  titulo        String
+  descripcion   String?
+  area          String                     // COMPRAS, DESPACHO, INVENTARIO, CALIDAD, ALMACEN
+  asignadoA     String?                    // email del responsable
+  asignadoNombre String?
+  prioridad     String    @default("MEDIA") // BAJA, MEDIA, ALTA, URGENTE
+  estado        String    @default("PENDIENTE") // PENDIENTE, EN_PROCESO, COMPLETADA, CANCELADA
+  fechaLimite   DateTime?
+  completadaEn  DateTime?
+  completadaPor String?
+  notas         String?
+
+  alertaId      String?
+  alerta        Alert?    @relation(fields: [alertaId], references: [id])
+
+  creadoPor     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------
+// 15. INTEGRATION CONFIG (Future: CONTPAQi Nube API)
+// ---------------------------------------------------------
+
+model IntegrationConfig {
+  id              String    @id @default(uuid())
+  provider        String    @unique @default("contpaqi_nube")
+  apiUrl          String?
+  apiKey          String?
+  clientId        String?
+  clientSecret    String?
+  environment     String    @default("sandbox")
+  isActive        Boolean   @default(false)
+  lastTestedAt    DateTime?
+  lastTestResult  String?
+  updatedBy       String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model SyncLog {
+  id              String   @id @default(uuid())
+  tipo            String   // INBOUND, OUTBOUND
+  entidad         String
+  registros       Int      @default(0)
+  estado          String   // SUCCESS, ERROR, PARTIAL
+  detalle         String?
+  usuario         String?
+  duracionMs      Int?
+
+  createdAt       DateTime @default(now())
+}
+
+// ---------------------------------------------------------
+// 16. SYSTEM SETTINGS (Key-Value Config Store)
+// ---------------------------------------------------------
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  category  String   @default("general")
+  label     String?
+  encrypted Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
