@@ -1,7 +1,7 @@
 // =========================================================
-// Giving Out WMS — Prisma Schema
+// Giving Out WMS — Prisma Schema (3PL Puro)
 // PostgreSQL on Supabase
-// Multi-client warehouse: Ropa (2-3K SKUs) + Comida (lotes)
+// Operador Logístico 3PL: Depositante → Cliente Final (Ship-To)
 // =========================================================
 
 generator client {
@@ -86,17 +86,16 @@ model Location {
 }
 
 // ---------------------------------------------------------
-// 3. CLIENTS (multi-tenant: each client owns their inventory)
+// 3. DEPOSITANTES (3PL clients who deposit inventory)
 // ---------------------------------------------------------
 
 model Client {
   id                String   @id @default(uuid())
-  codigo            String   @unique   // ROPA-01, COMIDA-01
+  codigo            String   @unique   // DEP-TEXTIL-01, DEP-ALIMENTOS-01
   razonSocial       String
   nombreComercial   String
   rfc               String?
-  tipoCliente       String   @default("ALMACENAJE")  // ALMACENAJE, DISTRIBUCION, CROSSDOCK
-  giro              String?  // ROPA, COMIDA, GENERAL
+  giro              String?  // ROPA, COMIDA, GENERAL, FARMACEUTICO, ELECTRONICA
   direccionFiscal   String?
   ciudad            String?
   estado            String?
@@ -104,11 +103,20 @@ model Client {
   telefono          String?
   email             String?
   contactoPrincipal String?
-  condicionesComerciales String?
-  descuentoPorcentaje Float?  @default(0)
-  requiereLote      Boolean  @default(false)
-  requiereSerie     Boolean  @default(false)
-  requiereCaducidad Boolean  @default(false)
+
+  // === Configuración operativa 3PL ===
+  uomPrincipal        String   @default("PZA")      // PZA, CAJA, MASTER — unidad de manejo principal
+  manejoInventario    String   @default("PIEZA")     // PIEZA, CAJA, MIXTO — cómo escanean/pickean
+  reglaInventario     String   @default("FIFO")      // FIFO, FEFO, LIFO — política de rotación
+  escaneoIndividual   Boolean  @default(false)        // ¿Cada pieza se escanea individualmente?
+  requiereAprobacion  Boolean  @default(true)         // ¿Pedidos requieren aprobación de Giving Out?
+  requiereLote        Boolean  @default(false)
+  requiereSerie       Boolean  @default(false)
+  requiereCaducidad   Boolean  @default(false)
+  zonaAsignadaId      String?                         // Zona preferente (almacén virtual)
+  colorPortal         String?  @default("#2563EB")    // Color del portal de depositante
+  logoUrl             String?                         // Logo del depositante
+
   activo            Boolean  @default(true)
 
   createdAt         DateTime @default(now())
@@ -116,13 +124,12 @@ model Client {
 
   contactos         ClientContact[]
   direccionesEntrega ClientAddress[]
+  endCustomers      EndCustomer[]
   skus              SkuMaster[]
   lotes             LotInventory[]
   handlingUnits     HandlingUnit[]
   ordenesSalida     SalesOrder[]
   recepciones       Receipt[]
-  cotizaciones      SalesQuote[]
-  reservas          Reservation[]
 }
 
 model ClientContact {
@@ -154,6 +161,44 @@ model ClientAddress {
   createdAt   DateTime @default(now())
 
   cliente     Client @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------
+// 3b. END CUSTOMERS (Ship-To: clientes finales de los depositantes)
+// ---------------------------------------------------------
+
+model EndCustomer {
+  id              String   @id @default(uuid())
+  clienteId       String                          // A qué depositante pertenece
+  codigo          String                          // SANBORNS-REFORMA, LIVERPOOL-SF
+  nombre          String                          // "Sanborns Reforma"
+  razonSocial     String?
+  rfc             String?
+  contacto        String?                         // Nombre del contacto en destino
+  telefono        String?
+  email           String?
+
+  // Dirección de entrega (Ship-To)
+  calle           String?
+  colonia         String?
+  ciudad          String?
+  estado          String?
+  codigoPostal    String?
+  referencia      String?                         // "Puerta trasera, preguntar por bodega"
+
+  // Instrucciones especiales
+  instruccionesEntrega String?                    // "Solo reciben L-V 8am-2pm"
+  requiereFactura      Boolean @default(false)
+
+  activo          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cliente         Client   @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  ordenes         SalesOrder[]
+
+  @@unique([clienteId, codigo])                   // Código único por depositante
+  @@index([clienteId])
 }
 
 // ---------------------------------------------------------
@@ -202,7 +247,6 @@ model SkuMaster {
   requiereCaducidad     Boolean  @default(false)
   capacidadEmpaque      Int?               // Pieces per box/package
   descripcionEmpaque    String?            // "Caja x12", "Paquete x6"
-  precioReferencia      Float?
   stockMinimo           Int?
   stockMaximo           Int?
   puntoReorden          Int?
@@ -219,8 +263,7 @@ model SkuMaster {
   lineasRecepcion       ReceiptLine[]
   trazabilidad          TraceabilityLink[]
   cycleCountLineas      CycleCountLine[]
-  cotizacionLineas      SalesQuoteLine[]
-  reservaLineas         ReservationLine[]
+  conversiones          UomConversion[]
 
   @@index([clienteId])
   @@index([codigo])
@@ -357,21 +400,33 @@ model ReceiptLine {
 }
 
 // ---------------------------------------------------------
-// 8. SALES ORDERS (Outbound)
+// 8. SALES ORDERS (Outbound) — 3PL: Depositor requests, operator approves
 // ---------------------------------------------------------
 
 model SalesOrder {
   id               String   @id @default(uuid())
   codigo           String   @unique          // PED-2026-0001
   clienteId        String
-  destinatario     String?                   // Who receives the shipment
-  direccionEntrega String?
+  endCustomerId    String?                   // Cliente final (Ship-To)
   prioridad        Int      @default(3)      // 1=Urgente, 2=Alta, 3=Normal
-  fechaCompromiso  DateTime
-  estado           String   @default("PENDIENTE")
-  // PENDIENTE, CONFIRMADO, EN_PICKING, CONSOLIDADO, DESPACHADO, ENTREGADO, CANCELADO
-  reservaId        String?                   // Link to reservation
-  cotizacionId     String?                   // Link to quote
+  fechaCompromiso  DateTime?
+  estado           String   @default("SOLICITADO")
+  notas            String?                    // Notas del depositante (instrucciones, observaciones)
+  // SOLICITADO, PENDIENTE_APROBACION, APROBADO, EN_PICKING, CONSOLIDADO, DESPACHADO, ENTREGADO, RECHAZADO, CANCELADO
+
+  // === 3PL Approval workflow ===
+  solicitadoPor        String?              // Usuario del portal que solicitó
+  aprobado             Boolean  @default(false)
+  fechaAprobacion      DateTime?
+  aprobadoPor          String?
+  motivoRechazo        String?
+
+  // === Transport / Shipping ===
+  tipoTransporte       String?              // PAQUETERIA, MENSAJERIA, VEHICULO_PROPIO, CLIENTE_RECOGE
+  paqueteria           String?              // DHL, FEDEX, ESTAFETA, etc.
+  numeroGuia           String?
+  guiaUrl              String?              // URL o ruta al archivo de guía adjunta
+  costoEnvio           Float?
 
   // Dispatch tracking
   despachador          String?
@@ -388,9 +443,11 @@ model SalesOrder {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  cliente          Client @relation(fields: [clienteId], references: [id])
+  cliente          Client       @relation(fields: [clienteId], references: [id])
+  endCustomer      EndCustomer? @relation(fields: [endCustomerId], references: [id])
   lineas           SalesOrderLine[]
   trackingEvents   DispatchTracking[]
+  aprobaciones     OrderApproval[]
 }
 
 model SalesOrderLine {
@@ -425,65 +482,42 @@ model DispatchTracking {
 }
 
 // ---------------------------------------------------------
-// 9. COMMERCIAL: Quotes & Reservations
+// 9. UOM CONVERSIONS (Unit of Measure hierarchy per SKU)
 // ---------------------------------------------------------
 
-model SalesQuote {
+model UomConversion {
   id              String   @id @default(uuid())
-  codigo          String   @unique            // COT-2026-0001
-  clienteId       String
-  destinatario    String?
-  estado          String   @default("BORRADOR") // BORRADOR, ENVIADA, ACEPTADA, RECHAZADA, VENCIDA
-  validezDias     Int      @default(15)
-  fechaVencimiento DateTime?
-  notas           String?
-  creadoPor       String?
-  total           Float?
+  skuId           String
+  uomOrigen       String                          // MASTER, CAJA, INNER, etc.
+  uomDestino      String                          // PZA (siempre la unidad base)
+  factorConversion Float                          // 1 CAJA = 24 PZA → factor = 24
+  codigoBarras    String?                         // Barcode específico para este nivel de empaque
+  descripcion     String?                         // "Caja x24 piezas"
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  cliente         Client @relation(fields: [clienteId], references: [id])
-  lineas          SalesQuoteLine[]
+  sku             SkuMaster @relation(fields: [skuId], references: [id], onDelete: Cascade)
+
+  @@unique([skuId, uomOrigen, uomDestino])
+  @@index([skuId])
 }
 
-model SalesQuoteLine {
-  id              String   @id @default(uuid())
-  cotizacionId    String
-  skuId           String
-  cantidad        Float
-  precioUnitario  Float?
-  subtotal        Float?
+// ---------------------------------------------------------
+// 9b. ORDER APPROVAL (3PL: Depositor submits, Operator approves)
+// ---------------------------------------------------------
 
-  cotizacion      SalesQuote @relation(fields: [cotizacionId], references: [id])
-  sku             SkuMaster  @relation(fields: [skuId], references: [id])
-}
-
-model Reservation {
+model OrderApproval {
   id              String   @id @default(uuid())
-  codigo          String   @unique            // RES-2026-0001
-  clienteId       String
-  estado          String   @default("DRAFT")
-  // DRAFT, HOLD, CONFIRMED, PICKING, PACKED, READY_TO_SHIP, SHIPPED, CANCELLED, EXPIRED
-  fechaExpiracion DateTime?                    // Auto-release after this
+  orderId         String
+  estado          String                          // PENDIENTE, APROBADO, RECHAZADO
+  aprobadoPor     String?                         // email/nombre del aprobador
+  motivo          String?                         // Razón (aprobación/rechazo)
   notas           String?
-  creadoPor       String?
 
   createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
 
-  cliente         Client @relation(fields: [clienteId], references: [id])
-  lineas          ReservationLine[]
-}
-
-model ReservationLine {
-  id              String   @id @default(uuid())
-  reservaId       String
-  skuId           String
-  cantidadReservada Float
-
-  reserva         Reservation @relation(fields: [reservaId], references: [id])
-  sku             SkuMaster   @relation(fields: [skuId], references: [id])
+  orden           SalesOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
 }
 
 // ---------------------------------------------------------

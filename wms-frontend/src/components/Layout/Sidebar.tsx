@@ -3,9 +3,10 @@ import { useAuth } from '../../contexts/AuthContext';
 import {
   LayoutDashboard, Package, MapPin, ClipboardCheck, PackageOpen,
   Truck, Users, Database, Tag, BarChart3, Shield, ClipboardList,
-  ShoppingCart, Clock, Building
+  Clock, Building, Store, CheckCircle2
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { API } from '../../config/api';
 
 const menuSections = [
   {
@@ -15,11 +16,11 @@ const menuSections = [
     ],
   },
   {
-    label: 'Comercial',
+    label: '3PL',
     items: [
-      { path: '/clientes', icon: Users, label: 'Clientes', modulo: 'clientes' },
-      { path: '/proveedores', icon: Building, label: 'Proveedores', modulo: 'clientes' },
-      { path: '/comercial', icon: ShoppingCart, label: 'Cotizaciones', modulo: 'comercial' },
+      { path: '/depositantes', icon: Users, label: 'Depositantes', modulo: 'depositantes' },
+      { path: '/clientes-finales', icon: Store, label: 'Clientes Finales', modulo: 'clientes-finales' },
+      { path: '/proveedores', icon: Building, label: 'Proveedores', modulo: 'depositantes' },
     ],
   },
   {
@@ -46,9 +47,10 @@ const menuSections = [
 ];
 
 export function Sidebar() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, token } = useAuth();
   const location = useLocation();
   const [clock, setClock] = useState('');
+  const [pendingApprovals, setPendingApprovals] = useState(0);
 
   useEffect(() => {
     const tick = () => {
@@ -60,6 +62,22 @@ export function Sidebar() {
     return () => clearInterval(id);
   }, []);
 
+  // Fetch pending approvals count
+  useEffect(() => {
+    async function fetchPending() {
+      try {
+        const res = await fetch(`${API}/dashboard/stats`, { headers: { Authorization: `Bearer ${token}` } });
+        if (res.ok) {
+          const data = await res.json();
+          setPendingApprovals(data.pendingApprovals || 0);
+        }
+      } catch {}
+    }
+    fetchPending();
+    const id = setInterval(fetchPending, 30000); // refresh every 30s
+    return () => clearInterval(id);
+  }, [token]);
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -67,7 +85,7 @@ export function Sidebar() {
           <div className="sidebar-logo-icon">📦</div>
           <div className="sidebar-logo-text">
             <div className="sidebar-logo-title">Giving Out</div>
-            <div className="sidebar-logo-subtitle">Warehouse Management</div>
+            <div className="sidebar-logo-subtitle">Operador Logístico 3PL</div>
           </div>
         </div>
       </div>
@@ -91,6 +109,9 @@ export function Sidebar() {
                 >
                   <item.icon className="sidebar-link-icon" size={18} />
                   <span>{item.label}</span>
+                  {item.path === '/despacho' && pendingApprovals > 0 && (
+                    <span className="sidebar-badge">{pendingApprovals}</span>
+                  )}
                 </NavLink>
               ))}
             </div>
@@ -103,7 +124,7 @@ export function Sidebar() {
           <Clock size={12} />
           {clock}
         </div>
-        <div className="sidebar-version">WMS v1.0.0 · Giving Out</div>
+        <div className="sidebar-version">WMS v2.0 · 3PL</div>
       </div>
     </aside>
   );

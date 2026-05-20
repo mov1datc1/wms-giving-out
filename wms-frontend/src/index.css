@@ -2901,3 +2901,35 @@ code {
   align-items: center;
   gap: 3px;
 }
+
+/* ======= PORTAL LAYOUT (Depositor) ======= */
+.portal-sidebar {
+  background: linear-gradient(180deg, #0C2340 0%, #0D3B66 40%, #0D4F6E 100%);
+}
+
+.portal-sidebar .sidebar-logo-icon {
+  background: rgba(14, 165, 233, 0.2);
+  border-color: rgba(14, 165, 233, 0.3);
+  color: #38BDF8;
+}
+
+.portal-sidebar .sidebar-link.active {
+  background: rgba(14, 165, 233, 0.15);
+  border-color: rgba(14, 165, 233, 0.25);
+}
+
+.portal-sidebar .sidebar-link.active::before {
+  background: #38BDF8;
+}
+
+.portal-sidebar .sidebar-link.active .sidebar-link-icon {
+  color: #38BDF8;
+}
+
+.portal-user-info {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+}

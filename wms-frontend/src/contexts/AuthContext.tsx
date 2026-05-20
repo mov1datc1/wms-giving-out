@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         id: 'demo-001', email: 'demo@givingout.mx', nombre: 'Jonathan Palacios',
         rolId: 'R-01', rolNombre: 'Super Admin',
         almacenId: 'WH-001', clienteId: null, isSuperAdmin: true,
-        permisos: ['dashboard','clientes','comercial','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
+        permisos: ['dashboard','depositantes','clientes-finales','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
       });
       setLoading(false);
       return;
@@ -76,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           id: 'demo-001', email, nombre: 'Jonathan Palacios',
           rolId: 'R-01', rolNombre: 'Super Admin',
           almacenId: 'WH-001', clienteId: null, isSuperAdmin: true,
-          permisos: ['dashboard','clientes','comercial','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
+          permisos: ['dashboard','depositantes','clientes-finales','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
         };
         localStorage.setItem('wms_token', 'demo-token'); setToken('demo-token'); setUser(demoUser);
         return;

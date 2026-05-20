@@ -5,6 +5,8 @@ import { AppService } from './app.service';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { ClientsModule } from './modules/clients/clients.module';
+import { EndCustomersModule } from './modules/end-customers/end-customers.module';
+import { UomModule } from './modules/uom/uom.module';
 import { MasterDataModule } from './modules/master-data/master-data.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { OperationsModule } from './modules/operations/operations.module';
@@ -15,6 +17,8 @@ import { OperationsModule } from './modules/operations/operations.module';
     AuthModule,
     UsersModule,
     ClientsModule,
+    EndCustomersModule,
+    UomModule,
     MasterDataModule,
     InventoryModule,
     OperationsModule,

@@ -125,7 +125,8 @@ export class OperationsController {
     return this.prisma.salesOrder.findMany({
       where,
       include: {
-        cliente: { select: { nombreComercial: true } },
+        cliente: { select: { nombreComercial: true, reglaInventario: true } },
+        endCustomer: { select: { nombre: true, ciudad: true, calle: true } },
         lineas: { include: { sku: { select: { codigo: true, descripcion: true } } } },
         trackingEvents: { orderBy: { createdAt: 'desc' }, take: 1 },
       },
@@ -139,13 +140,31 @@ export class OperationsController {
     const count = await this.prisma.salesOrder.count();
     const codigo = `PED-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
 
-    const { lineas, usuario, ...orderData } = data;
+    // Sanitize: only pass valid SalesOrder fields to Prisma
+    const cleanLines = (data.lineas || []).map((l: any) => ({
+      skuId: l.skuId,
+      cantidadSolicitada: l.cantidadSolicitada,
+      cantidadAsignada: l.cantidadAsignada || 0,
+      ...(l.lotId ? { lotId: l.lotId } : {}),
+      ...(l.huId ? { huId: l.huId } : {}),
+    }));
+
     const order = await this.prisma.salesOrder.create({
-      data: { ...orderData, codigo, lineas: { create: lineas } },
-      include: { cliente: true, lineas: { include: { sku: true } } },
+      data: {
+        codigo,
+        clienteId: data.clienteId,
+        endCustomerId: data.endCustomerId || null,
+        prioridad: data.prioridad || 3,
+        fechaCompromiso: data.fechaCompromiso ? new Date(data.fechaCompromiso) : null,
+        estado: data.estado || 'SOLICITADO',
+        notas: data.notas || null,
+        solicitadoPor: data.solicitadoPor || null,
+        lineas: { create: cleanLines },
+      },
+      include: { cliente: true, endCustomer: true, lineas: { include: { sku: true } } },
     });
 
-    await this.audit(usuario || 'Sistema', 'CREAR_ORDEN', 'SalesOrder', order.id, `${codigo}: ${lineas?.length || 0} líneas`);
+    await this.audit(data.usuario || 'Sistema', 'CREAR_ORDEN', 'SalesOrder', order.id, `${codigo}: ${cleanLines.length} líneas`);
     return order;
   }
 
@@ -163,12 +182,56 @@ export class OperationsController {
     return order;
   }
 
+  @Post('orders/:id/approve')
+  @ApiOperation({ summary: 'Aprobar orden de salida (3PL workflow)' })
+  async approveOrder(@Param('id') id: string, @Body() body: { usuario: string; notas?: string }) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
+    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+    const updated = await this.prisma.salesOrder.update({
+      where: { id },
+      data: {
+        estado: 'APROBADO', aprobado: true,
+        fechaAprobacion: new Date(), aprobadoPor: body.usuario,
+      },
+      include: { cliente: true, endCustomer: true },
+    });
+
+    await this.prisma.orderApproval.create({
+      data: { orderId: id, estado: 'APROBADO', aprobadoPor: body.usuario, notas: body.notas },
+    });
+
+    await this.audit(body.usuario, 'APROBAR_ORDEN', 'SalesOrder', id, `Orden ${order.codigo} aprobada`);
+    return { success: true, order: updated };
+  }
+
+  @Post('orders/:id/reject')
+  @ApiOperation({ summary: 'Rechazar orden de salida (3PL workflow)' })
+  async rejectOrder(@Param('id') id: string, @Body() body: { usuario: string; motivo: string; notas?: string }) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
+    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+    if (!body.motivo) throw new HttpException('El motivo de rechazo es obligatorio', HttpStatus.BAD_REQUEST);
+
+    const updated = await this.prisma.salesOrder.update({
+      where: { id },
+      data: { estado: 'RECHAZADO', motivoRechazo: body.motivo },
+      include: { cliente: true, endCustomer: true },
+    });
+
+    await this.prisma.orderApproval.create({
+      data: { orderId: id, estado: 'RECHAZADO', aprobadoPor: body.usuario, motivo: body.motivo, notas: body.notas },
+    });
+
+    await this.audit(body.usuario, 'RECHAZAR_ORDEN', 'SalesOrder', id, `Orden ${order.codigo} rechazada: ${body.motivo}`);
+    return { success: true, order: updated };
+  }
+
   @Post('orders/:id/dispatch')
   @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario y libera ubicaciones' })
-  async dispatchOrder(@Param('id') id: string, @Body() data: { despachador: string; vehiculoPlaca?: string; notas?: string }) {
+  async dispatchOrder(@Param('id') id: string, @Body() data: { despachador: string; vehiculoPlaca?: string; notas?: string; tipoTransporte?: string; paqueteria?: string; numeroGuia?: string }) {
     const fullOrder = await this.prisma.salesOrder.findUnique({
       where: { id },
-      include: { lineas: { include: { sku: true } }, cliente: true },
+      include: { lineas: { include: { sku: true } }, cliente: true, endCustomer: true },
     });
     if (!fullOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
@@ -207,7 +270,7 @@ export class OperationsController {
             tipoMovimiento: 'SALIDA', skuId: line.skuId, clienteId: fullOrder.clienteId,
             lotId: lot.id, fromLocationId: lot.ubicacionId || undefined,
             cantidad: toTake, usuario: data.despachador,
-            motivo: `Despacho ${fullOrder.codigo} → ${fullOrder.destinatario || fullOrder.cliente.nombreComercial}`,
+            motivo: `Despacho ${fullOrder.codigo} → ${(fullOrder as any).endCustomer?.nombre || fullOrder.cliente.nombreComercial}`,
           },
         });
       }
@@ -223,8 +286,9 @@ export class OperationsController {
       data: {
         estado: 'DESPACHADO', despachador: data.despachador,
         fechaDespacho: new Date(), vehiculoPlaca: data.vehiculoPlaca, estadoEntrega: 'EN_RUTA',
+        tipoTransporte: data.tipoTransporte, paqueteria: data.paqueteria, numeroGuia: data.numeroGuia,
       },
-      include: { cliente: true },
+      include: { cliente: true, endCustomer: true },
     });
 
     await this.prisma.dispatchTracking.create({
@@ -233,6 +297,41 @@ export class OperationsController {
 
     await this.audit(data.despachador, 'DESPACHO', 'SalesOrder', id, `Vehículo: ${data.vehiculoPlaca || 'N/A'}`);
     return { success: true, order };
+  }
+
+  @Post('orders/:id/confirm-delivery')
+  @ApiOperation({ summary: 'Confirmar entrega al cliente final' })
+  async confirmDelivery(@Param('id') id: string, @Body() data: { usuario: string; nombreReceptor: string; notasEntrega?: string; firmaBase64?: string }) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id }, include: { cliente: true, endCustomer: true } });
+    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+    const updated = await this.prisma.salesOrder.update({
+      where: { id },
+      data: {
+        estado: 'ENTREGADO',
+        estadoEntrega: 'ENTREGADO',
+        fechaEntrega: new Date(),
+        nombreReceptor: data.nombreReceptor,
+        notasEntrega: data.notasEntrega || null,
+        firmaReceptor: data.firmaBase64 || null,
+      },
+      include: { cliente: true, endCustomer: true },
+    });
+
+    await this.prisma.dispatchTracking.create({
+      data: {
+        orderId: id,
+        estado: 'ENTREGADO',
+        usuario: data.usuario,
+        notas: `Recibió: ${data.nombreReceptor}${data.notasEntrega ? ` — ${data.notasEntrega}` : ''}`,
+        nombreFirmante: data.nombreReceptor,
+        firmaBase64: data.firmaBase64,
+      },
+    });
+
+    await this.audit(data.usuario, 'ENTREGA_CONFIRMADA', 'SalesOrder', id,
+      `${order.codigo} entregado a ${data.nombreReceptor} en ${(order as any).endCustomer?.nombre || 'destino'}`);
+    return { success: true, order: updated };
   }
 
   // ============ MOVEMENTS (manual) ============
@@ -433,19 +532,21 @@ export class OperationsController {
       this.prisma.client.count({ where: { activo: true } }),
       this.prisma.lotInventory.count({ where: { cantidadDisponible: { gt: 0 } } }),
       this.prisma.salesOrder.count(),
-      this.prisma.salesOrder.count({ where: { estado: { in: ['PENDIENTE', 'CONFIRMADO', 'EN_PICKING'] } } }),
+      this.prisma.salesOrder.count({ where: { estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING'] } } }),
       this.prisma.alert.count({ where: { resuelta: false } }),
       this.prisma.inventoryMovement.findMany({ orderBy: { fechaHora: 'desc' }, take: 10, include: { sku: { select: { descripcion: true } } } }),
     ]);
 
-    const totalUnidades = await this.prisma.lotInventory.aggregate({
-      _sum: { cantidadDisponible: true },
-      where: { cantidadDisponible: { gt: 0 } },
-    });
+    const [totalUnidades, pendingApprovals, totalEndCustomers] = await Promise.all([
+      this.prisma.lotInventory.aggregate({ _sum: { cantidadDisponible: true }, where: { cantidadDisponible: { gt: 0 } } }),
+      this.prisma.salesOrder.count({ where: { estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION'] } } }),
+      this.prisma.endCustomer.count({ where: { activo: true } }),
+    ]);
 
     return {
       totalSkus, totalClients, totalLots, totalOrders, pendingOrders, activeAlerts,
       totalUnidades: totalUnidades._sum.cantidadDisponible || 0,
+      pendingApprovals, totalEndCustomers,
       recentMovements,
     };
   }
