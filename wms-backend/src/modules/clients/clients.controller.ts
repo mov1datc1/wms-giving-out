@@ -46,14 +46,21 @@ export class ClientsController {
   @ApiOperation({ summary: 'Crear depositante' })
   async createClient(@Body() data: any) {
     const { contactos, direcciones, ...clientData } = data;
-    return this.prisma.client.create({
-      data: {
-        ...clientData,
-        contactos: contactos ? { create: contactos } : undefined,
-        direccionesEntrega: direcciones ? { create: direcciones } : undefined,
-      },
-      include: { contactos: true, direccionesEntrega: true },
-    });
+    try {
+      return await this.prisma.client.create({
+        data: {
+          ...clientData,
+          contactos: contactos ? { create: contactos } : undefined,
+          direccionesEntrega: direcciones ? { create: direcciones } : undefined,
+        },
+        include: { contactos: true, direccionesEntrega: true },
+      });
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        throw new HttpException('Ya existe un depositante con este Código o RFC.', HttpStatus.BAD_REQUEST);
+      }
+      throw new HttpException(error.message || 'Error interno al crear depositante', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   @Put(':id')
