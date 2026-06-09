@@ -115,6 +115,7 @@ export function Clients() {
                   <select className="form-select form-select-full" value={form.uomPrincipal} onChange={e => setForm(f => ({ ...f, uomPrincipal: e.target.value }))}>
                     <option value="PZA">Pieza</option>
                     <option value="CAJA">Caja</option>
+                    <option value="PALLET">Pallet</option>
                     <option value="MASTER">Master</option>
                   </select>
                 </div>
@@ -123,6 +124,7 @@ export function Clients() {
                   <select className="form-select form-select-full" value={form.manejoInventario} onChange={e => setForm(f => ({ ...f, manejoInventario: e.target.value }))}>
                     <option value="PIEZA">Por Pieza</option>
                     <option value="CAJA">Por Caja</option>
+                    <option value="PALLET">Por Pallet</option>
                     <option value="MIXTO">Mixto</option>
                   </select>
                 </div>

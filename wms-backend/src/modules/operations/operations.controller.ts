@@ -47,71 +47,133 @@ export class OperationsController {
   }
 
   @Post('reception')
-  @ApiOperation({ summary: 'Registrar recepción de mercancía (crea lote + HU + movimiento)' })
+  @ApiOperation({ summary: 'Registrar recepción de mercancía (Conforme y No Conforme)' })
   async registerReception(@Body() data: {
     skuId: string; clienteId: string; lote?: string; serie?: string;
-    fechaVencimiento?: string; cantidad: number; proveedor?: string;
-    tipoHu: string; ubicacionId: string; almacenId: string;
-    usuario: string; notas?: string; receiptLineId?: string;
+    fechaVencimiento?: string; cantidadConforme?: number; cantidadNoConforme?: number; 
+    proveedor?: string; tipoHu: string; 
+    ubicacionConformeId?: string; ubicacionNoConformeId?: string; 
+    almacenId: string; usuario: string; notas?: string; receiptLineId?: string;
   }) {
-    const lot = await this.prisma.lotInventory.create({
-      data: {
-        skuId: data.skuId, clienteId: data.clienteId,
-        lote: data.lote || null, serie: data.serie || null,
-        fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
-        proveedorNombre: data.proveedor,
-        estadoCalidad: 'LIBERADO',
-        cantidadDisponible: data.cantidad,
-        ubicacionId: data.ubicacionId,
-      },
-    });
+    const qtyConforme = data.cantidadConforme || 0;
+    const qtyNoConforme = data.cantidadNoConforme || 0;
+    const totalQty = qtyConforme + qtyNoConforme;
 
-    const huCount = await this.prisma.handlingUnit.count();
-    const huCodigo = `HU-${new Date().getFullYear()}-${String(huCount + 1).padStart(5, '0')}`;
+    if (totalQty <= 0) throw new HttpException('Cantidad total debe ser mayor a 0', HttpStatus.BAD_REQUEST);
 
-    const hu = await this.prisma.handlingUnit.create({
-      data: {
-        codigo: huCodigo, tipoHu: data.tipoHu, lotId: lot.id,
-        clienteId: data.clienteId, cantidad: data.cantidad,
-        uom: 'PZA', ubicacionActual: data.ubicacionId,
-      },
-    });
+    const createdLots = [];
+    const createdHus = [];
 
-    await this.prisma.inventoryMovement.create({
-      data: {
-        tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
-        skuId: data.skuId, clienteId: data.clienteId, lotId: lot.id,
-        huId: hu.id, toLocationId: data.ubicacionId,
-        cantidad: data.cantidad, usuario: data.usuario,
-        motivo: data.notas || `Recepción — ${data.proveedor || 'Proveedor'}`,
-      },
-    });
+    // --- Procesar Conforme ---
+    if (qtyConforme > 0 && data.ubicacionConformeId) {
+      const lotC = await this.prisma.lotInventory.create({
+        data: {
+          skuId: data.skuId, clienteId: data.clienteId,
+          lote: data.lote || null, serie: data.serie || null,
+          fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
+          proveedorNombre: data.proveedor,
+          estadoCalidad: 'LIBERADO',
+          cantidadDisponible: qtyConforme,
+          ubicacionId: data.ubicacionConformeId,
+        },
+      });
 
-    await this.prisma.location.update({
-      where: { id: data.ubicacionId },
-      data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
-    });
+      const huCodigoC = `HU-${new Date().getFullYear()}-${String(await this.prisma.handlingUnit.count() + 1).padStart(5, '0')}`;
+      const huC = await this.prisma.handlingUnit.create({
+        data: {
+          codigo: huCodigoC, tipoHu: data.tipoHu, lotId: lotC.id,
+          clienteId: data.clienteId, cantidad: qtyConforme,
+          uom: 'PZA', ubicacionActual: data.ubicacionConformeId,
+        },
+      });
+
+      await this.prisma.inventoryMovement.create({
+        data: {
+          tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
+          skuId: data.skuId, clienteId: data.clienteId, lotId: lotC.id,
+          huId: huC.id, toLocationId: data.ubicacionConformeId,
+          cantidad: qtyConforme, usuario: data.usuario,
+          motivo: data.notas || `Recepción Conforme — ${data.proveedor || 'Proveedor'}`,
+        },
+      });
+
+      await this.prisma.location.update({
+        where: { id: data.ubicacionConformeId },
+        data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
+      });
+
+      createdLots.push(lotC);
+      createdHus.push(huC);
+    }
+
+    // --- Procesar No Conforme ---
+    if (qtyNoConforme > 0 && data.ubicacionNoConformeId) {
+      const lotNC = await this.prisma.lotInventory.create({
+        data: {
+          skuId: data.skuId, clienteId: data.clienteId,
+          lote: data.lote || null, serie: data.serie || null,
+          fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
+          proveedorNombre: data.proveedor,
+          estadoCalidad: 'BLOQUEADO',
+          cantidadBloqueada: qtyNoConforme,
+          cantidadDisponible: 0,
+          ubicacionId: data.ubicacionNoConformeId,
+        },
+      });
+
+      const huCodigoNC = `HU-${new Date().getFullYear()}-${String(await this.prisma.handlingUnit.count() + 1).padStart(5, '0')}`;
+      const huNC = await this.prisma.handlingUnit.create({
+        data: {
+          codigo: huCodigoNC, tipoHu: data.tipoHu, lotId: lotNC.id,
+          clienteId: data.clienteId, cantidad: qtyNoConforme,
+          uom: 'PZA', ubicacionActual: data.ubicacionNoConformeId,
+        },
+      });
+
+      await this.prisma.inventoryMovement.create({
+        data: {
+          tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
+          skuId: data.skuId, clienteId: data.clienteId, lotId: lotNC.id,
+          huId: huNC.id, toLocationId: data.ubicacionNoConformeId,
+          cantidad: qtyNoConforme, usuario: data.usuario,
+          motivo: data.notas || `Recepción No Conforme — ${data.proveedor || 'Proveedor'}`,
+        },
+      });
+
+      await this.prisma.location.update({
+        where: { id: data.ubicacionNoConformeId },
+        data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
+      });
+
+      createdLots.push(lotNC);
+      createdHus.push(huNC);
+    }
 
     // Update receipt line if linked
     if (data.receiptLineId) {
       const line = await this.prisma.receiptLine.findUnique({ where: { id: data.receiptLineId } });
       if (line) {
-        const newRecibida = line.cantidadRecibida + data.cantidad;
+        const newRecibida = line.cantidadRecibida + qtyConforme;
+        const newDanada = line.cantidadDanada + qtyNoConforme;
+        const totalProcesada = newRecibida + newDanada;
+        
         await this.prisma.receiptLine.update({
           where: { id: data.receiptLineId },
           data: {
             cantidadRecibida: newRecibida,
-            estado: line.cantidadEsperada && newRecibida >= line.cantidadEsperada ? 'COMPLETO' : 'PARCIAL',
-            loteAsignado: data.lote, ubicacionId: data.ubicacionId,
+            cantidadDanada: newDanada,
+            estado: line.cantidadEsperada && totalProcesada >= line.cantidadEsperada ? 'COMPLETO' : 'PARCIAL',
+            loteAsignado: data.lote, 
+            ubicacionId: data.ubicacionConformeId || data.ubicacionNoConformeId, // Just keeping one ref
           },
         });
       }
     }
 
-    await this.audit(data.usuario, 'RECEPCION', 'LotInventory', lot.id,
-      `Lote: ${data.lote || 'N/A'}, Cant: ${data.cantidad}, HU: ${huCodigo}`);
+    await this.audit(data.usuario, 'RECEPCION', 'LotInventory', createdLots[0]?.id,
+      `Lote: ${data.lote || 'N/A'}, C: ${qtyConforme}, NC: ${qtyNoConforme}`);
 
-    return { success: true, lot, handlingUnit: hu, message: `Recepción registrada: HU ${huCodigo}` };
+    return { success: true, lots: createdLots, handlingUnits: createdHus, message: `Recepción procesada correctamente` };
   }
 
   // ============ ORDERS ============

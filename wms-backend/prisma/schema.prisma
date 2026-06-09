@@ -369,6 +369,14 @@ model Receipt {
   estado           String   @default("PENDIENTE")  // PENDIENTE, EN_PROCESO, COMPLETO, CERRADO
   tipoRecepcion    String   @default("NORMAL")     // NORMAL, DEVOLUCION, TRANSFERENCIA
   ocReferencia     String?                          // Purchase order reference
+  
+  // === Campos de Previo de Recibo ===
+  origen           String?                          // IMPORTACION, NACIONAL
+  lineaTransporte  String?
+  placa            String?
+  nombreChofer     String?
+  archivoPrevioUrl String?                          // URL del Excel cargado
+
   notas            String?
   evidenciaUrl     String?                          // Photo evidence URL
   recibidoPor      String?
