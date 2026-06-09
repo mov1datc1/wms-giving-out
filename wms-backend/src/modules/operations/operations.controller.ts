@@ -61,8 +61,8 @@ export class OperationsController {
 
     if (totalQty <= 0) throw new HttpException('Cantidad total debe ser mayor a 0', HttpStatus.BAD_REQUEST);
 
-    const createdLots = [];
-    const createdHus = [];
+    const createdLots: any[] = [];
+    const createdHus: any[] = [];
 
     // --- Procesar Conforme ---
     if (qtyConforme > 0 && data.ubicacionConformeId) {
