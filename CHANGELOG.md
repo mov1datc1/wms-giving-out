@@ -16,9 +16,13 @@ El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.co
   - Métricas instantáneas de líneas leídas, SKUs válidos coincidentes y alertas con listado de códigos no registrados.
   - Mini-tabla interactiva con las líneas detectadas antes de confirmar la creación del previo.
   - Botón para **Descargar Plantilla Oficial (.xlsx)** directamente desde el modal.
-- **Visualización en Cola de Recepciones:**
-  - Nueva columna `FACTURA / OC` en la tabla de previos para trazabilidad documental.
-  - Visualización del código EAN/Barras en el detalle expandido de líneas para el ingreso dual.
+- **Motor Inteligente de Asignación de Ubicaciones (Putaway Engine & Layout):**
+  - Algoritmo automático basado en el layout del almacén, categoría del SKU (Textil/Prendas en `ALM-A`, Alimentos en `ALM-B`, Cuarentena en `DEVOLUCION`/`DEV`), regla de rotación del depositante (`FIFO` en Nivel 1 suelo para picking rápido vs `FEFO`), consolidación con SKUs existentes y cálculo dinámico de espacio disponible.
+  - Pre-selección y auto-asignación automática de la ubicación óptima al abrir la línea de ingreso tanto para **Zona Conforme** como para **Zona No Conforme / Cuarentena**.
+- **Componente PRO de Selección de Ubicaciones (`LocationSelect`):**
+  - Reemplazo total del `<select>` genérico nativo por un selector empresarial interactivo con tarjeta visual de ubicación, badge de zona, barra de capacidad y tag `⭐ Sugerencia IA/Layout`.
+  - Buscador integrado en tiempo real (por pasillo, rack, nivel, zona o código) y pestañas de filtrado (`⭐ Sugeridas`, `📍 Misma Zona`, `🟢 100% Libres`, `📦 Todas`).
+  - Control manual total para que el operador pueda cambiar o anular la sugerencia fácilmente si así lo desea.
 
 ---
 

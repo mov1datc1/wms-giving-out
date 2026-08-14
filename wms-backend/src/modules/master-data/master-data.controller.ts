@@ -117,7 +117,7 @@ export class MasterDataController {
       include: {
         zona: { select: { codigo: true, nombre: true } },
         almacen: { select: { codigo: true, nombre: true } },
-        lotes: { where: { cantidadDisponible: { gt: 0 } }, select: { id: true, cantidadDisponible: true } },
+        lotes: { where: { cantidadDisponible: { gt: 0 } }, select: { id: true, skuId: true, cantidadDisponible: true } },
       },
       orderBy: { codigo: 'asc' },
     });

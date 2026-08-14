@@ -4,9 +4,10 @@ import { API } from '../config/api';
 import {
   ClipboardList, Search, RefreshCw, Check, Clock, AlertCircle,
   ChevronDown, ChevronUp, Plus, X, Package, MapPin, Truck, UploadCloud,
-  FileSpreadsheet, Download, CheckCircle2, AlertTriangle, FileText
+  FileSpreadsheet, Download, CheckCircle2, AlertTriangle, FileText, Sparkles
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { LocationSelect } from '../components/LocationSelect';
 
 interface PrevioForm {
   clienteId: string;
@@ -157,7 +158,6 @@ export function Receiving() {
         let rowCode = '';
         let rowQty = 0;
 
-        // Iterar propiedades del objeto de forma normalizada
         for (const [k, v] of Object.entries(row)) {
           if (v === null || v === undefined) continue;
           const normKey = normalizeKey(k);
@@ -190,7 +190,6 @@ export function Receiving() {
           }
         }
 
-        // Fallbacks si la fila tiene nombres con mayúsculas/espacios raros
         if (!rowCode) {
           rowCode = String(row.Ean || row.ean || row.EAN || row.Codigo || row.codigo || row.SKU || row.sku || '').trim();
         }
@@ -202,10 +201,8 @@ export function Receiving() {
           if (!detectedFactura && rowFactura) detectedFactura = rowFactura;
         }
 
-        // Omitir filas vacías
         if (!rowCode && rowQty === 0) return;
 
-        // Búsqueda de SKU (por código interno o por código de barras / EAN)
         const cleanCode = rowCode.toLowerCase();
         const matchedSku = clientSkus.find(s => 
           s.codigo?.toLowerCase() === cleanCode || 
@@ -241,7 +238,6 @@ export function Receiving() {
         lines: parsedLines
       });
 
-      // Auto-completar factura si el formulario no tiene una asignada
       if (detectedFactura && !newPrevio.ocReferencia) {
         setNewPrevio(prev => ({ ...prev, ocReferencia: detectedFactura }));
       }
@@ -429,10 +425,6 @@ export function Receiving() {
     return matchSearch && matchEstado;
   });
 
-  const getSuggestedLocations = (sku: any, isConforme: boolean) => {
-    return locations.filter(l => l.estado === 'LIBRE' && l.activo).slice(0, 10);
-  };
-
   const estadoBadge = (estado: string) => estado === 'COMPLETO' ? 'success' : estado === 'EN_PROCESO' ? 'warning' : estado === 'PENDIENTE' ? 'info' : 'default';
 
   return (
@@ -440,7 +432,7 @@ export function Receiving() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Previos de Recibo (Recepción)</h1>
-          <p className="page-subtitle">Cola de recepciones pendientes y procesadas con soporte para validación de Excel y calidad dual</p>
+          <p className="page-subtitle">Cola de recepciones pendientes y procesadas con soporte para validación de Excel, algoritmo putaway y calidad dual</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }}>
@@ -756,225 +748,239 @@ export function Receiving() {
                 </td>
               </tr>
             ) : (
-              filtered.map(r => (
-                <React.Fragment key={r.id}>
-                  <tr 
-                    style={{ cursor: 'pointer', background: expanded === r.id ? 'var(--bg-secondary)' : '' }} 
-                    onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                  >
-                    <td style={{ fontWeight: 700, color: 'var(--primary)' }}>{r.codigo}</td>
-                    <td>{new Date(r.fechaRecepcion).toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
-                    <td><span className="badge badge-info">{r.cliente?.nombreComercial}</span></td>
-                    <td>
-                      {r.ocReferencia ? (
-                        <span style={{ fontWeight: 600, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <FileText size={13} style={{ color: 'var(--text-tertiary)' }} />
-                          {r.ocReferencia}
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                      )}
-                    </td>
-                    <td>
-                      <div style={{ fontSize: 13, fontWeight: 500 }}>
-                        {r.lineaTransporte || 'Sin transporte'} {r.placa ? `(${r.placa})` : ''}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{r.nombreChofer || '—'}</div>
-                    </td>
-                    <td style={{ fontWeight: 600 }}>{r.lineas?.length || 0}</td>
-                    <td><span className={`badge badge-${estadoBadge(r.estado)}`}>{r.estado.replace('_', ' ')}</span></td>
-                    <td style={{ textAlign: 'right' }}>{expanded === r.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</td>
-                  </tr>
+              filtered.map(r => {
+                const clientObj = clients.find(c => c.id === r.clienteId) || r.cliente;
 
-                  {/* VISTA EXPANDIDA DEL PREVIO */}
-                  {expanded === r.id && (
-                    <tr>
-                      <td colSpan={8} style={{ padding: 0 }}>
-                        <div style={{ padding: 20, background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                            <div>
-                              <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Detalle de Líneas de Recepción ({r.codigo})</h4>
-                              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                                Origen: <strong>{r.origen || 'Nacional'}</strong> | Archivo Previo: <strong>{r.archivoPrevioUrl || 'N/A'}</strong>
-                                {r.notas && ` | Notas: ${r.notas}`}
-                              </span>
-                            </div>
-                            <span className={`badge badge-${estadoBadge(r.estado)}`}>{r.estado}</span>
-                          </div>
-
-                          <table className="data-table" style={{ background: 'var(--bg-card)', borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                            <thead>
-                              <tr>
-                                <th>SKU / PRODUCTO</th>
-                                <th>EAN / BARRAS</th>
-                                <th style={{ textAlign: 'right' }}>ESPERADO</th>
-                                <th style={{ textAlign: 'right', color: 'var(--emerald)' }}>CONFORME</th>
-                                <th style={{ textAlign: 'right', color: 'var(--orange)' }}>NO CONF.</th>
-                                <th>ESTADO</th>
-                                <th style={{ textAlign: 'center' }}>ACCIÓN</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {r.lineas.map((l: any) => (
-                                <React.Fragment key={l.id}>
-                                  <tr>
-                                    <td>
-                                      <div style={{ fontWeight: 600 }}>{l.sku?.codigo}</div>
-                                      <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{l.sku?.descripcion}</div>
-                                    </td>
-                                    <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                                      {l.sku?.codigoBarras || <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
-                                    </td>
-                                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{l.cantidadEsperada}</td>
-                                    <td style={{ textAlign: 'right', color: 'var(--emerald)', fontWeight: 700 }}>{l.cantidadRecibida}</td>
-                                    <td style={{ textAlign: 'right', color: 'var(--orange)', fontWeight: 700 }}>{l.cantidadDanada}</td>
-                                    <td><span className={`badge badge-${estadoBadge(l.estado)}`}>{l.estado}</span></td>
-                                    <td style={{ textAlign: 'center' }}>
-                                      {l.estado !== 'COMPLETO' && (
-                                        <button 
-                                          className="btn btn-primary btn-sm" 
-                                          onClick={() => {
-                                            setProcessLineId(l.id);
-                                            setProcessForm({
-                                              ...processForm,
-                                              cantidadConforme: (l.cantidadEsperada || 0) - (l.cantidadRecibida || 0) - (l.cantidadDanada || 0),
-                                              cantidadNoConforme: 0
-                                            });
-                                          }}
-                                        >
-                                          Ingresar Mercancía
-                                        </button>
-                                      )}
-                                    </td>
-                                  </tr>
-
-                                  {/* FORMULARIO DE INGRESO DUAL INLINE */}
-                                  {processLineId === l.id && (
-                                    <tr>
-                                      <td colSpan={7} style={{ padding: 16, background: 'rgba(37,99,235,0.04)', borderTop: '1px solid var(--border)' }}>
-                                        <form onSubmit={(e) => handleProcessLine(e, r.id, l.id)}>
-                                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                                            {/* ZONA CONFORME */}
-                                            <div style={{ border: '1px solid rgba(16, 185, 129, 0.3)', padding: 14, borderRadius: 8, background: 'var(--bg-card)' }}>
-                                              <h5 style={{ margin: '0 0 10px', color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                <CheckCircle2 size={16} /> Zona Conforme (Liberado)
-                                              </h5>
-                                              <div className="form-group">
-                                                <label className="form-label">Cantidad Conforme</label>
-                                                <input 
-                                                  type="number" 
-                                                  className="form-input" 
-                                                  min="0" 
-                                                  value={processForm.cantidadConforme} 
-                                                  onChange={e => setProcessForm({ ...processForm, cantidadConforme: parseInt(e.target.value) || 0 })} 
-                                                />
-                                              </div>
-                                              <div className="form-group" style={{ marginBottom: 0 }}>
-                                                <label className="form-label">Ubicación Física</label>
-                                                <select 
-                                                  className="form-select form-select-full" 
-                                                  value={processForm.ubicacionConformeId} 
-                                                  onChange={e => setProcessForm({ ...processForm, ubicacionConformeId: e.target.value })}
-                                                >
-                                                  <option value="">Seleccionar ubicación libre...</option>
-                                                  {getSuggestedLocations(l.sku, true).map(loc => (
-                                                    <option key={loc.id} value={loc.id}>{loc.codigo} (Capacidad: {loc.capacidadUnits} uds)</option>
-                                                  ))}
-                                                </select>
-                                              </div>
-                                            </div>
-
-                                            {/* ZONA NO CONFORME */}
-                                            <div style={{ border: '1px solid rgba(245, 158, 11, 0.3)', padding: 14, borderRadius: 8, background: 'var(--bg-card)' }}>
-                                              <h5 style={{ margin: '0 0 10px', color: 'var(--orange)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                <AlertTriangle size={16} /> Zona No Conforme (Cuarentena / Dañado)
-                                              </h5>
-                                              <div className="form-group">
-                                                <label className="form-label">Cantidad No Conforme</label>
-                                                <input 
-                                                  type="number" 
-                                                  className="form-input" 
-                                                  min="0" 
-                                                  value={processForm.cantidadNoConforme} 
-                                                  onChange={e => setProcessForm({ ...processForm, cantidadNoConforme: parseInt(e.target.value) || 0 })} 
-                                                />
-                                              </div>
-                                              <div className="form-group" style={{ marginBottom: 0 }}>
-                                                <label className="form-label">Ubicación Física Cuarentena</label>
-                                                <select 
-                                                  className="form-select form-select-full" 
-                                                  value={processForm.ubicacionNoConformeId} 
-                                                  onChange={e => setProcessForm({ ...processForm, ubicacionNoConformeId: e.target.value })}
-                                                >
-                                                  <option value="">Seleccionar ubicación libre...</option>
-                                                  {getSuggestedLocations(l.sku, false).map(loc => (
-                                                    <option key={loc.id} value={loc.id}>{loc.codigo} (Capacidad: {loc.capacidadUnits} uds)</option>
-                                                  ))}
-                                                </select>
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          {/* METADATOS COMUNES */}
-                                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginTop: 14 }}>
-                                            <div className="form-group">
-                                              <label className="form-label">Lote (Opcional)</label>
-                                              <input 
-                                                className="form-input" 
-                                                placeholder="Ej. LOT-2026-A"
-                                                value={processForm.lote} 
-                                                onChange={e => setProcessForm({ ...processForm, lote: e.target.value })} 
-                                              />
-                                            </div>
-                                            <div className="form-group">
-                                              <label className="form-label">Fecha de Vencimiento</label>
-                                              <input 
-                                                type="date" 
-                                                className="form-input" 
-                                                value={processForm.fechaVencimiento} 
-                                                onChange={e => setProcessForm({ ...processForm, fechaVencimiento: e.target.value })} 
-                                              />
-                                            </div>
-                                            <div className="form-group">
-                                              <label className="form-label">Unidad de Manejo (HU)</label>
-                                              <select 
-                                                className="form-select form-select-full" 
-                                                value={processForm.tipoHu} 
-                                                onChange={e => setProcessForm({ ...processForm, tipoHu: e.target.value })}
-                                              >
-                                                <option value="CAJA">Caja</option>
-                                                <option value="PALLET">Pallet Completo</option>
-                                                <option value="BULTO">Bulto / Paquete</option>
-                                              </select>
-                                            </div>
-                                          </div>
-
-                                          {formMsg.text && (
-                                            <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginTop: 8 }}>
-                                              {formMsg.text}
-                                            </div>
-                                          )}
-
-                                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
-                                            <button type="button" className="btn btn-ghost" onClick={() => setProcessLineId(null)}>Cancelar</button>
-                                            <button type="submit" className="btn btn-primary" disabled={submitting}>
-                                              {submitting ? 'Registrando ingreso...' : 'Confirmar Ingreso a Almacén'}
-                                            </button>
-                                          </div>
-                                        </form>
-                                      </td>
-                                    </tr>
-                                  )}
-                                </React.Fragment>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                return (
+                  <React.Fragment key={r.id}>
+                    <tr 
+                      style={{ cursor: 'pointer', background: expanded === r.id ? 'var(--bg-secondary)' : '' }} 
+                      onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                    >
+                      <td style={{ fontWeight: 700, color: 'var(--primary)' }}>{r.codigo}</td>
+                      <td>{new Date(r.fechaRecepcion).toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+                      <td><span className="badge badge-info">{r.cliente?.nombreComercial}</span></td>
+                      <td>
+                        {r.ocReferencia ? (
+                          <span style={{ fontWeight: 600, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <FileText size={13} style={{ color: 'var(--text-tertiary)' }} />
+                            {r.ocReferencia}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                        )}
                       </td>
+                      <td>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>
+                          {r.lineaTransporte || 'Sin transporte'} {r.placa ? `(${r.placa})` : ''}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{r.nombreChofer || '—'}</div>
+                      </td>
+                      <td style={{ fontWeight: 600 }}>{r.lineas?.length || 0}</td>
+                      <td><span className={`badge badge-${estadoBadge(r.estado)}`}>{r.estado.replace('_', ' ')}</span></td>
+                      <td style={{ textAlign: 'right' }}>{expanded === r.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</td>
                     </tr>
-                  )}
-                </React.Fragment>
-              ))
+
+                    {/* VISTA EXPANDIDA DEL PREVIO */}
+                    {expanded === r.id && (
+                      <tr>
+                        <td colSpan={8} style={{ padding: 0 }}>
+                          <div style={{ padding: 20, background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                              <div>
+                                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Detalle de Líneas de Recepción ({r.codigo})</h4>
+                                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                                  Origen: <strong>{r.origen || 'Nacional'}</strong> | Archivo Previo: <strong>{r.archivoPrevioUrl || 'N/A'}</strong>
+                                  {r.notas && ` | Notas: ${r.notas}`}
+                                </span>
+                              </div>
+                              <span className={`badge badge-${estadoBadge(r.estado)}`}>{r.estado}</span>
+                            </div>
+
+                            <table className="data-table" style={{ background: 'var(--bg-card)', borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+                              <thead>
+                                <tr>
+                                  <th>SKU / PRODUCTO</th>
+                                  <th>EAN / BARRAS</th>
+                                  <th style={{ textAlign: 'right' }}>ESPERADO</th>
+                                  <th style={{ textAlign: 'right', color: 'var(--emerald)' }}>CONFORME</th>
+                                  <th style={{ textAlign: 'right', color: 'var(--orange)' }}>NO CONF.</th>
+                                  <th>ESTADO</th>
+                                  <th style={{ textAlign: 'center' }}>ACCIÓN</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {r.lineas.map((l: any) => {
+                                  const skuObj = skus.find(s => s.id === l.skuId) || l.sku;
+
+                                  return (
+                                    <React.Fragment key={l.id}>
+                                      <tr>
+                                        <td>
+                                          <div style={{ fontWeight: 600 }}>{l.sku?.codigo}</div>
+                                          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{l.sku?.descripcion}</div>
+                                        </td>
+                                        <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                                          {l.sku?.codigoBarras || skuObj?.codigoBarras || <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                        </td>
+                                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{l.cantidadEsperada}</td>
+                                        <td style={{ textAlign: 'right', color: 'var(--emerald)', fontWeight: 700 }}>{l.cantidadRecibida}</td>
+                                        <td style={{ textAlign: 'right', color: 'var(--orange)', fontWeight: 700 }}>{l.cantidadDanada}</td>
+                                        <td><span className={`badge badge-${estadoBadge(l.estado)}`}>{l.estado}</span></td>
+                                        <td style={{ textAlign: 'center' }}>
+                                          {l.estado !== 'COMPLETO' && (
+                                            <button 
+                                              className="btn btn-primary btn-sm" 
+                                              onClick={() => {
+                                                setProcessLineId(l.id);
+                                                const rem = Math.max(0, (l.cantidadEsperada || 0) - (l.cantidadRecibida || 0) - (l.cantidadDanada || 0));
+                                                setProcessForm({
+                                                  cantidadConforme: rem,
+                                                  cantidadNoConforme: 0,
+                                                  ubicacionConformeId: '',
+                                                  ubicacionNoConformeId: '',
+                                                  lote: '',
+                                                  fechaVencimiento: '',
+                                                  tipoHu: 'CAJA'
+                                                });
+                                              }}
+                                            >
+                                              Ingresar Mercancía
+                                            </button>
+                                          )}
+                                        </td>
+                                      </tr>
+
+                                      {/* FORMULARIO DE INGRESO DUAL INLINE CON ASIGNACIÓN INTELIGENTE */}
+                                      {processLineId === l.id && (
+                                        <tr>
+                                          <td colSpan={7} style={{ padding: 18, background: 'rgba(37,99,235,0.04)', borderTop: '1px solid var(--border)' }}>
+                                            <form onSubmit={(e) => handleProcessLine(e, r.id, l.id)}>
+                                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+                                                
+                                                {/* ZONA CONFORME CON SMART LOCATION SELECT */}
+                                                <div style={{ border: '1px solid rgba(16, 185, 129, 0.3)', padding: 16, borderRadius: 10, background: 'var(--bg-card)' }}>
+                                                  <h5 style={{ margin: '0 0 12px', color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <CheckCircle2 size={16} /> Zona Conforme (Liberado)
+                                                  </h5>
+                                                  <div className="form-group">
+                                                    <label className="form-label">Cantidad Conforme</label>
+                                                    <input 
+                                                      type="number" 
+                                                      className="form-input" 
+                                                      min="0" 
+                                                      value={processForm.cantidadConforme} 
+                                                      onChange={e => setProcessForm({ ...processForm, cantidadConforme: parseInt(e.target.value) || 0 })} 
+                                                    />
+                                                  </div>
+                                                  <div className="form-group" style={{ marginBottom: 0 }}>
+                                                    <LocationSelect
+                                                      label="Ubicación Física"
+                                                      locations={locations}
+                                                      value={processForm.ubicacionConformeId}
+                                                      onChange={(locId) => setProcessForm({ ...processForm, ubicacionConformeId: locId })}
+                                                      sku={skuObj}
+                                                      client={clientObj}
+                                                      isConforme={true}
+                                                      quantity={processForm.cantidadConforme}
+                                                      placeholder="Buscar o elegir ubicación sugerida..."
+                                                    />
+                                                  </div>
+                                                </div>
+
+                                                {/* ZONA NO CONFORME CON SMART LOCATION SELECT */}
+                                                <div style={{ border: '1px solid rgba(245, 158, 11, 0.3)', padding: 16, borderRadius: 10, background: 'var(--bg-card)' }}>
+                                                  <h5 style={{ margin: '0 0 12px', color: 'var(--orange)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <AlertTriangle size={16} /> Zona No Conforme (Cuarentena / Dañado)
+                                                  </h5>
+                                                  <div className="form-group">
+                                                    <label className="form-label">Cantidad No Conforme</label>
+                                                    <input 
+                                                      type="number" 
+                                                      className="form-input" 
+                                                      min="0" 
+                                                      value={processForm.cantidadNoConforme} 
+                                                      onChange={e => setProcessForm({ ...processForm, cantidadNoConforme: parseInt(e.target.value) || 0 })} 
+                                                    />
+                                                  </div>
+                                                  <div className="form-group" style={{ marginBottom: 0 }}>
+                                                    <LocationSelect
+                                                      label="Ubicación Física Cuarentena"
+                                                      locations={locations}
+                                                      value={processForm.ubicacionNoConformeId}
+                                                      onChange={(locId) => setProcessForm({ ...processForm, ubicacionNoConformeId: locId })}
+                                                      sku={skuObj}
+                                                      client={clientObj}
+                                                      isConforme={false}
+                                                      quantity={processForm.cantidadNoConforme}
+                                                      placeholder="Buscar o elegir ubicación de cuarentena..."
+                                                    />
+                                                  </div>
+                                                </div>
+                                              </div>
+
+                                              {/* METADATOS COMUNES */}
+                                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginTop: 14 }}>
+                                                <div className="form-group">
+                                                  <label className="form-label">Lote (Opcional)</label>
+                                                  <input 
+                                                    className="form-input" 
+                                                    placeholder="Ej. LOT-2026-A"
+                                                    value={processForm.lote} 
+                                                    onChange={e => setProcessForm({ ...processForm, lote: e.target.value })} 
+                                                  />
+                                                </div>
+                                                <div className="form-group">
+                                                  <label className="form-label">Fecha de Vencimiento</label>
+                                                  <input 
+                                                    type="date" 
+                                                    className="form-input" 
+                                                    value={processForm.fechaVencimiento} 
+                                                    onChange={e => setProcessForm({ ...processForm, fechaVencimiento: e.target.value })} 
+                                                  />
+                                                </div>
+                                                <div className="form-group">
+                                                  <label className="form-label">Unidad de Manejo (HU)</label>
+                                                  <select 
+                                                    className="form-select form-select-full" 
+                                                    value={processForm.tipoHu} 
+                                                    onChange={e => setProcessForm({ ...processForm, tipoHu: e.target.value })}
+                                                  >
+                                                    <option value="CAJA">Caja</option>
+                                                    <option value="PALLET">Pallet Completo</option>
+                                                    <option value="BULTO">Bulto / Paquete</option>
+                                                  </select>
+                                                </div>
+                                              </div>
+
+                                              {formMsg.text && (
+                                                <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginTop: 8 }}>
+                                                  {formMsg.text}
+                                                </div>
+                                              )}
+
+                                              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+                                                <button type="button" className="btn btn-ghost" onClick={() => setProcessLineId(null)}>Cancelar</button>
+                                                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                                  {submitting ? 'Registrando ingreso...' : 'Confirmar Ingreso a Almacén'}
+                                                </button>
+                                              </div>
+                                            </form>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })
             )}
           </tbody>
         </table>
