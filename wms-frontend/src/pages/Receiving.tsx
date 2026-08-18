@@ -4,10 +4,12 @@ import { API } from '../config/api';
 import {
   ClipboardList, Search, RefreshCw, Check, Clock, AlertCircle,
   ChevronDown, ChevronUp, Plus, X, Package, MapPin, Truck, UploadCloud,
-  FileSpreadsheet, Download, CheckCircle2, AlertTriangle, FileText, Sparkles
+  FileSpreadsheet, Download, CheckCircle2, AlertTriangle, FileText, Sparkles,
+  Printer, QrCode, Scan, ArrowRight, Tag, Box
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationSelect } from '../components/LocationSelect';
+import { ReceiptPrintModal } from '../components/ReceiptPrintModal';
 
 interface PrevioForm {
   clienteId: string;
@@ -73,6 +75,15 @@ export function Receiving() {
   const [excelAnalysis, setExcelAnalysis] = useState<ExcelAnalysis | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Print Modal State
+  const [printModalReceipt, setPrintModalReceipt] = useState<any | null>(null);
+  const [generatingBarcodes, setGeneratingBarcodes] = useState<string | null>(null);
+
+  // Handheld Scanner State
+  const [scannerQuery, setScannerQuery] = useState('');
+  const [scannerMsg, setScannerMsg] = useState({ type: '', text: '' });
+  const scannerInputRef = useRef<HTMLInputElement>(null);
+
   const [processLineId, setProcessLineId] = useState<string | null>(null);
   const [processForm, setProcessForm] = useState<ProcessLineForm>({
     cantidadConforme: 0, cantidadNoConforme: 0,
@@ -118,6 +129,36 @@ export function Receiving() {
     setLoading(false);
   }
 
+  // --- GENERAR CÓDIGOS DE BARRAS / EANs PARA UN PREVIO ---
+  async function handleGenerateBarcodes(receiptId: string) {
+    setGeneratingBarcodes(receiptId);
+    setFormMsg({ type: '', text: '' });
+    try {
+      const res = await fetch(`${API}/receipts/${receiptId}/generate-barcodes`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ forceRegenerate: false })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.message || 'Error al generar códigos de barras');
+      }
+
+      const data = await res.json();
+      setFormMsg({
+        type: 'success',
+        text: `✅ ${data.message || 'Códigos EAN-13 generados y vinculados correctamente.'}`
+      });
+
+      // Recargar datos para mostrar los nuevos EANs en la tabla
+      await loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setGeneratingBarcodes(null);
+  }
+
   // --- PARSEADOR INTELIGENTE DE EXCEL ---
   function normalizeKey(key: string): string {
     return key.toLowerCase().trim().replace(/[\s_-]+/g, '');
@@ -146,9 +187,7 @@ export function Receiving() {
         return;
       }
 
-      // Filtrar SKUs del cliente seleccionado
       const clientSkus = skus.filter(s => !clienteId || s.clienteId === clienteId);
-      
       let detectedFactura = '';
       const parsedLines: ParsedLine[] = [];
       const unmatchedSet = new Set<string>();
@@ -163,7 +202,6 @@ export function Receiving() {
           const normKey = normalizeKey(k);
           const strVal = String(v).trim();
 
-          // 1. Factura / OC
           if (
             normKey === 'factura' || normKey === 'nofactura' || normKey === 'facturano' ||
             normKey === 'oc' || normKey === 'ocreferencia' || normKey === 'referencia' ||
@@ -171,17 +209,13 @@ export function Receiving() {
           ) {
             rowFactura = strVal;
             if (!detectedFactura && strVal) detectedFactura = strVal;
-          }
-          // 2. EAN / SKU / Código
-          else if (
+          } else if (
             normKey === 'ean' || normKey === 'ean13' || normKey === 'upc' ||
             normKey === 'codigo' || normKey === 'codigobarras' || normKey === 'sku' ||
             normKey === 'codigoproducto' || normKey === 'articulo' || normKey === 'clave'
           ) {
             rowCode = strVal;
-          }
-          // 3. Cantidad a recibir
-          else if (
+          } else if (
             normKey === 'cantidadarecibir' || normKey === 'cantidadaingresar' ||
             normKey === 'cantidadesperada' || normKey === 'cantidad' ||
             normKey === 'cant' || normKey === 'qty' || normKey === 'piezas' || normKey === 'unidades'
@@ -262,23 +296,10 @@ export function Receiving() {
   // --- DESCARGAR PLANTILLA EXCEL ---
   function handleDownloadTemplate() {
     const sampleRows = [
-      {
-        'factura': 'FAC-2026-001',
-        'Ean': '7501055310885',
-        'Cantidad a recibir': 150
-      },
-      {
-        'factura': 'FAC-2026-001',
-        'Ean': '7501055310892',
-        'Cantidad a recibir': 200
-      },
-      {
-        'factura': 'FAC-2026-001',
-        'Ean': '7501055310908',
-        'Cantidad a recibir': 80
-      }
+      { 'factura': 'FAC-2026-001', 'Ean': '7501055310885', 'Cantidad a recibir': 150 },
+      { 'factura': 'FAC-2026-001', 'Ean': '7501055310892', 'Cantidad a recibir': 200 },
+      { 'factura': 'FAC-2026-001', 'Ean': '7501055310908', 'Cantidad a recibir': 80 }
     ];
-
     const ws = XLSX.utils.json_to_sheet(sampleRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Previo de Recibo');
@@ -309,7 +330,7 @@ export function Receiving() {
     if (validLines.length === 0) {
       setFormMsg({ 
         type: 'error', 
-        text: 'No se encontraron SKUs válidos del depositante en el archivo. Verifica que los códigos o EANs coincidan con el catálogo.' 
+        text: 'No se encontraron SKUs válidos del depositante en el archivo.' 
       });
       return;
     }
@@ -412,6 +433,37 @@ export function Receiving() {
     setSubmitting(false);
   }
 
+  // --- ESCANEO CON HANDHELD ZEBRA TC22 ---
+  function handleHandheldScan(e: React.FormEvent, receipt: any) {
+    e.preventDefault();
+    if (!scannerQuery.trim()) return;
+
+    const term = scannerQuery.trim().toLowerCase();
+    const matchedLine = receipt.lineas.find((l: any) => {
+      const skuCode = l.sku?.codigo?.toLowerCase();
+      const skuEan = l.sku?.codigoBarras?.toLowerCase();
+      return skuCode === term || skuEan === term;
+    });
+
+    if (matchedLine) {
+      setScannerMsg({ type: 'success', text: `✅ Producto escaneado: ${matchedLine.sku?.codigo} — ${matchedLine.sku?.descripcion}` });
+      setProcessLineId(matchedLine.id);
+      const rem = Math.max(0, (matchedLine.cantidadEsperada || 0) - (matchedLine.cantidadRecibida || 0) - (matchedLine.cantidadDanada || 0));
+      setProcessForm({
+        cantidadConforme: rem,
+        cantidadNoConforme: 0,
+        ubicacionConformeId: '',
+        ubicacionNoConformeId: '',
+        lote: '',
+        fechaVencimiento: '',
+        tipoHu: 'CAJA'
+      });
+      setScannerQuery('');
+    } else {
+      setScannerMsg({ type: 'error', text: `⚠️ Código "${scannerQuery}" no encontrado en este previo de recibo.` });
+    }
+  }
+
   // Helpers
   const filtered = receipts.filter(r => {
     const term = search.toLowerCase();
@@ -432,7 +484,7 @@ export function Receiving() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Previos de Recibo (Recepción)</h1>
-          <p className="page-subtitle">Cola de recepciones pendientes y procesadas con soporte para validación de Excel, algoritmo putaway y calidad dual</p>
+          <p className="page-subtitle">Cola de recepciones pendientes con soporte para generación de EANs, impresión térmica de etiquetas y escaneo con Handheld</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }}>
@@ -441,6 +493,22 @@ export function Receiving() {
           <button className="btn btn-secondary" onClick={loadData}><RefreshCw size={16} /> Actualizar</button>
         </div>
       </div>
+
+      {/* --- NOTIFICACIÓN GLOBAL --- */}
+      {formMsg.text && (
+        <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginBottom: 16 }}>
+          {formMsg.text}
+        </div>
+      )}
+
+      {/* --- MODAL DE IMPRESIÓN DE ETIQUETAS --- */}
+      {printModalReceipt && (
+        <ReceiptPrintModal
+          receipt={printModalReceipt}
+          token={token || ''}
+          onClose={() => setPrintModalReceipt(null)}
+        />
+      )}
 
       {/* --- MODAL CARGAR PREVIO --- */}
       {showNewPrevio && (
@@ -655,12 +723,6 @@ export function Receiving() {
                 />
               </div>
 
-              {formMsg.text && (
-                <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginTop: 10 }}>
-                  {formMsg.text}
-                </div>
-              )}
-
               <div className="modal-footer" style={{ marginTop: 16 }}>
                 <button type="button" className="btn btn-ghost" onClick={() => setShowNewPrevio(false)}>Cancelar</button>
                 <button 
@@ -736,7 +798,7 @@ export function Receiving() {
               <th>TRANSPORTE / CHOFER</th>
               <th>LÍNEAS</th>
               <th>ESTADO</th>
-              <th></th>
+              <th style={{ textAlign: 'right' }}>ACCIONES</th>
             </tr>
           </thead>
           <tbody>
@@ -750,6 +812,7 @@ export function Receiving() {
             ) : (
               filtered.map(r => {
                 const clientObj = clients.find(c => c.id === r.clienteId) || r.cliente;
+                const missingBarcodesCount = r.lineas?.filter((l: any) => !l.sku?.codigoBarras).length || 0;
 
                 return (
                   <React.Fragment key={r.id}>
@@ -778,7 +841,44 @@ export function Receiving() {
                       </td>
                       <td style={{ fontWeight: 600 }}>{r.lineas?.length || 0}</td>
                       <td><span className={`badge badge-${estadoBadge(r.estado)}`}>{r.estado.replace('_', ' ')}</span></td>
-                      <td style={{ textAlign: 'right' }}>{expanded === r.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</td>
+                      <td style={{ textAlign: 'right' }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                          
+                          {/* BOTÓN IMPRIMIR ETIQUETAS */}
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            title="Imprimir etiquetas térmicas para este previo"
+                            onClick={() => setPrintModalReceipt(r)}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px' }}
+                          >
+                            <Printer size={14} /> Imprimir Etiquetas
+                          </button>
+
+                          {/* BOTÓN GENERAR EANS SI FALTAN */}
+                          {missingBarcodesCount > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              title={`Generar EAN-13 para ${missingBarcodesCount} productos sin código`}
+                              disabled={generatingBarcodes === r.id}
+                              onClick={() => handleGenerateBarcodes(r.id)}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--primary)' }}
+                            >
+                              <Sparkles size={14} />
+                              {generatingBarcodes === r.id ? 'Generando...' : 'Generar EANs'}
+                            </button>
+                          )}
+
+                          <button 
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                          >
+                            {expanded === r.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </button>
+                        </div>
+                      </td>
                     </tr>
 
                     {/* VISTA EXPANDIDA DEL PREVIO */}
@@ -786,68 +886,186 @@ export function Receiving() {
                       <tr>
                         <td colSpan={8} style={{ padding: 0 }}>
                           <div style={{ padding: 20, background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                            
+                            {/* HEADER DEL DETALLE CON ACCIONES */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
                               <div>
-                                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Detalle de Líneas de Recepción ({r.codigo})</h4>
+                                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <Package size={18} style={{ color: 'var(--primary)' }} />
+                                  Detalle de Líneas de Recepción ({r.codigo})
+                                </h4>
                                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                                  Origen: <strong>{r.origen || 'Nacional'}</strong> | Archivo Previo: <strong>{r.archivoPrevioUrl || 'N/A'}</strong>
+                                  Origen: <strong>{r.origen || 'Nacional'}</strong> | Archivo: <strong>{r.archivoPrevioUrl || 'N/A'}</strong>
                                   {r.notas && ` | Notas: ${r.notas}`}
                                 </span>
                               </div>
-                              <span className={`badge badge-${estadoBadge(r.estado)}`}>{r.estado}</span>
+
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                {/* GENERAR EANs */}
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => handleGenerateBarcodes(r.id)}
+                                  disabled={generatingBarcodes === r.id}
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                                >
+                                  <QrCode size={14} style={{ color: 'var(--primary)' }} />
+                                  {generatingBarcodes === r.id ? 'Generando EANs...' : 'Generar Códigos EAN-13'}
+                                </button>
+
+                                {/* IMPRIMIR ETIQUETAS */}
+                                <button
+                                  type="button"
+                                  className="btn btn-primary btn-sm"
+                                  onClick={() => setPrintModalReceipt(r)}
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                                >
+                                  <Printer size={14} />
+                                  Imprimir Etiquetas Térmicas
+                                </button>
+                              </div>
                             </div>
 
+                            {/* BARRA DE ESCANEO RÁPIDO CON HANDHELD ZEBRA */}
+                            <div style={{
+                              background: 'var(--bg-card)',
+                              padding: '12px 16px',
+                              borderRadius: 8,
+                              border: '1px solid var(--border)',
+                              marginBottom: 16,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 16,
+                              flexWrap: 'wrap'
+                            }}>
+                              <form onSubmit={(e) => handleHandheldScan(e, r)} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 280 }}>
+                                <div style={{
+                                  width: 32, height: 32, borderRadius: 6,
+                                  background: 'rgba(37,99,235,0.1)', color: 'var(--primary)',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
+                                }}>
+                                  <Scan size={18} />
+                                </div>
+                                <input
+                                  ref={scannerInputRef}
+                                  type="text"
+                                  className="form-input"
+                                  placeholder="Escanear código de barras o SKU con Handheld Zebra para ingreso rápido..."
+                                  value={scannerQuery}
+                                  onChange={e => setScannerQuery(e.target.value)}
+                                  style={{ flex: 1, fontSize: 13, height: 36 }}
+                                />
+                                <button type="submit" className="btn btn-secondary btn-sm" style={{ height: 36 }}>
+                                  Escanear <ArrowRight size={14} />
+                                </button>
+                              </form>
+
+                              {scannerMsg.text && (
+                                <div style={{
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  color: scannerMsg.type === 'error' ? 'var(--orange)' : 'var(--emerald)',
+                                  padding: '4px 10px',
+                                  background: scannerMsg.type === 'error' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                                  borderRadius: 6
+                                }}>
+                                  {scannerMsg.text}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* TABLA DE PRODUCTOS */}
                             <table className="data-table" style={{ background: 'var(--bg-card)', borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
                               <thead>
                                 <tr>
                                   <th>SKU / PRODUCTO</th>
-                                  <th>EAN / BARRAS</th>
+                                  <th>EAN / CÓDIGO BARRAS</th>
                                   <th style={{ textAlign: 'right' }}>ESPERADO</th>
                                   <th style={{ textAlign: 'right', color: 'var(--emerald)' }}>CONFORME</th>
                                   <th style={{ textAlign: 'right', color: 'var(--orange)' }}>NO CONF.</th>
                                   <th>ESTADO</th>
-                                  <th style={{ textAlign: 'center' }}>ACCIÓN</th>
+                                  <th style={{ textAlign: 'center' }}>ACCIONES</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {r.lineas.map((l: any) => {
                                   const skuObj = skus.find(s => s.id === l.skuId) || l.sku;
+                                  const barcode = l.sku?.codigoBarras || skuObj?.codigoBarras;
 
                                   return (
                                     <React.Fragment key={l.id}>
                                       <tr>
                                         <td>
                                           <div style={{ fontWeight: 600 }}>{l.sku?.codigo}</div>
-                                          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{l.sku?.descripcion}</div>
+                                          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                                            {l.sku?.descripcion}
+                                            {l.sku?.talla && ` • Talla: ${l.sku.talla}`}
+                                            {l.sku?.color && ` • ${l.sku.color}`}
+                                          </div>
                                         </td>
-                                        <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                                          {l.sku?.codigoBarras || skuObj?.codigoBarras || <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                        <td>
+                                          {barcode ? (
+                                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(37,99,235,0.06)', padding: '2px 8px', borderRadius: 4 }}>
+                                              <QrCode size={13} style={{ color: 'var(--primary)' }} />
+                                              <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 700, color: 'var(--primary)' }}>
+                                                {barcode}
+                                              </span>
+                                            </div>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              className="btn btn-ghost btn-sm"
+                                              onClick={() => handleGenerateBarcodes(r.id)}
+                                              style={{ fontSize: 11, color: 'var(--orange)', padding: '2px 6px' }}
+                                              title="Click para generar EAN-13"
+                                            >
+                                              ⚠️ Sin EAN (Generar)
+                                            </button>
+                                          )}
                                         </td>
                                         <td style={{ textAlign: 'right', fontWeight: 700 }}>{l.cantidadEsperada}</td>
                                         <td style={{ textAlign: 'right', color: 'var(--emerald)', fontWeight: 700 }}>{l.cantidadRecibida}</td>
                                         <td style={{ textAlign: 'right', color: 'var(--orange)', fontWeight: 700 }}>{l.cantidadDanada}</td>
                                         <td><span className={`badge badge-${estadoBadge(l.estado)}`}>{l.estado}</span></td>
                                         <td style={{ textAlign: 'center' }}>
-                                          {l.estado !== 'COMPLETO' && (
-                                            <button 
-                                              className="btn btn-primary btn-sm" 
+                                          <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
+                                            {l.estado !== 'COMPLETO' && (
+                                              <button 
+                                                className="btn btn-primary btn-sm" 
+                                                onClick={() => {
+                                                  setProcessLineId(l.id);
+                                                  const rem = Math.max(0, (l.cantidadEsperada || 0) - (l.cantidadRecibida || 0) - (l.cantidadDanada || 0));
+                                                  setProcessForm({
+                                                    cantidadConforme: rem,
+                                                    cantidadNoConforme: 0,
+                                                    ubicacionConformeId: '',
+                                                    ubicacionNoConformeId: '',
+                                                    lote: '',
+                                                    fechaVencimiento: '',
+                                                    tipoHu: 'CAJA'
+                                                  });
+                                                }}
+                                              >
+                                                Ingresar Mercancía
+                                              </button>
+                                            )}
+
+                                            <button
+                                              type="button"
+                                              className="btn btn-secondary btn-sm"
+                                              title="Imprimir etiquetas para esta línea"
                                               onClick={() => {
-                                                setProcessLineId(l.id);
-                                                const rem = Math.max(0, (l.cantidadEsperada || 0) - (l.cantidadRecibida || 0) - (l.cantidadDanada || 0));
-                                                setProcessForm({
-                                                  cantidadConforme: rem,
-                                                  cantidadNoConforme: 0,
-                                                  ubicacionConformeId: '',
-                                                  ubicacionNoConformeId: '',
-                                                  lote: '',
-                                                  fechaVencimiento: '',
-                                                  tipoHu: 'CAJA'
+                                                setPrintModalReceipt({
+                                                  ...r,
+                                                  lineas: [l]
                                                 });
                                               }}
+                                              style={{ padding: '4px 8px' }}
                                             >
-                                              Ingresar Mercancía
+                                              <Printer size={13} />
                                             </button>
-                                          )}
+                                          </div>
                                         </td>
                                       </tr>
 
@@ -952,12 +1170,6 @@ export function Receiving() {
                                                   </select>
                                                 </div>
                                               </div>
-
-                                              {formMsg.text && (
-                                                <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginTop: 8 }}>
-                                                  {formMsg.text}
-                                                </div>
-                                              )}
 
                                               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
                                                 <button type="button" className="btn btn-ghost" onClick={() => setProcessLineId(null)}>Cancelar</button>

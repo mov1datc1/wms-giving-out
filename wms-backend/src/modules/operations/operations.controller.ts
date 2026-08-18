@@ -22,9 +22,28 @@ export class OperationsController {
     return this.prisma.receipt.findMany({
       where,
       include: {
-        cliente: { select: { nombreComercial: true } },
-        proveedor: { select: { nombre: true } },
-        lineas: { include: { sku: { select: { codigo: true, descripcion: true, categoria: true, talla: true, color: true } } } },
+        cliente: { select: { id: true, codigo: true, nombreComercial: true, giro: true, reglaInventario: true, zonaAsignadaId: true } },
+        proveedor: { select: { id: true, nombre: true } },
+        lineas: {
+          include: {
+            sku: {
+              select: {
+                id: true,
+                codigo: true,
+                descripcion: true,
+                categoria: true,
+                subcategoria: true,
+                talla: true,
+                color: true,
+                codigoBarras: true,
+                uomBase: true,
+                capacidadEmpaque: true,
+                descripcionEmpaque: true,
+                marca: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { fechaRecepcion: 'desc' },
     });
@@ -44,6 +63,70 @@ export class OperationsController {
 
     await this.audit(data.recibidoPor || 'Sistema', 'CREAR_RECEPCION', 'Receipt', receipt.id, `${codigo}: ${lineas?.length || 0} líneas`);
     return receipt;
+  }
+
+  @Post('receipts/:id/generate-barcodes')
+  @ApiOperation({ summary: 'Generar códigos de barras EAN-13 para los SKUs del previo' })
+  async generateReceiptBarcodes(@Param('id') receiptId: string, @Body() body?: { forceRegenerate?: boolean }) {
+    const receipt = await this.prisma.receipt.findUnique({
+      where: { id: receiptId },
+      include: {
+        lineas: { include: { sku: true } },
+      },
+    });
+    if (!receipt) throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
+
+    const updatedSkus: any[] = [];
+    const generatedCodes: { skuId: string; codigo: string; codigoBarras: string }[] = [];
+
+    for (const linea of receipt.lineas) {
+      if (!linea.sku.codigoBarras || body?.forceRegenerate) {
+        // Algoritmo EAN-13 GS1 México (750) + 8 dígitos + checksum
+        const randomNum = Math.floor(10000000 + Math.random() * 90000000);
+        const ean12 = `750${randomNum}1`;
+        
+        let sumEven = 0;
+        let sumOdd = 0;
+        for (let i = 0; i < 12; i++) {
+          const digit = parseInt(ean12[i]);
+          if (i % 2 === 0) sumOdd += digit;
+          else sumEven += digit;
+        }
+        const total = sumOdd + sumEven * 3;
+        const checkDigit = (10 - (total % 10)) % 10;
+        const generatedEan = `${ean12}${checkDigit}`;
+
+        const updated = await this.prisma.skuMaster.update({
+          where: { id: linea.sku.id },
+          data: { codigoBarras: generatedEan },
+        });
+
+        updatedSkus.push(updated);
+        generatedCodes.push({ skuId: linea.sku.id, codigo: linea.sku.codigo, codigoBarras: generatedEan });
+      }
+    }
+
+    await this.audit('Sistema', 'GENERAR_EAN_PREVIO', 'Receipt', receipt.id, `Generados ${updatedSkus.length} códigos de barras`);
+
+    return {
+      success: true,
+      message: `Se generaron códigos EAN-13 para ${updatedSkus.length} productos`,
+      count: updatedSkus.length,
+      generatedCodes,
+    };
+  }
+
+  @Post('print-log')
+  @ApiOperation({ summary: 'Registrar log de impresión de etiquetas' })
+  async createPrintLog(@Body() data: { usuario: string; tipoEtiqueta: string; referencia: string; motivo?: string }) {
+    return this.prisma.printLog.create({
+      data: {
+        usuario: data.usuario || 'Operador',
+        tipoEtiqueta: data.tipoEtiqueta || 'RECEPCION',
+        referencia: data.referencia,
+        motivo: data.motivo || 'Impresión de etiquetas para recepción y escaneo',
+      },
+    });
   }
 
   @Post('reception')

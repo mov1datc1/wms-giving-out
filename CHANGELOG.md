@@ -4,6 +4,30 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.2.2] — 2026-08-18
+
+### 🚀 Novedades y Características Principales (Features)
+- **Generación Automática de Códigos de Barras EAN-13 (`POST /api/receipts/:id/generate-barcodes`):**
+  - Botón rápido **"⚡ Generar Códigos EAN-13"** a nivel de previo y por línea para asignar automáticamente códigos EAN-13 (estándar GS1 México con prefijo `750` y dígito de control verificador) a todos los productos/SKUs del previo que carezcan de código de barras.
+  - Actualización inmediata en base de datos (`SkuMaster.codigoBarras`) y refresco instantáneo de la tabla sin recargar la página.
+- **Modal PRO de Impresión de Etiquetas Térmicas (`ReceiptPrintModal`):**
+  - Impresión masiva o individual de etiquetas para preparación previa a la descarga física.
+  - Modos de impresión seleccionables:
+    - **Por Pieza / SKU:** 1 etiqueta por cada unidad esperada para etiquetar prendas individuales.
+    - **Por Caja / Empaque:** Cálculo automático de etiquetas según `capacidadEmpaque`.
+    - **Por Pallet / Tarima:** Etiqueta maestra con resumen de bultos y previo.
+  - Formatos de salida configurables:
+    - **50 x 25 mm:** Etiqueta térmica para prendas de ropa, textil y retail.
+    - **100 x 50 mm (4x2"):** Etiqueta térmica estándar para cajas, bultos y tarimas.
+  - Vista previa en tiempo real renderizada mediante `JsBarcode` (SVG de alta fidelidad).
+  - Impresión directa con hojas de estilo `@media print` optimizadas para impresoras térmicas (Zebra, Brother, Epson).
+- **Escaneo Rápido con Handheld Zebra TC22:**
+  - Barra de búsqueda y escaneo directo en el detalle del previo: al escanear con la terminal Zebra TC22 un código EAN o SKU, el sistema localiza la línea, abre el formulario de ingreso dual y preselecciona la ubicación física sugerida por el motor putaway.
+- **Registro de Auditoría de Impresión (`POST /api/print-log`):**
+  - Trazabilidad de quién, cuándo y cuántas etiquetas se mandaron a imprimir por previo.
+
+---
+
 ## [1.2.1] — 2026-08-14
 
 ### 🚀 Novedades y Características Principales (Features)
