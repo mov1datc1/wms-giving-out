@@ -279,28 +279,199 @@ export class OperationsController {
     });
   }
 
+  @Get('receipts/:id/report')
+  @ApiOperation({ summary: 'Obtener reporte detallado de cierre de recepción (Hoja de Entrada ASN)' })
+  async getReceiptReport(@Param('id') receiptId: string) {
+    const receipt = await this.prisma.receipt.findUnique({
+      where: { id: receiptId },
+      include: {
+        cliente: true,
+        proveedor: true,
+        lineas: {
+          include: {
+            sku: true,
+          },
+        },
+      },
+    });
+    if (!receipt) throw new HttpException('Previo no encontrado', HttpStatus.NOT_FOUND);
+
+    let totalEsperado = 0;
+    let totalConforme = 0;
+    let totalNoConforme = 0;
+
+    const lineasReporte = receipt.lineas.map(l => {
+      const esp = l.cantidadEsperada || 0;
+      const conf = l.cantidadRecibida || 0;
+      const dan = l.cantidadDanada || 0;
+      const totalRecibido = conf + dan;
+      const variacion = totalRecibido - esp;
+
+      totalEsperado += esp;
+      totalConforme += conf;
+      totalNoConforme += dan;
+
+      return {
+        id: l.id,
+        skuId: l.skuId,
+        codigo: l.sku.codigo,
+        descripcion: l.sku.descripcion,
+        categoria: l.sku.categoria,
+        talla: l.sku.talla,
+        color: l.sku.color,
+        codigoBarras: l.sku.codigoBarras,
+        uom: l.sku.uomBase,
+        cantidadEsperada: esp,
+        cantidadConforme: conf,
+        cantidadNoConforme: dan,
+        totalRecibido,
+        variacion,
+        estadoLinea: l.estado,
+        loteAsignado: l.loteAsignado,
+        ubicacionId: l.ubicacionId,
+      };
+    });
+
+    const totalFisico = totalConforme + totalNoConforme;
+    const variacionNeta = totalFisico - totalEsperado;
+
+    return {
+      receipt,
+      resumen: {
+        totalEsperado,
+        totalConforme,
+        totalNoConforme,
+        totalFisico,
+        variacionNeta,
+        porcentajeCumplimiento: totalEsperado > 0 ? Math.round((totalConforme / totalEsperado) * 100) : 100,
+        estado: receipt.estado,
+      },
+      lineas: lineasReporte,
+    };
+  }
+
+  @Post('receipts/:id/close')
+  @ApiOperation({ summary: 'Finalizar y cerrar recepción de factura completa con reporte de cierre' })
+  async closeReceipt(@Param('id') receiptId: string, @Body() body: { usuario: string; notasCierre?: string }) {
+    const receipt = await this.prisma.receipt.findUnique({
+      where: { id: receiptId },
+      include: {
+        lineas: { include: { sku: true } },
+        cliente: true,
+      },
+    });
+    if (!receipt) throw new HttpException('Previo no encontrado', HttpStatus.NOT_FOUND);
+
+    const updated = await this.prisma.receipt.update({
+      where: { id: receiptId },
+      data: {
+        estado: 'CERRADO',
+        cerradoPor: body.usuario || 'Operador',
+        fechaCierre: new Date(),
+        notas: body.notasCierre ? `${receipt.notas ? receipt.notas + ' | ' : ''}Cierre: ${body.notasCierre}` : receipt.notas,
+      },
+      include: {
+        cliente: true,
+        proveedor: true,
+        lineas: { include: { sku: true } },
+      },
+    });
+
+    await this.audit(body.usuario || 'Operador', 'CERRAR_RECEPCION', 'Receipt', receiptId, `Recepción ${receipt.codigo} finalizada y cerrada`);
+
+    return {
+      success: true,
+      message: `Recepción ${receipt.codigo} finalizada y cerrada correctamente`,
+      receipt: updated,
+    };
+  }
+
   @Post('orders')
-  @ApiOperation({ summary: 'Crear orden de salida' })
+  @ApiOperation({ summary: 'Crear orden de salida con reserva automática de stock (Anti-Backorders)' })
   async createOrder(@Body() data: any) {
     const count = await this.prisma.salesOrder.count();
     const codigo = `PED-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
 
-    // Sanitize: only pass valid SalesOrder fields to Prisma
-    const cleanLines = (data.lineas || []).map((l: any) => ({
-      skuId: l.skuId,
-      cantidadSolicitada: l.cantidadSolicitada,
-      cantidadAsignada: l.cantidadAsignada || 0,
-      ...(l.lotId ? { lotId: l.lotId } : {}),
-      ...(l.huId ? { huId: l.huId } : {}),
-    }));
+    if (!data.clienteId) throw new HttpException('El depositante es obligatorio', HttpStatus.BAD_REQUEST);
+    if (!data.lineas || data.lineas.length === 0) throw new HttpException('La orden debe tener al menos un producto', HttpStatus.BAD_REQUEST);
 
+    // 1. Validar disponibilidad real de stock para cada SKU en el almacén especificado
+    const client = await this.prisma.client.findUnique({ where: { id: data.clienteId } });
+    if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
+
+    const cleanLines: any[] = [];
+    const reservationsToApply: { lotId: string; cantidad: number }[] = [];
+
+    for (const item of data.lineas) {
+      const sku = await this.prisma.skuMaster.findUnique({ where: { id: item.skuId } });
+      if (!sku) throw new HttpException(`Producto con ID ${item.skuId} no encontrado`, HttpStatus.BAD_REQUEST);
+
+      const requestedQty = Number(item.cantidadSolicitada) || 0;
+      if (requestedQty <= 0) throw new HttpException(`Cantidad inválida para ${sku.descripcion}`, HttpStatus.BAD_REQUEST);
+
+      // Buscar lotes disponibles
+      const lotWhere: any = {
+        skuId: item.skuId,
+        clienteId: data.clienteId,
+        estadoCalidad: 'LIBERADO',
+        cantidadDisponible: { gt: 0 },
+      };
+
+      if (data.almacenOrigenId) {
+        lotWhere.ubicacion = { almacenId: data.almacenOrigenId };
+      }
+
+      const availableLots = await this.prisma.lotInventory.findMany({
+        where: lotWhere,
+        orderBy: client.reglaInventario === 'FEFO' ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }] : [{ createdAt: 'asc' }],
+      });
+
+      // Calcular saldo libre (disponible - reservado)
+      let totalStockLibre = 0;
+      for (const lot of availableLots) {
+        totalStockLibre += Math.max(0, lot.cantidadDisponible - lot.cantidadReservada);
+      }
+
+      if (totalStockLibre < requestedQty) {
+        throw new HttpException(
+          `Stock insuficiente para "${sku.descripcion}" (${sku.codigo}). Disponible libre: ${totalStockLibre} ${sku.uomBase}, Solicitado: ${requestedQty} ${sku.uomBase}.`,
+          HttpStatus.BAD_REQUEST
+        );
+      }
+
+      // Distribuir la reserva entre los lotes
+      let remainingToReserve = requestedQty;
+      let primaryLotId: string | null = null;
+
+      for (const lot of availableLots) {
+        if (remainingToReserve <= 0) break;
+        const lotFree = Math.max(0, lot.cantidadDisponible - lot.cantidadReservada);
+        if (lotFree <= 0) continue;
+
+        const take = Math.min(remainingToReserve, lotFree);
+        reservationsToApply.push({ lotId: lot.id, cantidad: take });
+        if (!primaryLotId) primaryLotId = lot.id;
+        remainingToReserve -= take;
+      }
+
+      cleanLines.push({
+        skuId: item.skuId,
+        cantidadSolicitada: requestedQty,
+        cantidadAsignada: 0,
+        lotId: primaryLotId,
+      });
+    }
+
+    // 2. Crear la orden de salida
     const order = await this.prisma.salesOrder.create({
       data: {
         codigo,
         clienteId: data.clienteId,
         endCustomerId: data.endCustomerId || null,
+        almacenOrigenId: data.almacenOrigenId || null,
         prioridad: data.prioridad || 3,
         fechaCompromiso: data.fechaCompromiso ? new Date(data.fechaCompromiso) : null,
+        horaCompromiso: data.horaCompromiso || null,
         estado: data.estado || 'SOLICITADO',
         notas: data.notas || null,
         solicitadoPor: data.solicitadoPor || null,
@@ -309,7 +480,15 @@ export class OperationsController {
       include: { cliente: true, endCustomer: true, lineas: { include: { sku: true } } },
     });
 
-    await this.audit(data.usuario || 'Sistema', 'CREAR_ORDEN', 'SalesOrder', order.id, `${codigo}: ${cleanLines.length} líneas`);
+    // 3. Aplicar las reservas automáticas en los lotes
+    for (const res of reservationsToApply) {
+      await this.prisma.lotInventory.update({
+        where: { id: res.lotId },
+        data: { cantidadReservada: { increment: res.cantidad } },
+      });
+    }
+
+    await this.audit(data.usuario || 'Sistema', 'CREAR_ORDEN', 'SalesOrder', order.id, `${codigo}: ${cleanLines.length} líneas reservadas`);
     return order;
   }
 
@@ -351,11 +530,24 @@ export class OperationsController {
   }
 
   @Post('orders/:id/reject')
-  @ApiOperation({ summary: 'Rechazar orden de salida (3PL workflow)' })
+  @ApiOperation({ summary: 'Rechazar o cancelar orden de salida y liberar reservas (3PL workflow)' })
   async rejectOrder(@Param('id') id: string, @Body() body: { usuario: string; motivo: string; notas?: string }) {
-    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
+    const order = await this.prisma.salesOrder.findUnique({ 
+      where: { id },
+      include: { lineas: true }
+    });
     if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
-    if (!body.motivo) throw new HttpException('El motivo de rechazo es obligatorio', HttpStatus.BAD_REQUEST);
+    if (!body.motivo) throw new HttpException('El motivo de rechazo o cancelación es obligatorio', HttpStatus.BAD_REQUEST);
+
+    // Liberar inventario reservado en los lotes
+    for (const line of order.lineas) {
+      if (line.lotId && line.cantidadSolicitada > 0) {
+        await this.prisma.lotInventory.update({
+          where: { id: line.lotId },
+          data: { cantidadReservada: { decrement: line.cantidadSolicitada } },
+        }).catch(() => null);
+      }
+    }
 
     const updated = await this.prisma.salesOrder.update({
       where: { id },
@@ -367,12 +559,12 @@ export class OperationsController {
       data: { orderId: id, estado: 'RECHAZADO', aprobadoPor: body.usuario, motivo: body.motivo, notas: body.notas },
     });
 
-    await this.audit(body.usuario, 'RECHAZAR_ORDEN', 'SalesOrder', id, `Orden ${order.codigo} rechazada: ${body.motivo}`);
+    await this.audit(body.usuario, 'RECHAZAR_ORDEN', 'SalesOrder', id, `Orden ${order.codigo} rechazada y reservas liberadas: ${body.motivo}`);
     return { success: true, order: updated };
   }
 
   @Post('orders/:id/dispatch')
-  @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario y libera ubicaciones' })
+  @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario físico y reservas, liberando ubicaciones' })
   async dispatchOrder(@Param('id') id: string, @Body() data: { despachador: string; vehiculoPlaca?: string; notas?: string; tipoTransporte?: string; paqueteria?: string; numeroGuia?: string }) {
     const fullOrder = await this.prisma.salesOrder.findUnique({
       where: { id },
@@ -393,9 +585,14 @@ export class OperationsController {
         const toTake = Math.min(remaining, lot.cantidadDisponible);
         remaining -= toTake;
 
+        const reservedToDeduct = Math.min(toTake, lot.cantidadReservada);
+
         await this.prisma.lotInventory.update({
           where: { id: lot.id },
-          data: { cantidadDisponible: { decrement: toTake } },
+          data: {
+            cantidadDisponible: { decrement: toTake },
+            cantidadReservada: { decrement: reservedToDeduct },
+          },
         });
 
         if (toTake >= lot.cantidadDisponible && lot.ubicacionId) {

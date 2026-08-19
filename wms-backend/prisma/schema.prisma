@@ -380,6 +380,8 @@ model Receipt {
   notas            String?
   evidenciaUrl     String?                          // Photo evidence URL
   recibidoPor      String?
+  cerradoPor       String?
+  fechaCierre      DateTime?
 
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -416,8 +418,10 @@ model SalesOrder {
   codigo           String   @unique          // PED-2026-0001
   clienteId        String
   endCustomerId    String?                   // Cliente final (Ship-To)
+  almacenOrigenId  String?                   // Almacén de origen (Activo, Cuarentena, etc.)
   prioridad        Int      @default(3)      // 1=Urgente, 2=Alta, 3=Normal
   fechaCompromiso  DateTime?
+  horaCompromiso   String?                   // Hora de cita obligatoria ej. 09:00, 14:30
   estado           String   @default("SOLICITADO")
   notas            String?                    // Notas del depositante (instrucciones, observaciones)
   // SOLICITADO, PENDIENTE_APROBACION, APROBADO, EN_PICKING, CONSOLIDADO, DESPACHADO, ENTREGADO, RECHAZADO, CANCELADO

@@ -105,20 +105,60 @@ export class ClientsController {
 
   // ============ CLIENT INVENTORY SUMMARY ============
   @Get(':id/inventory')
-  @ApiOperation({ summary: 'Resumen de inventario del depositante' })
+  @ApiOperation({ summary: 'Resumen completo de inventario del depositante con desglose de estados y almacén' })
   async getClientInventory(@Param('id') clienteId: string) {
     const lots = await this.prisma.lotInventory.findMany({
-      where: { clienteId, cantidadDisponible: { gt: 0 } },
-      include: {
-        sku: { select: { codigo: true, descripcion: true, categoria: true, talla: true, color: true, uomBase: true } },
-        ubicacion: { select: { codigo: true, zona: true } },
+      where: {
+        clienteId,
+        OR: [
+          { cantidadDisponible: { gt: 0 } },
+          { cantidadReservada: { gt: 0 } },
+          { cantidadBloqueada: { gt: 0 } },
+        ],
       },
-      orderBy: { sku: { descripcion: 'asc' } },
+      include: {
+        sku: { select: { id: true, codigo: true, descripcion: true, categoria: true, talla: true, color: true, uomBase: true, codigoBarras: true } },
+        ubicacion: { 
+          select: { 
+            id: true, codigo: true, pasillo: true, rack: true, nivel: true, tipoUbicacion: true,
+            zona: { select: { id: true, codigo: true, nombre: true, tipoZona: true } },
+            almacen: { select: { id: true, codigo: true, nombre: true } }
+          } 
+        },
+      },
+      orderBy: [{ sku: { descripcion: 'asc' } }, { createdAt: 'desc' }],
     });
 
     const totalSkus = new Set(lots.map(l => l.skuId)).size;
-    const totalUnidades = lots.reduce((sum, l) => sum + l.cantidadDisponible, 0);
+    let totalFisico = 0;
+    let totalDisponible = 0;
+    let totalReservado = 0;
+    let totalCuarentena = 0;
 
-    return { clienteId, totalSkus, totalUnidades, lotes: lots };
+    for (const lot of lots) {
+      const disp = lot.cantidadDisponible || 0;
+      const res = lot.cantidadReservada || 0;
+      const bloq = lot.cantidadBloqueada || 0;
+      
+      totalFisico += (disp + bloq);
+      totalReservado += res;
+      
+      if (lot.estadoCalidad === 'LIBERADO') {
+        totalDisponible += Math.max(0, disp - res);
+      } else {
+        totalCuarentena += (bloq > 0 ? bloq : disp);
+      }
+    }
+
+    return {
+      clienteId,
+      totalSkus,
+      totalFisico,
+      totalDisponible,
+      totalReservado,
+      totalCuarentena,
+      totalUnidades: totalFisico,
+      lotes: lots,
+    };
   }
 }
