@@ -410,19 +410,20 @@ export function LocationSelect({
           top: 'calc(100% + 6px)',
           left: 0,
           right: 0,
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border)',
+          background: '#ffffff',
+          color: '#0f172a',
+          border: '1px solid #cbd5e1',
           borderRadius: 10,
-          boxShadow: '0 12px 30px rgba(0,0,0,0.18)',
-          zIndex: 1050,
+          boxShadow: '0 20px 45px rgba(0,0,0,0.25), 0 4px 14px rgba(0,0,0,0.1)',
+          zIndex: 99999,
           overflow: 'hidden',
           animation: 'scaleIn 0.15s ease-out',
           minWidth: 320
         }}>
           {/* BUSCADOR DENTRO DEL DROPDOWN */}
-          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-              <Search size={15} style={{ position: 'absolute', left: 10, color: 'var(--text-tertiary)' }} />
+              <Search size={15} style={{ position: 'absolute', left: 10, color: '#64748b' }} />
               <input
                 ref={searchInputRef}
                 type="text"
@@ -430,13 +431,13 @@ export function LocationSelect({
                 placeholder="Buscar ubicación (ej. A01, N1, Textil, Libre)..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
-                style={{ paddingLeft: 32, fontSize: 13, height: 34 }}
+                style={{ paddingLeft: 32, fontSize: 13, height: 34, background: '#ffffff', color: '#0f172a', border: '1px solid #cbd5e1' }}
               />
               {searchTerm && (
                 <button
                   type="button"
                   onClick={() => setSearchTerm('')}
-                  style={{ position: 'absolute', right: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}
+                  style={{ position: 'absolute', right: 8, background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}
                 >
                   <X size={14} />
                 </button>
@@ -460,10 +461,10 @@ export function LocationSelect({
                     fontWeight: 600,
                     padding: '3px 8px',
                     borderRadius: 4,
-                    border: 'none',
+                    border: '1px solid ' + (filterTab === tab.id ? 'var(--primary)' : '#e2e8f0'),
                     cursor: 'pointer',
-                    background: filterTab === tab.id ? 'var(--primary)' : 'var(--bg-card)',
-                    color: filterTab === tab.id ? '#ffffff' : 'var(--text-secondary)',
+                    background: filterTab === tab.id ? 'var(--primary)' : '#ffffff',
+                    color: filterTab === tab.id ? '#ffffff' : '#475569',
                     transition: 'all 0.15s'
                   }}
                 >
@@ -474,9 +475,9 @@ export function LocationSelect({
           </div>
 
           {/* LISTA DE UBICACIONES CON SCROLL */}
-          <div style={{ maxHeight: 250, overflowY: 'auto', padding: '6px 0' }}>
+          <div style={{ maxHeight: 250, overflowY: 'auto', padding: '4px 0', background: '#ffffff' }}>
             {filteredOptions.length === 0 ? (
-              <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13 }}>
+              <div style={{ padding: '24px 16px', textAlign: 'center', color: '#64748b', fontSize: 13, background: '#ffffff' }}>
                 <Box size={24} style={{ margin: '0 auto 6px', opacity: 0.4 }} />
                 No se encontraron ubicaciones con ese criterio.
               </div>
@@ -498,12 +499,12 @@ export function LocationSelect({
                     style={{
                       padding: '8px 14px',
                       cursor: 'pointer',
-                      borderBottom: '1px solid var(--border)',
+                      borderBottom: '1px solid #f1f5f9',
                       background: isSelected
-                        ? 'rgba(37, 99, 235, 0.08)'
+                        ? '#eff6ff'
                         : isRecommended
-                        ? 'rgba(16, 185, 129, 0.04)'
-                        : 'transparent',
+                        ? '#f0fdf4'
+                        : '#ffffff',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
@@ -511,10 +512,10 @@ export function LocationSelect({
                       transition: 'background 0.15s'
                     }}
                     onMouseEnter={e => {
-                      if (!isSelected) (e.currentTarget as HTMLElement).style.background = 'var(--bg-secondary)';
+                      if (!isSelected) (e.currentTarget as HTMLElement).style.background = '#f8fafc';
                     }}
                     onMouseLeave={e => {
-                      if (!isSelected) (e.currentTarget as HTMLElement).style.background = isRecommended ? 'rgba(16, 185, 129, 0.04)' : 'transparent';
+                      if (!isSelected) (e.currentTarget as HTMLElement).style.background = isRecommended ? '#f0fdf4' : '#ffffff';
                     }}
                   >
                     <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>

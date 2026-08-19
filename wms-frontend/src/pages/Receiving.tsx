@@ -505,6 +505,7 @@ export function Receiving() {
       {printModalReceipt && (
         <ReceiptPrintModal
           receipt={printModalReceipt}
+          locations={locations}
           token={token || ''}
           onClose={() => setPrintModalReceipt(null)}
         />

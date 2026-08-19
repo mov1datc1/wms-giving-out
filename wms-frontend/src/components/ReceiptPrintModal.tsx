@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Printer, X, Tag, Package, Layers, QrCode, Check,
-  Sliders, Copy, Download, RefreshCw, Sparkles, CheckCircle2, Box
+  Sliders, Copy, Download, RefreshCw, Sparkles, CheckCircle2, Box,
+  MapPin, AlertTriangle, ShieldCheck, ArrowRight, Eye
 } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
+import { API } from '../config/api';
 
 export interface PrintLineItem {
   id: string;
@@ -24,36 +26,54 @@ export interface PrintLineItem {
   cantidadEsperada: number;
   printQuantity: number;
   selected: boolean;
+  ubicacionId?: string;
+  ubicacionCodigo?: string;
 }
 
 interface ReceiptPrintModalProps {
   receipt: any;
+  locations?: any[];
   onClose: () => void;
   token?: string;
 }
 
-export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModalProps) {
+export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: ReceiptPrintModalProps) {
   const [printMode, setPrintMode] = useState<'PIECE' | 'BOX' | 'PALLET'>('PIECE');
-  const [labelFormat, setLabelFormat] = useState<'50x25' | '100x50' | 'A4_SHEET'>('50x25');
+  const [labelFormat, setLabelFormat] = useState<'50x25' | '100x50'>('50x25');
   const [lines, setLines] = useState<PrintLineItem[]>([]);
   const [previewIndex, setPreviewIndex] = useState<number>(0);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const previewSvgRef = useRef<SVGSVGElement>(null);
 
-  // Inicializar líneas con cantidad por defecto
+  // Inicializar líneas y asignar ubicaciones sugeridas automáticamente
   useEffect(() => {
     if (!receipt || !receipt.lineas) return;
-    const initialLines: PrintLineItem[] = receipt.lineas.map((l: any) => ({
-      id: l.id,
-      skuId: l.skuId,
-      sku: l.sku || { codigo: 'SKU', descripcion: 'Producto', codigoBarras: '' },
-      cantidadEsperada: l.cantidadEsperada || 1,
-      // Por defecto en modo PIECE: cantidad esperada; en BOX: 1 por caja; en PALLET: 1
-      printQuantity: l.cantidadEsperada || 1,
-      selected: true,
-    }));
+
+    // Obtener ubicaciones disponibles para scoring
+    const storageLocations = locations.filter(l => l.estado === 'DISPONIBLE' && l.codigo && !l.codigo.startsWith('DEV'));
+
+    const initialLines: PrintLineItem[] = receipt.lineas.map((l: any, idx: number) => {
+      // Buscar mejor ubicación sugerida para este SKU
+      let suggestedLoc = storageLocations[idx % (storageLocations.length || 1)];
+      // Si el SKU es de ropa/textil, preferir zona ALM-A o pasillo A01-A03
+      const textLoc = storageLocations.find(loc => loc.zona?.codigo === 'ALM-A' || loc.codigo.startsWith('A'));
+      if (textLoc) suggestedLoc = textLoc;
+
+      return {
+        id: l.id,
+        skuId: l.skuId,
+        sku: l.sku || { codigo: 'SKU', descripcion: 'Producto', codigoBarras: '' },
+        cantidadEsperada: l.cantidadEsperada || 1,
+        printQuantity: l.cantidadEsperada || 1,
+        selected: true,
+        ubicacionId: suggestedLoc?.id || '',
+        ubicacionCodigo: suggestedLoc?.codigo || 'A01-R01-N1',
+      };
+    });
+
     setLines(initialLines);
-  }, [receipt]);
+  }, [receipt, locations]);
 
   // Actualizar cantidades al cambiar modo
   function handleModeChange(mode: 'PIECE' | 'BOX' | 'PALLET') {
@@ -71,9 +91,18 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
       return { ...l, printQuantity: Math.max(1, qty) };
     }));
 
-    // Auto-ajustar formato recomendado según el modo
     if (mode === 'PIECE') setLabelFormat('50x25');
     else setLabelFormat('100x50');
+  }
+
+  // Actualizar ubicación física de un SKU
+  function handleLocationChange(lineIdx: number, newLocId: string) {
+    const locObj = locations.find(l => l.id === newLocId);
+    setLines(prev => prev.map((l, i) => i === lineIdx ? {
+      ...l,
+      ubicacionId: newLocId,
+      ubicacionCodigo: locObj?.codigo || l.ubicacionCodigo
+    } : l));
   }
 
   // Renderizar código de barras en el preview SVG
@@ -83,7 +112,6 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
     if (previewSvgRef.current && currentPreviewItem) {
       const barcodeValue = currentPreviewItem.sku?.codigoBarras || currentPreviewItem.sku?.codigo || '000000000000';
       try {
-        // Intentar EAN-13 si tiene 13 dígitos o CODE128 para alfanuméricos
         const isEan13 = /^\d{13}$/.test(barcodeValue);
         JsBarcode(previewSvgRef.current, barcodeValue, {
           format: isEan13 ? 'EAN13' : 'CODE128',
@@ -96,7 +124,6 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
           lineColor: '#000000'
         });
       } catch (err) {
-        // Fallback a CODE128
         try {
           JsBarcode(previewSvgRef.current, barcodeValue, {
             format: 'CODE128',
@@ -114,28 +141,45 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
   }, [currentPreviewItem, labelFormat]);
 
   // Conteo total de etiquetas seleccionadas
-  const totalLabels = lines.filter(l => l.selected).reduce((acc, l) => acc + (l.printQuantity || 0), 0);
+  const selectedLines = lines.filter(l => l.selected && l.printQuantity > 0);
+  const totalLabels = selectedLines.reduce((acc, l) => acc + (l.printQuantity || 0), 0);
 
-  // Ejecutar impresión directa
-  function handlePrint() {
-    setIsPrinting(true);
-
-    const selectedLines = lines.filter(l => l.selected && l.printQuantity > 0);
+  // Solicitar confirmación antes de imprimir
+  function handleRequestPrint() {
     if (selectedLines.length === 0) {
-      alert('Selecciona al menos una línea para imprimir');
-      setIsPrinting(false);
+      alert('Selecciona al menos un producto para imprimir.');
       return;
     }
+    setShowConfirmModal(true);
+  }
+
+  // Ejecutar impresión física real
+  async function executePrint() {
+    setIsPrinting(true);
+    setShowConfirmModal(false);
+
+    try {
+      if (token) {
+        fetch(`${API}/print-log`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            tipoEtiqueta: `RECEPCION_${printMode}`,
+            referencia: receipt.codigo,
+            motivo: `Impresión de ${totalLabels} etiquetas formato ${labelFormat}`
+          })
+        }).catch(e => console.error('Print log error:', e));
+      }
+    } catch (e) { }
 
     // Crear ventana de impresión limpia
     const printWindow = window.open('', '_blank', 'width=800,height=600');
     if (!printWindow) {
-      alert('Permite las ventanas emergentes en tu navegador para imprimir etiquetas');
+      alert('Por favor habilita las ventanas emergentes en tu navegador para imprimir etiquetas.');
       setIsPrinting(false);
       return;
     }
 
-    // Construir HTML de etiquetas
     let labelsHtml = '';
     selectedLines.forEach(item => {
       const barcodeValue = item.sku.codigoBarras || item.sku.codigo;
@@ -146,6 +190,7 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
       const talla = item.sku.talla ? `Talla: ${item.sku.talla}` : '';
       const color = item.sku.color ? `Color: ${item.sku.color}` : '';
       const extras = [talla, color].filter(Boolean).join(' | ');
+      const ubicacion = item.ubicacionCodigo || 'A01-R01-N1';
 
       for (let i = 0; i < item.printQuantity; i++) {
         if (labelFormat === '50x25') {
@@ -159,12 +204,13 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               </div>
               <div class="label-footer">
                 <span>Doc: ${factura}</span>
-                <span>Pza ${i + 1}/${item.printQuantity}</span>
+                <span><strong>Ubic: ${ubicacion}</strong></span>
+                <span>${i + 1}/${item.printQuantity}</span>
               </div>
             </div>
           `;
         } else {
-          // 100x50 o Caja/Pallet
+          // 100x50 mm
           labelsHtml += `
             <div class="label label-100x50">
               <div class="header-row">
@@ -175,15 +221,15 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               <div class="product-meta">
                 <span>SKU: <strong>${skuCode}</strong></span>
                 <span>${extras}</span>
-                <span>${printMode === 'BOX' ? `Caja de ${item.sku.capacidadEmpaque || 12} Pzas` : `Cant: ${item.cantidadEsperada} ${item.sku.uomBase || 'PZA'}`}</span>
+                <span class="location-badge">📍 Ubic Destino: <strong>${ubicacion}</strong></span>
               </div>
               <div class="barcode-container">
                 <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
               </div>
               <div class="label-footer-row">
                 <span>Previo: ${receipt.codigo}</span>
+                <span>Ubicación: <strong>${ubicacion}</strong></span>
                 <span>Etiqueta ${i + 1} de ${item.printQuantity}</span>
-                <span>${new Date().toLocaleDateString('es-MX')}</span>
               </div>
             </div>
           `;
@@ -257,12 +303,12 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               display: flex;
               justify-content: space-between;
               font-size: 5.5pt;
-              color: #555;
+              color: #222;
               border-top: 0.5px solid #ddd;
               padding-top: 1px;
             }
 
-            /* 100x50 */
+            /* 100x50 mm */
             .label-100x50 {
               width: 100mm;
               height: 50mm;
@@ -274,16 +320,16 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               display: flex;
               justify-content: space-between;
               align-items: center;
-              border-bottom: 1px solid #000;
+              border-bottom: 1.5px solid #000;
               padding-bottom: 2px;
             }
             .label-100x50 .company-logo {
               font-weight: 900;
-              font-size: 9pt;
+              font-size: 9.5pt;
               letter-spacing: 1px;
             }
             .label-100x50 .doc-info {
-              font-size: 7.5pt;
+              font-size: 8pt;
               font-weight: 600;
             }
             .label-100x50 .product-title {
@@ -296,9 +342,16 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
             }
             .label-100x50 .product-meta {
               display: flex;
-              gap: 12px;
+              gap: 10px;
               font-size: 8.5pt;
               margin: 2px 0;
+            }
+            .label-100x50 .location-badge {
+              font-weight: 800;
+              background: #000;
+              color: #fff;
+              padding: 1px 4px;
+              border-radius: 2px;
             }
             .label-100x50 .barcode-container {
               text-align: center;
@@ -311,9 +364,9 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
             .label-100x50 .label-footer-row {
               display: flex;
               justify-content: space-between;
-              font-size: 7pt;
-              color: #333;
-              border-top: 1px solid #ccc;
+              font-size: 7.5pt;
+              color: #222;
+              border-top: 1px solid #000;
               padding-top: 2px;
             }
           </style>
@@ -354,7 +407,7 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
       <div
         className="modal-content"
         onClick={e => e.stopPropagation()}
-        style={{ maxWidth: 840, maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}
+        style={{ maxWidth: 880, maxHeight: '92vh', display: 'flex', flexDirection: 'column', position: 'relative' }}
       >
         {/* MODAL HEADER */}
         <div className="modal-header">
@@ -367,7 +420,7 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               <Printer size={20} />
             </div>
             <div>
-              <h2 style={{ margin: 0, fontSize: 16 }}>Imprimir Etiquetas de Recepción</h2>
+              <h2 style={{ margin: 0, fontSize: 16 }}>Imprimir y Asignar Etiquetas de Recepción</h2>
               <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                 Previo: <strong>{receipt.codigo}</strong> • Depositante: <strong>{receipt.cliente?.nombreComercial}</strong>
                 {receipt.ocReferencia && ` • Factura: ${receipt.ocReferencia}`}
@@ -381,17 +434,17 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
         <div className="modal-body" style={{ overflowY: 'auto', flex: 1, padding: 20 }}>
           
           {/* BARRA DE CONFIGURACIÓN DE IMPRESIÓN */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginBottom: 18 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 18 }}>
             
             {/* TIPO DE ETIQUETA / MODO */}
             <div style={{ background: 'var(--bg-secondary)', padding: 14, borderRadius: 8, border: '1px solid var(--border)' }}>
               <label className="form-label" style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Tag size={14} /> TIPO DE ETIQUETA
+                <Tag size={14} /> MODO DE ETIQUETADO
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
                 {[
                   { id: 'PIECE', label: 'Por Pieza', icon: Tag, desc: '1 por prenda/unidad' },
-                  { id: 'BOX', label: 'Por Caja', icon: Box, desc: '1 por empaque/caja' },
+                  { id: 'BOX', label: 'Por Caja', icon: Box, desc: '1 por empaque' },
                   { id: 'PALLET', label: 'Por Pallet', icon: Layers, desc: '1 por tarima' },
                 ].map(m => {
                   const Icon = m.icon;
@@ -424,12 +477,12 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
             {/* FORMATO DE PAPEL / IMPRESORA */}
             <div style={{ background: 'var(--bg-secondary)', padding: 14, borderRadius: 8, border: '1px solid var(--border)' }}>
               <label className="form-label" style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Sliders size={14} /> TAMAÑO DE ETIQUETA
+                <Sliders size={14} /> TAMAÑO DE ETIQUETA TÉRMICA
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {[
-                  { id: '50x25', label: '50 x 25 mm', desc: 'Térmica (Prendas / Ropa)' },
-                  { id: '100x50', label: '100 x 50 mm', desc: 'Térmica (Cajas / 4x2")' },
+                  { id: '50x25', label: '50 x 25 mm', desc: 'Prendas / Ropa / Retail' },
+                  { id: '100x50', label: '100 x 50 mm', desc: 'Cajas / Pallets (4x2")' },
                 ].map(f => {
                   const isSelected = labelFormat === f.id;
                   return (
@@ -457,7 +510,7 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
             </div>
           </div>
 
-          {/* VISTA PREVIA VISUAL EN VIVO */}
+          {/* VISTA PREVIA VISUAL EN VIVO CON UBICACIÓN DESTINO */}
           {currentPreviewItem && (
             <div style={{
               background: 'var(--bg-secondary)',
@@ -466,25 +519,25 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               border: '1px solid var(--border)',
               marginBottom: 18
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Sparkles size={14} style={{ color: 'var(--primary)' }} /> Vista Previa de Etiqueta Térmica ({labelFormat} mm)
+                  <Sparkles size={14} style={{ color: 'var(--primary)' }} /> Vista Previa con Ubicación Física ({labelFormat} mm)
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                  Producto: <strong>{currentPreviewItem.sku.codigo}</strong>
+                  Producto: <strong>{currentPreviewItem.sku.codigo}</strong> • Ubic: <strong style={{ color: 'var(--primary)' }}>{currentPreviewItem.ubicacionCodigo || 'A01-R01-N1'}</strong>
                 </span>
               </div>
 
               {/* CARD DE ETIQUETA SIMULADA */}
-              <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0' }}>
+              <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0' }}>
                 <div style={{
                   width: labelFormat === '50x25' ? '280px' : '380px',
                   background: '#ffffff',
                   color: '#000000',
                   padding: labelFormat === '50x25' ? '10px 12px' : '14px 16px',
                   borderRadius: 6,
-                  border: '2px solid #333',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                  border: '2px solid #111',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
                   fontFamily: 'monospace'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, borderBottom: '1px solid #ccc', paddingBottom: 4, marginBottom: 4 }}>
@@ -494,15 +547,16 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
                   <div style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {currentPreviewItem.sku.descripcion}
                   </div>
-                  <div style={{ fontSize: 11, color: '#333', margin: '2px 0' }}>
-                    SKU: <strong>{currentPreviewItem.sku.codigo}</strong>
-                    {currentPreviewItem.sku.talla && ` | Talla: ${currentPreviewItem.sku.talla}`}
-                    {currentPreviewItem.sku.color && ` | ${currentPreviewItem.sku.color}`}
+                  <div style={{ fontSize: 11, color: '#333', margin: '2px 0', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>SKU: <strong>{currentPreviewItem.sku.codigo}</strong></span>
+                    <span style={{ background: '#000', color: '#fff', padding: '0 4px', borderRadius: 2, fontWeight: 700 }}>
+                      📍 {currentPreviewItem.ubicacionCodigo || 'A01-R01-N1'}
+                    </span>
                   </div>
                   <div style={{ textAlign: 'center', margin: '4px 0' }}>
                     <svg ref={previewSvgRef} style={{ maxWidth: '100%' }}></svg>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#666', borderTop: '1px solid #ddd', paddingTop: 2 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#444', borderTop: '1px solid #ddd', paddingTop: 2 }}>
                     <span>EAN: {currentPreviewItem.sku.codigoBarras || currentPreviewItem.sku.codigo}</span>
                     <span>Cant: {currentPreviewItem.cantidadEsperada} uds</span>
                   </div>
@@ -511,10 +565,10 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
             </div>
           )}
 
-          {/* TABLA DE LÍNEAS PARA AJUSTE DE CANTIDADES */}
+          {/* TABLA DE PRODUCTOS, UBICACIONES Y CANTIDADES */}
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <h4 style={{ margin: 0, fontSize: 14 }}>Productos a Imprimir en este Previo</h4>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 14 }}>1. Confirmar Ubicaciones Físicas y Cantidades a Imprimir</h4>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <button
                   type="button"
@@ -530,15 +584,16 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
               </div>
             </div>
 
-            <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+            <div className="table-responsive" style={{ maxHeight: 240, border: '1px solid var(--border)', borderRadius: 8 }}>
               <table className="data-table" style={{ fontSize: 12, margin: 0 }}>
                 <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)', zIndex: 1 }}>
                   <tr>
                     <th style={{ width: 40, textAlign: 'center' }}></th>
-                    <th>SKU / PRODUCTO</th>
-                    <th>CÓDIGO EAN-13</th>
-                    <th style={{ textAlign: 'right' }}>ESPERADO</th>
-                    <th style={{ textAlign: 'center', width: 140 }}>ETIQUETAS A IMPRIMIR</th>
+                    <th style={{ minWidth: 160 }}>SKU / PRODUCTO</th>
+                    <th style={{ minWidth: 130 }}>CÓDIGO EAN-13</th>
+                    <th style={{ minWidth: 160 }}>UBICACIÓN DESTINO</th>
+                    <th style={{ textAlign: 'right', minWidth: 80 }}>ESPERADO</th>
+                    <th style={{ textAlign: 'center', width: 110 }}>ETIQUETAS</th>
                     <th style={{ width: 60, textAlign: 'center' }}>VER</th>
                   </tr>
                 </thead>
@@ -567,13 +622,28 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
                           <span style={{ fontSize: 11, color: 'var(--orange)' }}>⚠️ Sin EAN</span>
                         )}
                       </td>
+                      <td>
+                        {/* SELECTOR RÁPIDO DE UBICACIÓN FÍSICA PARA ESTA ETIQUETA */}
+                        <select
+                          className="form-select"
+                          style={{ fontSize: 12, padding: '3px 8px', height: 30, width: '100%', background: '#ffffff' }}
+                          value={item.ubicacionId}
+                          onChange={e => handleLocationChange(idx, e.target.value)}
+                        >
+                          {locations.filter(l => !l.codigo.startsWith('DEV')).map(loc => (
+                            <option key={loc.id} value={loc.id}>
+                              📍 {loc.codigo} ({loc.zona?.nombre || loc.pasillo})
+                            </option>
+                          ))}
+                        </select>
+                      </td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{item.cantidadEsperada}</td>
                       <td style={{ textAlign: 'center' }}>
                         <input
                           type="number"
                           min="0"
                           className="form-input"
-                          style={{ width: 80, padding: '3px 6px', textAlign: 'center', margin: '0 auto', fontSize: 12 }}
+                          style={{ width: 70, padding: '3px 6px', textAlign: 'center', margin: '0 auto', fontSize: 12 }}
                           value={item.printQuantity}
                           onChange={e => {
                             const val = parseInt(e.target.value) || 0;
@@ -600,24 +670,130 @@ export function ReceiptPrintModal({ receipt, onClose, token }: ReceiptPrintModal
         </div>
 
         {/* MODAL FOOTER */}
-        <div className="modal-footer" style={{ padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="modal-footer" style={{ padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            💡 Las etiquetas se formatearán automáticamente para tu impresora térmica (Zebra, Brother o estándar).
+            💡 Las etiquetas incluirán la <strong>Ubicación Física</strong> seleccionada para el guardado directo con handheld.
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>Cerrar</button>
             <button
               type="button"
               className="btn btn-primary"
-              onClick={handlePrint}
+              onClick={handleRequestPrint}
               disabled={isPrinting || totalLabels === 0}
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 18px' }}
             >
               <Printer size={16} />
-              {isPrinting ? 'Preparando...' : `Imprimir ${totalLabels} Etiquetas`}
+              Revisar e Imprimir ({totalLabels} Etiquetas)
             </button>
           </div>
         </div>
+
+        {/* --- DIÁLOGO PRO DE CONFIRMACIÓN DE INSUMOS TÉRMICOS --- */}
+        {showConfirmModal && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(4px)',
+            borderRadius: 12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+            zIndex: 100000,
+            animation: 'fadeIn 0.2s ease-out'
+          }}>
+            <div style={{
+              background: '#ffffff',
+              color: '#0f172a',
+              borderRadius: 12,
+              padding: 24,
+              maxWidth: 480,
+              width: '100%',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #e2e8f0'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 10,
+                  background: 'rgba(245, 158, 11, 0.12)', color: '#d97706',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}>
+                  <ShieldCheck size={26} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Control de Insumos Térmicos</h3>
+                  <p style={{ margin: '2px 0 0', fontSize: 13, color: '#64748b' }}>Confirmación antes de enviar a impresión</p>
+                </div>
+              </div>
+
+              {/* RESUMEN DE ORDEN DE IMPRESIÓN */}
+              <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div>
+                    <span style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase' }}>Total de Etiquetas</span>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--primary)' }}>{totalLabels} uds</div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase' }}>Rollo Requerido</span>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{labelFormat === '50x25' ? '50 x 25 mm (Prendas)' : '100 x 50 mm (Cajas)'}</div>
+                  </div>
+                </div>
+
+                <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 8, fontSize: 12 }}>
+                  <div style={{ color: '#475569', marginBottom: 4 }}>📍 <strong>Ubicaciones Asignadas a Imprimir:</strong></div>
+                  <div style={{ maxHeight: 75, overflowY: 'auto', color: '#0f172a', fontFamily: 'monospace', fontSize: 11 }}>
+                    {selectedLines.map(l => (
+                      <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
+                        <span>{l.sku.codigo}:</span>
+                        <strong style={{ color: 'var(--primary)' }}>{l.ubicacionCodigo || 'A01-R01-N1'} ({l.printQuantity} pzas)</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+                padding: '10px 12px',
+                borderRadius: 6,
+                fontSize: 12,
+                color: '#b45309',
+                display: 'flex',
+                gap: 8,
+                marginBottom: 20
+              }}>
+                <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                <span>
+                  El papel térmico es un insumo delicado. Asegúrate de tener el rollo correcto cargado y calibrado en tu impresora térmica (Zebra / Brother) para evitar desperdicios.
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setShowConfirmModal(false)}
+                  disabled={isPrinting}
+                >
+                  Modificar
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={executePrint}
+                  disabled={isPrinting}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 18px' }}
+                >
+                  <Printer size={16} />
+                  {isPrinting ? 'Enviando...' : `Confirmar e Imprimir (${totalLabels} Etiquetas)`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

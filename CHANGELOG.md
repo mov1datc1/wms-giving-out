@@ -23,6 +23,13 @@ El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.co
   - Impresión directa con hojas de estilo `@media print` optimizadas para impresoras térmicas (Zebra, Brother, Epson).
 - **Escaneo Rápido con Handheld Zebra TC22:**
   - Barra de búsqueda y escaneo directo en el detalle del previo: al escanear con la terminal Zebra TC22 un código EAN o SKU, el sistema localiza la línea, abre el formulario de ingreso dual y preselecciona la ubicación física sugerida por el motor putaway.
+- **Asignación y Confirmación de Ubicaciones Físicas en Etiquetas:**
+  - Integración del catálogo de ubicaciones en el modal de impresión para que el supervisor asigne o modifique la ubicación física destino (`A01-R01-N1`, etc.) por cada SKU antes de mandar a imprimir.
+  - Impresión visible de la **Ubicación Destino** en el cuerpo de las etiquetas térmicas (50x25mm y 100x50mm) para guiar directamente al operador en la colocación física durante el escaneo con handheld.
+- **Diálogo PRO de Confirmación de Impresión (Protección de Insumos Térmicos):**
+  - Pantalla interactiva previa al envío a la impresora con resumen de total de etiquetas, tipo de rollo térmico, desglose de SKUs y ubicaciones confirmadas, previniendo el desperdicio accidental de papel y cinta térmica.
+- **Corrección de Transparencia y Z-Index en `LocationSelect`:**
+  - Fondo blanco 100% opaco (`#ffffff`) y elevación de `z-index` a 99,999 para eliminar cualquier sangrado visual de las tablas de fondo al desplegar el buscador de ubicaciones.
 - **Registro de Auditoría de Impresión (`POST /api/print-log`):**
   - Trazabilidad de quién, cuándo y cuántas etiquetas se mandaron a imprimir por previo.
 
