@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Printer, X, Tag, Package, Layers, QrCode, Check,
   Sliders, Copy, Download, RefreshCw, Sparkles, CheckCircle2, Box,
-  MapPin, AlertTriangle, ShieldCheck, ArrowRight, Eye
+  MapPin, AlertTriangle, ShieldCheck, ArrowRight, Eye, FlaskConical
 } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { API } from '../config/api';
@@ -50,13 +50,10 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
   useEffect(() => {
     if (!receipt || !receipt.lineas) return;
 
-    // Obtener ubicaciones disponibles para scoring
     const storageLocations = locations.filter(l => l.estado === 'DISPONIBLE' && l.codigo && !l.codigo.startsWith('DEV'));
 
     const initialLines: PrintLineItem[] = receipt.lineas.map((l: any, idx: number) => {
-      // Buscar mejor ubicación sugerida para este SKU
       let suggestedLoc = storageLocations[idx % (storageLocations.length || 1)];
-      // Si el SKU es de ropa/textil, preferir zona ALM-A o pasillo A01-A03
       const textLoc = storageLocations.find(loc => loc.zona?.codigo === 'ALM-A' || loc.codigo.startsWith('A'));
       if (textLoc) suggestedLoc = textLoc;
 
@@ -144,7 +141,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
   const selectedLines = lines.filter(l => l.selected && l.printQuantity > 0);
   const totalLabels = selectedLines.reduce((acc, l) => acc + (l.printQuantity || 0), 0);
 
-  // Solicitar confirmación antes de imprimir
+  // Solicitar confirmación antes de imprimir el lote completo
   function handleRequestPrint() {
     if (selectedLines.length === 0) {
       alert('Selecciona al menos un producto para imprimir.');
@@ -153,7 +150,236 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
     setShowConfirmModal(true);
   }
 
-  // Ejecutar impresión física real
+  // --- IMPRIMIR EXACTAMENTE 1 ETIQUETA DE PRUEBA / CALIBRACIÓN ---
+  function handlePrintTestLabel(customItem?: PrintLineItem) {
+    const item = customItem || currentPreviewItem || selectedLines[0];
+    if (!item) {
+      alert('Selecciona un producto para imprimir la etiqueta de prueba.');
+      return;
+    }
+
+    const printWindow = window.open('', '_blank', 'width=800,height=600');
+    if (!printWindow) {
+      alert('Habilita las ventanas emergentes para imprimir la etiqueta de prueba.');
+      return;
+    }
+
+    const barcodeValue = item.sku.codigoBarras || item.sku.codigo;
+    const skuCode = item.sku.codigo;
+    const skuDesc = item.sku.descripcion;
+    const clientName = receipt.cliente?.nombreComercial || 'GIVING OUT';
+    const factura = receipt.ocReferencia || receipt.codigo;
+    const talla = item.sku.talla ? `Talla: ${item.sku.talla}` : '';
+    const color = item.sku.color ? `Color: ${item.sku.color}` : '';
+    const extras = [talla, color].filter(Boolean).join(' | ');
+    const ubicacion = item.ubicacionCodigo || 'A01-R01-N1';
+    const is50x25 = labelFormat === '50x25';
+
+    let testLabelHtml = '';
+    if (is50x25) {
+      testLabelHtml = `
+        <div class="label label-50x25">
+          <div class="label-client">${clientName} [PRUEBA]</div>
+          <div class="label-title">${skuDesc}</div>
+          <div class="label-sku">SKU: <strong>${skuCode}</strong> ${extras ? `(${extras})` : ''}</div>
+          <div class="label-barcode-box">
+            <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
+          </div>
+          <div class="label-footer">
+            <span>Doc: ${factura}</span>
+            <span><strong>Ubic: ${ubicacion}</strong></span>
+            <span>MUESTRA</span>
+          </div>
+        </div>
+      `;
+    } else {
+      testLabelHtml = `
+        <div class="label label-100x50">
+          <div class="header-row">
+            <div class="company-logo">GIVING OUT 3PL [TEST]</div>
+            <div class="doc-info">${clientName} • Doc: ${factura}</div>
+          </div>
+          <div class="product-title">${skuDesc}</div>
+          <div class="product-meta">
+            <span>SKU: <strong>${skuCode}</strong></span>
+            <span>${extras}</span>
+            <span class="location-badge">📍 Ubic Destino: <strong>${ubicacion}</strong></span>
+          </div>
+          <div class="barcode-container">
+            <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
+          </div>
+          <div class="label-footer-row">
+            <span>Previo: ${receipt.codigo}</span>
+            <span>Ubicación: <strong>${ubicacion}</strong></span>
+            <span>ETIQUETA DE PRUEBA (1 ud)</span>
+          </div>
+        </div>
+      `;
+    }
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Prueba de Impresión — ${skuCode}</title>
+          <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+          <style>
+            @page {
+              size: ${is50x25 ? '50mm 25mm' : '100mm 50mm'};
+              margin: 0;
+            }
+            body {
+              margin: 0;
+              padding: 0;
+              background: #fff;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              color: #000;
+              -webkit-print-color-adjust: exact;
+            }
+            .label {
+              page-break-after: always;
+              box-sizing: border-box;
+              display: flex;
+              flex-direction: column;
+              justify-content: space-between;
+              overflow: hidden;
+            }
+            .label-50x25 {
+              width: 50mm;
+              height: 25mm;
+              padding: 1.5mm 2mm;
+              font-size: 7pt;
+              line-height: 1.1;
+            }
+            .label-50x25 .label-client {
+              font-size: 6pt;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              color: #333;
+            }
+            .label-50x25 .label-title {
+              font-size: 7.5pt;
+              font-weight: 700;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
+            }
+            .label-50x25 .label-sku {
+              font-size: 6.5pt;
+              color: #222;
+            }
+            .label-50x25 .label-barcode-box {
+              text-align: center;
+              margin: 0 auto;
+            }
+            .label-50x25 .label-barcode-box svg {
+              max-width: 46mm;
+              height: 11mm !important;
+            }
+            .label-50x25 .label-footer {
+              display: flex;
+              justify-content: space-between;
+              font-size: 5.5pt;
+              color: #222;
+              border-top: 0.5px solid #ddd;
+              padding-top: 1px;
+            }
+
+            /* 100x50 mm */
+            .label-100x50 {
+              width: 100mm;
+              height: 50mm;
+              padding: 3mm 4mm;
+              font-size: 9pt;
+              line-height: 1.2;
+            }
+            .label-100x50 .header-row {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              border-bottom: 1.5px solid #000;
+              padding-bottom: 2px;
+            }
+            .label-100x50 .company-logo {
+              font-weight: 900;
+              font-size: 9.5pt;
+              letter-spacing: 1px;
+            }
+            .label-100x50 .doc-info {
+              font-size: 8pt;
+              font-weight: 600;
+            }
+            .label-100x50 .product-title {
+              font-size: 11pt;
+              font-weight: 800;
+              margin-top: 2px;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
+            }
+            .label-100x50 .product-meta {
+              display: flex;
+              gap: 10px;
+              font-size: 8.5pt;
+              margin: 2px 0;
+            }
+            .label-100x50 .location-badge {
+              font-weight: 800;
+              background: #000;
+              color: #fff;
+              padding: 1px 4px;
+              border-radius: 2px;
+            }
+            .label-100x50 .barcode-container {
+              text-align: center;
+              margin: 2px 0;
+            }
+            .label-100x50 .barcode-container svg {
+              max-width: 90mm;
+              height: 22mm !important;
+            }
+            .label-100x50 .label-footer-row {
+              display: flex;
+              justify-content: space-between;
+              font-size: 7.5pt;
+              color: #222;
+              border-top: 1px solid #000;
+              padding-top: 2px;
+            }
+          </style>
+        </head>
+        <body>
+          ${testLabelHtml}
+          <script>
+            document.querySelectorAll('.barcode-svg').forEach(function(el) {
+              var code = el.getAttribute('data-code') || '000000';
+              try {
+                var isEan13 = /^\\d{13}$/.test(code);
+                JsBarcode(el, code, {
+                  format: isEan13 ? 'EAN13' : 'CODE128',
+                  width: ${is50x25 ? 1.4 : 2},
+                  height: ${is50x25 ? 30 : 50},
+                  displayValue: true,
+                  fontSize: ${is50x25 ? 9 : 12},
+                  margin: 2
+                });
+              } catch(e) {
+                JsBarcode(el, code, { format: 'CODE128', width: 1.4, height: 30, displayValue: true });
+              }
+            });
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+
+    printWindow.document.close();
+  }
+
+  // --- EJECUTAR IMPRESIÓN FÍSICA COMPLETA ---
   async function executePrint() {
     setIsPrinting(true);
     setShowConfirmModal(false);
@@ -172,7 +398,6 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
       }
     } catch (e) { }
 
-    // Crear ventana de impresión limpia
     const printWindow = window.open('', '_blank', 'width=800,height=600');
     if (!printWindow) {
       alert('Por favor habilita las ventanas emergentes en tu navegador para imprimir etiquetas.');
@@ -510,7 +735,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             </div>
           </div>
 
-          {/* VISTA PREVIA VISUAL EN VIVO CON UBICACIÓN DESTINO */}
+          {/* VISTA PREVIA VISUAL EN VIVO CON BOTÓN DE PRUEBA */}
           {currentPreviewItem && (
             <div style={{
               background: 'var(--bg-secondary)',
@@ -523,9 +748,25 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                 <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Sparkles size={14} style={{ color: 'var(--primary)' }} /> Vista Previa con Ubicación Física ({labelFormat} mm)
                 </span>
-                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                  Producto: <strong>{currentPreviewItem.sku.codigo}</strong> • Ubic: <strong style={{ color: 'var(--primary)' }}>{currentPreviewItem.ubicacionCodigo || 'A01-R01-N1'}</strong>
-                </span>
+                
+                {/* BOTÓN RÁPIDO DE IMPRIMIR 1 ETIQUETA DE PRUEBA */}
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handlePrintTestLabel(currentPreviewItem)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 12,
+                    padding: '4px 10px',
+                    borderColor: 'var(--primary)',
+                    color: 'var(--primary)'
+                  }}
+                  title="Imprime 1 sola etiqueta de este producto para verificar tamaño y escaneo láser"
+                >
+                  <FlaskConical size={14} /> Imprimir 1 Etiqueta de Prueba
+                </button>
               </div>
 
               {/* CARD DE ETIQUETA SIMULADA */}
@@ -593,8 +834,8 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                     <th style={{ minWidth: 130 }}>CÓDIGO EAN-13</th>
                     <th style={{ minWidth: 160 }}>UBICACIÓN DESTINO</th>
                     <th style={{ textAlign: 'right', minWidth: 80 }}>ESPERADO</th>
-                    <th style={{ textAlign: 'center', width: 110 }}>ETIQUETAS</th>
-                    <th style={{ width: 60, textAlign: 'center' }}>VER</th>
+                    <th style={{ textAlign: 'center', width: 100 }}>ETIQUETAS</th>
+                    <th style={{ width: 90, textAlign: 'center' }}>ACCIONES</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -643,7 +884,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                           type="number"
                           min="0"
                           className="form-input"
-                          style={{ width: 70, padding: '3px 6px', textAlign: 'center', margin: '0 auto', fontSize: 12 }}
+                          style={{ width: 65, padding: '3px 6px', textAlign: 'center', margin: '0 auto', fontSize: 12 }}
                           value={item.printQuantity}
                           onChange={e => {
                             const val = parseInt(e.target.value) || 0;
@@ -652,14 +893,26 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                         />
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <button
-                          type="button"
-                          className={`btn btn-sm ${previewIndex === idx ? 'btn-primary' : 'btn-ghost'}`}
-                          style={{ padding: '2px 8px', fontSize: 11 }}
-                          onClick={() => setPreviewIndex(idx)}
-                        >
-                          Ver
-                        </button>
+                        <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
+                          <button
+                            type="button"
+                            className={`btn btn-sm ${previewIndex === idx ? 'btn-primary' : 'btn-ghost'}`}
+                            style={{ padding: '2px 6px', fontSize: 11 }}
+                            onClick={() => setPreviewIndex(idx)}
+                            title="Ver en vista previa"
+                          >
+                            <Eye size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            style={{ padding: '2px 6px', fontSize: 11 }}
+                            onClick={() => handlePrintTestLabel(item)}
+                            title="Imprimir 1 etiqueta de prueba de este SKU"
+                          >
+                            <FlaskConical size={12} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -678,10 +931,20 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             <button type="button" className="btn btn-ghost" onClick={onClose}>Cerrar</button>
             <button
               type="button"
+              className="btn btn-secondary"
+              onClick={() => handlePrintTestLabel()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px' }}
+              title="Imprime 1 sola etiqueta de prueba antes del lote completo"
+            >
+              <FlaskConical size={15} />
+              Imprimir Etiqueta de Prueba (1 ud)
+            </button>
+            <button
+              type="button"
               className="btn btn-primary"
               onClick={handleRequestPrint}
               disabled={isPrinting || totalLabels === 0}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 18px' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 18px' }}
             >
               <Printer size={16} />
               Revisar e Imprimir ({totalLabels} Etiquetas)
@@ -689,7 +952,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
           </div>
         </div>
 
-        {/* --- DIÁLOGO PRO DE CONFIRMACIÓN DE INSUMOS TÉRMICOS --- */}
+        {/* --- PASO 3: DIÁLOGO PRO DE CONFIRMACIÓN DE INSUMOS TÉRMICOS CON BOTÓN DE PRUEBA --- */}
         {showConfirmModal && (
           <div style={{
             position: 'absolute',
@@ -709,7 +972,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
               color: '#0f172a',
               borderRadius: 12,
               padding: 24,
-              maxWidth: 480,
+              maxWidth: 500,
               width: '100%',
               boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
               border: '1px solid #e2e8f0'
@@ -767,29 +1030,50 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
               }}>
                 <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
                 <span>
-                  El papel térmico es un insumo delicado. Asegúrate de tener el rollo correcto cargado y calibrado en tu impresora térmica (Zebra / Brother) para evitar desperdicios.
+                  El papel térmico es un insumo delicado. Te recomendamos imprimir una <strong>etiqueta de prueba (1 ud)</strong> para calibrar tu impresora antes de mandar el lote completo.
                 </span>
               </div>
 
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              {/* BOTONES CON OPCIÓN DE ETIQUETA DE PRUEBA */}
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+                {/* BOTÓN ETIQUETA DE PRUEBA EN EL PASO 3 */}
                 <button
                   type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setShowConfirmModal(false)}
-                  disabled={isPrinting}
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handlePrintTestLabel()}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    borderColor: '#d97706',
+                    color: '#b45309',
+                    background: 'rgba(245, 158, 11, 0.08)',
+                    padding: '8px 12px'
+                  }}
                 >
-                  Modificar
+                  <FlaskConical size={14} /> Imprimir 1 de Prueba
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={executePrint}
-                  disabled={isPrinting}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 18px' }}
-                >
-                  <Printer size={16} />
-                  {isPrinting ? 'Enviando...' : `Confirmar e Imprimir (${totalLabels} Etiquetas)`}
-                </button>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => setShowConfirmModal(false)}
+                    disabled={isPrinting}
+                  >
+                    Modificar
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={executePrint}
+                    disabled={isPrinting}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px' }}
+                  >
+                    <Printer size={16} />
+                    {isPrinting ? 'Enviando...' : `Confirmar (${totalLabels} Uds)`}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

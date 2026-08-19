@@ -28,6 +28,8 @@ El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.co
   - Impresión visible de la **Ubicación Destino** en el cuerpo de las etiquetas térmicas (50x25mm y 100x50mm) para guiar directamente al operador en la colocación física durante el escaneo con handheld.
 - **Diálogo PRO de Confirmación de Impresión (Protección de Insumos Térmicos):**
   - Pantalla interactiva previa al envío a la impresora con resumen de total de etiquetas, tipo de rollo térmico, desglose de SKUs y ubicaciones confirmadas, previniendo el desperdicio accidental de papel y cinta térmica.
+- **Botón de Etiqueta de Prueba (1 ud) / Calibración Térmica:**
+  - Botón rápido **"🧪 Imprimir 1 Etiqueta de Prueba"** accesible tanto en la barra de vista previa, por línea de producto y en el diálogo de confirmación. Permite mandar una sola etiqueta a la impresora Zebra/Brother para validar alineación, contraste y legibilidad con el lector láser de la handheld antes de imprimir tirajes de cientos de etiquetas.
 - **Corrección de Transparencia y Z-Index en `LocationSelect`:**
   - Fondo blanco 100% opaco (`#ffffff`) y elevación de `z-index` a 99,999 para eliminar cualquier sangrado visual de las tablas de fondo al desplegar el buscador de ubicaciones.
 - **Registro de Auditoría de Impresión (`POST /api/print-log`):**
