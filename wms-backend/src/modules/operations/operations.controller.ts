@@ -15,54 +15,64 @@ export class OperationsController {
   @Get('receipts')
   @ApiOperation({ summary: 'Listar recepciones' })
   async getReceipts(@Query('clienteId') clienteId?: string, @Query('estado') estado?: string) {
-    const where: any = {};
-    if (clienteId) where.clienteId = clienteId;
-    if (estado) where.estado = estado;
+    try {
+      const where: any = {};
+      if (clienteId) where.clienteId = clienteId;
+      if (estado) where.estado = estado;
 
-    return this.prisma.receipt.findMany({
-      where,
-      include: {
-        cliente: { select: { id: true, codigo: true, nombreComercial: true, giro: true, reglaInventario: true, zonaAsignadaId: true } },
-        proveedor: { select: { id: true, nombre: true } },
-        lineas: {
-          include: {
-            sku: {
-              select: {
-                id: true,
-                codigo: true,
-                descripcion: true,
-                categoria: true,
-                subcategoria: true,
-                talla: true,
-                color: true,
-                codigoBarras: true,
-                uomBase: true,
-                capacidadEmpaque: true,
-                descripcionEmpaque: true,
-                marca: true,
+      return await this.prisma.receipt.findMany({
+        where,
+        include: {
+          cliente: { select: { id: true, codigo: true, nombreComercial: true, giro: true, reglaInventario: true, zonaAsignadaId: true } },
+          proveedor: { select: { id: true, nombre: true } },
+          lineas: {
+            include: {
+              sku: {
+                select: {
+                  id: true,
+                  codigo: true,
+                  descripcion: true,
+                  categoria: true,
+                  subcategoria: true,
+                  talla: true,
+                  color: true,
+                  codigoBarras: true,
+                  uomBase: true,
+                  capacidadEmpaque: true,
+                  descripcionEmpaque: true,
+                  marca: true,
+                },
               },
             },
           },
         },
-      },
-      orderBy: { fechaRecepcion: 'desc' },
-    });
+        orderBy: { fechaRecepcion: 'desc' },
+      });
+    } catch (error: any) {
+      console.error('Error al listar recepciones:', error);
+      throw new HttpException(error.message || 'Error interno al consultar recepciones', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   @Post('receipts')
   @ApiOperation({ summary: 'Crear recepción' })
   async createReceipt(@Body() data: any) {
-    const count = await this.prisma.receipt.count();
-    const codigo = `REC-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+    try {
+      const count = await this.prisma.receipt.count();
+      const codigo = `REC-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
 
-    const { lineas, ...receiptData } = data;
-    const receipt = await this.prisma.receipt.create({
-      data: { ...receiptData, codigo, lineas: lineas ? { create: lineas } : undefined },
-      include: { cliente: { select: { nombreComercial: true } }, lineas: { include: { sku: true } } },
-    });
+      const { lineas, ...receiptData } = data;
+      const receipt = await this.prisma.receipt.create({
+        data: { ...receiptData, codigo, lineas: lineas ? { create: lineas } : undefined },
+        include: { cliente: { select: { nombreComercial: true } }, lineas: { include: { sku: true } } },
+      });
 
-    await this.audit(data.recibidoPor || 'Sistema', 'CREAR_RECEPCION', 'Receipt', receipt.id, `${codigo}: ${lineas?.length || 0} líneas`);
-    return receipt;
+      await this.audit(data.recibidoPor || 'Sistema', 'CREAR_RECEPCION', 'Receipt', receipt.id, `${codigo}: ${lineas?.length || 0} líneas`);
+      return receipt;
+    } catch (error: any) {
+      console.error('Error al crear recepción:', error);
+      throw new HttpException(error.message || 'Error interno al crear el previo de recibo', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   @Post('receipts/:id/generate-barcodes')

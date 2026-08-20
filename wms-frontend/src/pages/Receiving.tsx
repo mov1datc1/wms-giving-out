@@ -756,6 +756,12 @@ export function Receiving() {
                 </div>
               )}
 
+              {formMsg.text && (
+                <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginBottom: 14 }}>
+                  {formMsg.text}
+                </div>
+              )}
+
               <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <button type="button" className="btn btn-ghost btn-sm" onClick={handleDownloadTemplate}>
                   <Download size={14} /> Descargar Plantilla Oficial (.xlsx)
