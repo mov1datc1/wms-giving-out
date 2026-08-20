@@ -98,6 +98,10 @@ export function Receiving() {
   const [reportData, setReportData] = useState<any | null>(null);
   const [loadingReport, setLoadingReport] = useState(false);
 
+  // Putaway / Alojamiento Modal State
+  const [putawayModalReceipt, setPutawayModalReceipt] = useState<any | null>(null);
+  const [putawayMoves, setPutawayMoves] = useState<any[]>([]);
+
   // Handheld Scanner State
   const [scannerQuery, setScannerQuery] = useState('');
   const [scannerMsg, setScannerMsg] = useState({ type: '', text: '' });
@@ -116,6 +120,65 @@ export function Receiving() {
   const headers: any = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   useEffect(() => { loadData(); }, []);
+
+  function handleOpenPutawayModal(receipt: any) {
+    const recLocId = locations.find(loc => loc.codigo === 'REC-01' || loc.tipoUbicacion === 'RECIBO')?.id || '';
+    const clientObj = clients.find(c => c.id === receipt.clienteId) || receipt.cliente;
+
+    const initialMoves = (receipt.lineas || []).map((l: any) => {
+      // Ubicar sugerencia de rack según zona del cliente
+      let suggestedRackId = '';
+      if (clientObj?.zonaAsignadaId) {
+        suggestedRackId = locations.find(loc => loc.zonaId === clientObj.zonaAsignadaId && loc.tipoUbicacion !== 'RECIBO')?.id || '';
+      }
+      if (!suggestedRackId) {
+        suggestedRackId = locations.find(loc => loc.tipoUbicacion === 'ESTANTERIA')?.id || '';
+      }
+
+      return {
+        skuId: l.skuId,
+        codigo: l.sku?.codigo,
+        descripcion: l.sku?.descripcion,
+        cantidad: l.cantidadRecibida || l.cantidadEsperada || 0,
+        ubicacionOrigenId: recLocId,
+        ubicacionDestinoId: suggestedRackId,
+      };
+    }).filter((m: any) => m.cantidad > 0);
+
+    setPutawayMoves(initialMoves);
+    setPutawayModalReceipt(receipt);
+  }
+
+  async function handleExecutePutaway(e: React.FormEvent) {
+    e.preventDefault();
+    if (!putawayModalReceipt || putawayMoves.length === 0) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/putaway`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          movimientos: putawayMoves.map(m => ({
+            skuId: m.skuId,
+            clienteId: putawayModalReceipt.clienteId,
+            ubicacionOrigenId: m.ubicacionOrigenId,
+            ubicacionDestinoId: m.ubicacionDestinoId,
+            cantidad: m.cantidad,
+            usuario: user?.email || 'Montacarguista',
+          })),
+        }),
+      });
+
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al ejecutar el alojamiento');
+
+      setFormMsg({ type: 'success', text: `📦 Alojamiento a racks completado para ${putawayMoves.length} productos.` });
+      setPutawayModalReceipt(null);
+      loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setSubmitting(false);
+  }
 
   // Re-analizar el archivo si el usuario cambia de cliente
   useEffect(() => {
@@ -1001,6 +1064,78 @@ export function Receiving() {
         </div>
       )}
 
+      {/* --- MODAL DE ALOJAMIENTO / PUTAWAY DE ANDÉN A RACKS --- */}
+      {putawayModalReceipt && (
+        <div className="modal-overlay" onClick={() => setPutawayModalReceipt(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Box size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Alojamiento a Racks (Putaway) — Previo {putawayModalReceipt.codigo}</h2>
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-tertiary)' }}>Traslada la mercancía descargada en Andén de Recepción (REC-01) a sus racks de almacenamiento definitivo</p>
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setPutawayModalReceipt(null)}><X size={18} /></button>
+            </div>
+
+            <form onSubmit={handleExecutePutaway} className="modal-body">
+              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', marginBottom: 16 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-tertiary)' }}>
+                      <th style={{ padding: '8px 12px' }}>SKU / DESCRIPCIÓN</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'center' }}>CANTIDAD RECIBIDA</th>
+                      <th style={{ padding: '8px 12px' }}>UBICACIÓN RACK DESTINO SUGERIDA</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {putawayMoves.map((m, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: '10px 12px' }}>
+                          <div style={{ fontWeight: 700, color: 'var(--primary)' }}>{m.codigo}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{m.descripcion}</div>
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700 }}>
+                          {m.cantidad} PZA
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <select 
+                            className="form-select form-select-full" 
+                            style={{ fontSize: 12 }}
+                            value={m.ubicacionDestinoId} 
+                            onChange={e => {
+                              const updated = [...putawayMoves];
+                              updated[idx].ubicacionDestinoId = e.target.value;
+                              setPutawayMoves(updated);
+                            }}
+                          >
+                            {locations.filter(l => l.tipoUbicacion !== 'RECIBO' && l.tipoUbicacion !== 'DEVOLUCION').map(loc => (
+                              <option key={loc.id} value={loc.id}>
+                                {loc.codigo} ({loc.zona?.nombre || loc.pasillo})
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost" onClick={() => setPutawayModalReceipt(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                  {submitting ? 'Ejecutando Alojamiento...' : '📦 Confirmar Alojamiento a Racks'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* --- MODAL CARGAR PREVIO DE RECIBO --- */}
       {showNewPrevio && (
         <div className="modal-overlay" onClick={() => setShowNewPrevio(false)}>
@@ -1514,6 +1649,16 @@ export function Receiving() {
                                 </div>
 
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  {/* BOTÓN ALOJAMIENTO / PUTAWAY */}
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => handleOpenPutawayModal(r)}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--primary)', borderColor: 'var(--primary)' }}
+                                  >
+                                    <Box size={14} /> Alojamiento / Putaway a Racks
+                                  </button>
+
                                   {/* BOTÓN AGREGAR PRODUCTO MANUAL */}
                                   {!isClosed && (
                                     <button
@@ -1684,11 +1829,13 @@ export function Receiving() {
                                                     onClick={() => {
                                                       setProcessLineId(processLineId === l.id ? null : l.id);
                                                       const rem = Math.max(0, esperada - totalRecibido);
+                                                      const recLoc = locations.find(loc => loc.codigo === 'REC-01' || loc.tipoUbicacion === 'RECIBO')?.id || '';
+                                                      const devLoc = locations.find(loc => loc.codigo === 'DEV-01' || loc.tipoUbicacion === 'DEVOLUCION')?.id || '';
                                                       setProcessForm({
                                                         cantidadConforme: rem,
                                                         cantidadNoConforme: 0,
-                                                        ubicacionConformeId: '',
-                                                        ubicacionNoConformeId: '',
+                                                        ubicacionConformeId: recLoc,
+                                                        ubicacionNoConformeId: devLoc,
                                                         lote: '',
                                                         fechaVencimiento: '',
                                                         tipoHu: clientObj?.uomPrincipal === 'PALLET' ? 'PALLET' : 'CAJA',
