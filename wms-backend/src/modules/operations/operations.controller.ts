@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Param, Query, Body, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Query, Body, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 
@@ -72,6 +72,116 @@ export class OperationsController {
     } catch (error: any) {
       console.error('Error al crear recepción:', error);
       throw new HttpException(error.message || 'Error interno al crear el previo de recibo', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Put('receipts/:id')
+  @ApiOperation({ summary: 'Editar metadatos de previo de recibo' })
+  async updateReceipt(@Param('id') receiptId: string, @Body() data: any) {
+    try {
+      const receipt = await this.prisma.receipt.findUnique({ where: { id: receiptId } });
+      if (!receipt) throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
+
+      const updated = await this.prisma.receipt.update({
+        where: { id: receiptId },
+        data: {
+          ocReferencia: data.ocReferencia !== undefined ? data.ocReferencia : receipt.ocReferencia,
+          origen: data.origen !== undefined ? data.origen : receipt.origen,
+          lineaTransporte: data.lineaTransporte !== undefined ? data.lineaTransporte : receipt.lineaTransporte,
+          placa: data.placa !== undefined ? data.placa : receipt.placa,
+          nombreChofer: data.nombreChofer !== undefined ? data.nombreChofer : receipt.nombreChofer,
+          notas: data.notas !== undefined ? data.notas : receipt.notas,
+          proveedorId: data.proveedorId !== undefined ? data.proveedorId : receipt.proveedorId,
+        },
+        include: { cliente: true, proveedor: true, lineas: { include: { sku: true } } },
+      });
+
+      await this.audit(data.usuario || 'Operador', 'EDITAR_PREVIO', 'Receipt', receiptId, `Actualizados datos del previo ${receipt.codigo}`);
+      return updated;
+    } catch (error: any) {
+      console.error('Error al editar previo:', error);
+      throw new HttpException(error.message || 'Error al actualizar el previo', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Delete('receipts/:id')
+  @ApiOperation({ summary: 'Eliminar previo de recibo completo' })
+  async deleteReceipt(@Param('id') receiptId: string) {
+    try {
+      const receipt = await this.prisma.receipt.findUnique({ where: { id: receiptId }, include: { lineas: true } });
+      if (!receipt) throw new HttpException('Previo no encontrado', HttpStatus.NOT_FOUND);
+
+      await this.prisma.receiptLine.deleteMany({ where: { recepcionId: receiptId } });
+      await this.prisma.receipt.delete({ where: { id: receiptId } });
+
+      await this.audit('Operador', 'ELIMINAR_PREVIO', 'Receipt', receiptId, `Eliminado previo ${receipt.codigo}`);
+      return { success: true, message: `Previo ${receipt.codigo} eliminado correctamente` };
+    } catch (error: any) {
+      console.error('Error al eliminar previo:', error);
+      throw new HttpException(error.message || 'Error al eliminar el previo', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Put('receipt-lines/:id')
+  @ApiOperation({ summary: 'Editar línea de previo de recibo' })
+  async updateReceiptLine(@Param('id') lineId: string, @Body() data: { cantidadEsperada?: number; notas?: string; skuId?: string }) {
+    try {
+      const line = await this.prisma.receiptLine.findUnique({ where: { id: lineId } });
+      if (!line) throw new HttpException('Línea no encontrada', HttpStatus.NOT_FOUND);
+
+      const updated = await this.prisma.receiptLine.update({
+        where: { id: lineId },
+        data: {
+          cantidadEsperada: data.cantidadEsperada !== undefined ? Number(data.cantidadEsperada) : line.cantidadEsperada,
+          skuId: data.skuId || line.skuId,
+          notas: data.notas !== undefined ? data.notas : line.notas,
+        },
+        include: { sku: true },
+      });
+
+      return updated;
+    } catch (error: any) {
+      console.error('Error al editar línea de previo:', error);
+      throw new HttpException(error.message || 'Error al actualizar la línea', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Delete('receipt-lines/:id')
+  @ApiOperation({ summary: 'Eliminar línea de previo de recibo' })
+  async deleteReceiptLine(@Param('id') lineId: string) {
+    try {
+      const line = await this.prisma.receiptLine.findUnique({ where: { id: lineId } });
+      if (!line) throw new HttpException('Línea no encontrada', HttpStatus.NOT_FOUND);
+
+      await this.prisma.receiptLine.delete({ where: { id: lineId } });
+      return { success: true, message: 'Línea eliminada correctamente del previo' };
+    } catch (error: any) {
+      console.error('Error al eliminar línea:', error);
+      throw new HttpException(error.message || 'Error al eliminar la línea', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Post('receipts/:id/lines')
+  @ApiOperation({ summary: 'Agregar nuevo producto / línea a previo existente' })
+  async addReceiptLine(@Param('id') receiptId: string, @Body() data: { skuId: string; cantidadEsperada: number; notas?: string }) {
+    try {
+      const receipt = await this.prisma.receipt.findUnique({ where: { id: receiptId } });
+      if (!receipt) throw new HttpException('Previo no encontrado', HttpStatus.NOT_FOUND);
+
+      const created = await this.prisma.receiptLine.create({
+        data: {
+          recepcionId: receiptId,
+          skuId: data.skuId,
+          cantidadEsperada: Number(data.cantidadEsperada) || 1,
+          notas: data.notas || 'Agregado manualmente a previo',
+        },
+        include: { sku: true },
+      });
+
+      return created;
+    } catch (error: any) {
+      console.error('Error al agregar línea:', error);
+      throw new HttpException(error.message || 'Error al agregar el producto al previo', HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 

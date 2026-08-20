@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, Plus, X, Package, MapPin, Truck, UploadCloud,
   FileSpreadsheet, Download, CheckCircle2, AlertTriangle, FileText, Sparkles,
   Printer, QrCode, Scan, ArrowRight, Tag, Box, CheckSquare, ShieldCheck,
-  UserCheck, Layers
+  UserCheck, Layers, Edit3, Trash2, Settings2, PlusCircle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationSelect } from '../components/LocationSelect';
@@ -31,6 +31,7 @@ interface ProcessLineForm {
   lote: string;
   fechaVencimiento: string;
   tipoHu: string;
+  permitirExcedente?: boolean;
 }
 
 interface ParsedLine {
@@ -76,6 +77,16 @@ export function Receiving() {
   const [excelAnalysis, setExcelAnalysis] = useState<ExcelAnalysis | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // --- CRUD Modals State ---
+  const [editReceiptModal, setEditReceiptModal] = useState<any | null>(null);
+  const [deleteReceiptConfirm, setDeleteReceiptConfirm] = useState<any | null>(null);
+  
+  const [editingLine, setEditingLine] = useState<{ id: string; cantidadEsperada: number; notas: string; codigo: string; descripcion: string } | null>(null);
+  const [deleteLineConfirm, setDeleteLineConfirm] = useState<{ lineId: string; receiptId: string; codigo: string } | null>(null);
+  
+  const [showAddLineModal, setShowAddLineModal] = useState<{ receiptId: string; clienteId: string } | null>(null);
+  const [newLineForm, setNewLineForm] = useState({ skuId: '', cantidadEsperada: 1, notas: '' });
+
   // Print Modal State
   const [printModalReceipt, setPrintModalReceipt] = useState<any | null>(null);
   const [generatingBarcodes, setGeneratingBarcodes] = useState<string | null>(null);
@@ -96,7 +107,7 @@ export function Receiving() {
   const [processForm, setProcessForm] = useState<ProcessLineForm>({
     cantidadConforme: 0, cantidadNoConforme: 0,
     ubicacionConformeId: '', ubicacionNoConformeId: '',
-    lote: '', fechaVencimiento: '', tipoHu: 'CAJA'
+    lote: '', fechaVencimiento: '', tipoHu: 'CAJA', permitirExcedente: false
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -135,6 +146,136 @@ export function Receiving() {
       }
     } catch (err) { console.error(err); }
     setLoading(false);
+  }
+
+  // --- CRUD HANDLERS PARA PREVIO Y LÍNEAS ---
+
+  // Editar Metadatos de Previo
+  async function handleUpdateReceipt(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editReceiptModal) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/receipts/${editReceiptModal.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          ocReferencia: editReceiptModal.ocReferencia,
+          origen: editReceiptModal.origen,
+          lineaTransporte: editReceiptModal.lineaTransporte,
+          placa: editReceiptModal.placa,
+          nombreChofer: editReceiptModal.nombreChofer,
+          notas: editReceiptModal.notas,
+          usuario: user?.email,
+        }),
+      });
+
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al actualizar metadatos del previo');
+
+      setFormMsg({ type: 'success', text: '✅ Previo de recibo actualizado correctamente.' });
+      setEditReceiptModal(null);
+      loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setSubmitting(false);
+  }
+
+  // Eliminar Previo Completo
+  async function handleDeleteReceiptConfirm() {
+    if (!deleteReceiptConfirm) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/receipts/${deleteReceiptConfirm.id}`, {
+        method: 'DELETE',
+        headers,
+      });
+
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al eliminar el previo');
+
+      setFormMsg({ type: 'success', text: `🗑️ Previo ${deleteReceiptConfirm.codigo} eliminado.` });
+      setDeleteReceiptConfirm(null);
+      setExpanded(null);
+      loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setSubmitting(false);
+  }
+
+  // Editar Cantidad Esperada de una Línea
+  async function handleUpdateLine(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingLine) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/receipt-lines/${editingLine.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          cantidadEsperada: editingLine.cantidadEsperada,
+          notas: editingLine.notas,
+        }),
+      });
+
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al actualizar línea');
+
+      setFormMsg({ type: 'success', text: '✅ Cantidad esperada actualizada.' });
+      setEditingLine(null);
+      loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setSubmitting(false);
+  }
+
+  // Eliminar Línea del Previo
+  async function handleDeleteLineConfirm() {
+    if (!deleteLineConfirm) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/receipt-lines/${deleteLineConfirm.lineId}`, {
+        method: 'DELETE',
+        headers,
+      });
+
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al eliminar línea');
+
+      setFormMsg({ type: 'success', text: '🗑️ Producto eliminado del previo.' });
+      setDeleteLineConfirm(null);
+      loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setSubmitting(false);
+  }
+
+  // Agregar Producto Manual al Previo
+  async function handleAddLineSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!showAddLineModal || !newLineForm.skuId) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/receipts/${showAddLineModal.receiptId}/lines`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          skuId: newLineForm.skuId,
+          cantidadEsperada: newLineForm.cantidadEsperada,
+          notas: newLineForm.notas,
+        }),
+      });
+
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al agregar producto al previo');
+
+      setFormMsg({ type: 'success', text: '✅ Producto agregado al previo de recibo.' });
+      setShowAddLineModal(null);
+      setNewLineForm({ skuId: '', cantidadEsperada: 1, notas: '' });
+      loadData();
+    } catch (err: any) {
+      setFormMsg({ type: 'error', text: err.message });
+    }
+    setSubmitting(false);
   }
 
   // --- GENERAR CÓDIGOS DE BARRAS / EANs PARA UN PREVIO ---
@@ -176,7 +317,6 @@ export function Receiving() {
         const data = await res.json();
         setReportData(data);
       } else {
-        // Fallback local calculation
         calculateLocalReport(receipt);
       }
     } catch (err) {
@@ -263,7 +403,6 @@ export function Receiving() {
       setClosingNotes('');
       await loadData();
       
-      // Abrir reporte de cierre automáticamente
       handleOpenReport(targetReceipt);
     } catch (err: any) {
       setFormMsg({ type: 'error', text: err.message });
@@ -464,27 +603,42 @@ export function Receiving() {
     setSubmitting(false);
   }
 
-  // --- PROCESAR RECEPCION DUAL ---
+  // --- PROCESAR RECEPCIÓN DUAL CON VALIDACIONES STRICTAS ---
   async function handleProcessLine(e: React.FormEvent, receiptId: string, lineId: string) {
     e.preventDefault();
     setFormMsg({ type: '', text: '' });
+
+    const totalIngresar = processForm.cantidadConforme + processForm.cantidadNoConforme;
     
-    if (processForm.cantidadConforme <= 0 && processForm.cantidadNoConforme <= 0) {
-      setFormMsg({ type: 'error', text: 'Debes ingresar al menos una cantidad (Conforme o No Conforme)' });
+    if (totalIngresar <= 0) {
+      setFormMsg({ type: 'error', text: '⛔ Debes ingresar una cantidad mayor a 0 (Conforme o No Conforme)' });
       return;
     }
     if (processForm.cantidadConforme > 0 && !processForm.ubicacionConformeId) {
-      setFormMsg({ type: 'error', text: 'Selecciona una ubicación física para la Zona Conforme' });
+      setFormMsg({ type: 'error', text: '⛔ Selecciona una ubicación física de almacenamiento para la Zona Conforme' });
       return;
     }
     if (processForm.cantidadNoConforme > 0 && !processForm.ubicacionNoConformeId) {
-      setFormMsg({ type: 'error', text: 'Selecciona una ubicación física para la Zona No Conforme' });
+      setFormMsg({ type: 'error', text: '⛔ Selecciona una ubicación física para la Zona No Conforme / Cuarentena' });
       return;
     }
 
     const rec = receipts.find(r => r.id === receiptId);
     const line = rec?.lineas.find((l: any) => l.id === lineId);
     const clientObj = clients.find(c => c.id === rec?.clienteId) || rec?.cliente;
+
+    const esperada = line?.cantidadEsperada || 0;
+    const yaRecibida = (line?.cantidadRecibida || 0) + (line?.cantidadDanada || 0);
+    const restante = Math.max(0, esperada - yaRecibida);
+
+    // Validación Estricta de Excedente (ej. si se esperan 150 y teclean 156 o más)
+    if (totalIngresar > restante && !processForm.permitirExcedente) {
+      setFormMsg({
+        type: 'error',
+        text: `⛔ Error de Excedente: Estás intentando ingresar ${totalIngresar} unidades, pero el saldo pendiente esperado es de ${restante} unidades (+${totalIngresar - restante} en exceso). Si deseas autorizar el recibo en exceso, marca la casilla correspondiente.`
+      });
+      return;
+    }
 
     // Validación estricta según parametrización del depositante
     if (clientObj?.requiereLote && !processForm.lote.trim()) {
@@ -553,7 +707,8 @@ export function Receiving() {
         ubicacionNoConformeId: '',
         lote: '',
         fechaVencimiento: '',
-        tipoHu: clientObj?.uomPrincipal === 'PALLET' ? 'PALLET' : 'CAJA'
+        tipoHu: clientObj?.uomPrincipal === 'PALLET' ? 'PALLET' : 'CAJA',
+        permitirExcedente: false,
       });
       setScannerQuery('');
     } else {
@@ -586,7 +741,7 @@ export function Receiving() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Previos de Recibo & Entrada (3PL)</h1>
-          <p className="page-subtitle">Ingesta de ASN/Excel, validación física dual, códigos EAN-13, impresión térmica y reporte oficial de cierre</p>
+          <p className="page-subtitle">Ingesta ASN/Excel, validación física dual, control de excedentes, edición de previo y reporte oficial de cierre</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }}>
@@ -600,6 +755,249 @@ export function Receiving() {
       {formMsg.text && (
         <div className={`form-message ${formMsg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginBottom: 16 }}>
           {formMsg.text}
+        </div>
+      )}
+
+      {/* --- MODAL EDITAR PREVIO (METADATOS) --- */}
+      {editReceiptModal && (
+        <div className="modal-overlay" onClick={() => setEditReceiptModal(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Settings2 size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Editar Previo ({editReceiptModal.codigo})</h2>
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-tertiary)' }}>Modifica datos de transporte, chofer, factura u observaciones</p>
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditReceiptModal(null)}><X size={18} /></button>
+            </div>
+
+            <form onSubmit={handleUpdateReceipt} className="modal-body">
+              <div className="form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label className="form-label">Factura / Orden de Compra (OC)</label>
+                  <input 
+                    className="form-input" 
+                    value={editReceiptModal.ocReferencia || ''} 
+                    onChange={e => setEditReceiptModal({ ...editReceiptModal, ocReferencia: e.target.value })} 
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">Origen</label>
+                  <select 
+                    className="form-select form-select-full" 
+                    value={editReceiptModal.origen || 'NACIONAL'} 
+                    onChange={e => setEditReceiptModal({ ...editReceiptModal, origen: e.target.value })}
+                  >
+                    <option value="NACIONAL">Nacional</option>
+                    <option value="IMPORTACION">Importación</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Línea de Transporte</label>
+                  <input className="form-input" value={editReceiptModal.lineaTransporte || ''} onChange={e => setEditReceiptModal({ ...editReceiptModal, lineaTransporte: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Placas de Unidad</label>
+                  <input className="form-input" value={editReceiptModal.placa || ''} onChange={e => setEditReceiptModal({ ...editReceiptModal, placa: e.target.value.toUpperCase() })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Chofer</label>
+                  <input className="form-input" value={editReceiptModal.nombreChofer || ''} onChange={e => setEditReceiptModal({ ...editReceiptModal, nombreChofer: e.target.value })} />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Notas u Observaciones</label>
+                <textarea className="form-input" rows={2} value={editReceiptModal.notas || ''} onChange={e => setEditReceiptModal({ ...editReceiptModal, notas: e.target.value })} />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost" onClick={() => setEditReceiptModal(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                  {submitting ? 'Guardando...' : 'Guardar Cambios del Previo'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL CONFIRMAR ELIMINAR PREVIO --- */}
+      {deleteReceiptConfirm && (
+        <div className="modal-overlay" onClick={() => setDeleteReceiptConfirm(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(239,68,68,0.1)', color: 'var(--error)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Trash2 size={20} />
+                </div>
+                <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>¿Eliminar Previo {deleteReceiptConfirm.codigo}?</h2>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDeleteReceiptConfirm(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)' }}>
+                Esta acción eliminará el previo completo con sus {deleteReceiptConfirm.lineas?.length || 0} líneas esperadas. ¿Deseas continuar?
+              </p>
+              <div className="modal-footer" style={{ marginTop: 16 }}>
+                <button type="button" className="btn btn-ghost" onClick={() => setDeleteReceiptConfirm(null)}>Cancelar</button>
+                <button type="button" className="btn btn-primary" onClick={handleDeleteReceiptConfirm} disabled={submitting} style={{ background: 'var(--error)', borderColor: 'var(--error)' }}>
+                  {submitting ? 'Eliminando...' : 'Sí, Eliminar Previo'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL EDITAR LÍNEA (CANTIDAD ESPERADA) --- */}
+      {editingLine && (
+        <div className="modal-overlay" onClick={() => setEditingLine(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Edit3 size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Editar Cantidad Esperada</h2>
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-tertiary)' }}>{editingLine.codigo} — {editingLine.descripcion}</p>
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditingLine(null)}><X size={18} /></button>
+            </div>
+
+            <form onSubmit={handleUpdateLine} className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Cantidad Esperada <span className="required">*</span></label>
+                <input 
+                  type="number" 
+                  className="form-input" 
+                  min={1} 
+                  value={editingLine.cantidadEsperada} 
+                  onChange={e => setEditingLine({ ...editingLine, cantidadEsperada: parseInt(e.target.value) || 1 })} 
+                  required 
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Notas u Observaciones de la línea</label>
+                <input 
+                  className="form-input" 
+                  value={editingLine.notas || ''} 
+                  onChange={e => setEditingLine({ ...editingLine, notas: e.target.value })} 
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost" onClick={() => setEditingLine(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                  {submitting ? 'Guardando...' : 'Actualizar Línea'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL CONFIRMAR ELIMINAR LÍNEA --- */}
+      {deleteLineConfirm && (
+        <div className="modal-overlay" onClick={() => setDeleteLineConfirm(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(239,68,68,0.1)', color: 'var(--error)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Trash2 size={20} />
+                </div>
+                <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>¿Quitar producto {deleteLineConfirm.codigo}?</h2>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDeleteLineConfirm(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)' }}>
+                Esta acción removerá el producto {deleteLineConfirm.codigo} del previo de recibo.
+              </p>
+              <div className="modal-footer" style={{ marginTop: 16 }}>
+                <button type="button" className="btn btn-ghost" onClick={() => setDeleteLineConfirm(null)}>Cancelar</button>
+                <button type="button" className="btn btn-primary" onClick={handleDeleteLineConfirm} disabled={submitting} style={{ background: 'var(--error)', borderColor: 'var(--error)' }}>
+                  {submitting ? 'Eliminando...' : 'Sí, Quitar del Previo'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL AGREGAR PRODUCTO MANUAL AL PREVIO --- */}
+      {showAddLineModal && (
+        <div className="modal-overlay" onClick={() => setShowAddLineModal(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <PlusCircle size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Agregar Producto al Previo</h2>
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-tertiary)' }}>Incluye un SKU que llegó físicamente y no venía en la lista Excel original</p>
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowAddLineModal(null)}><X size={18} /></button>
+            </div>
+
+            <form onSubmit={handleAddLineSubmit} className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Seleccionar SKU / Producto <span className="required">*</span></label>
+                <select 
+                  className="form-select form-select-full" 
+                  value={newLineForm.skuId} 
+                  onChange={e => setNewLineForm({ ...newLineForm, skuId: e.target.value })} 
+                  required
+                >
+                  <option value="">Seleccionar del catálogo...</option>
+                  {skus.filter(s => s.clienteId === showAddLineModal.clienteId).map(s => (
+                    <option key={s.id} value={s.id}>{s.descripcion} ({s.codigo})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Cantidad Esperada a Recibir <span className="required">*</span></label>
+                <input 
+                  type="number" 
+                  className="form-input" 
+                  min={1} 
+                  value={newLineForm.cantidadEsperada} 
+                  onChange={e => setNewLineForm({ ...newLineForm, cantidadEsperada: parseInt(e.target.value) || 1 })} 
+                  required 
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Notas u Observaciones</label>
+                <input 
+                  className="form-input" 
+                  placeholder="Ej. Producto sorpresa no manifestado en ASN" 
+                  value={newLineForm.notas} 
+                  onChange={e => setNewLineForm({ ...newLineForm, notas: e.target.value })} 
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost" onClick={() => setShowAddLineModal(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={submitting || !newLineForm.skuId}>
+                  {submitting ? 'Guardando...' : 'Agregar al Previo'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -621,7 +1019,6 @@ export function Receiving() {
             </div>
 
             <form onSubmit={handleCreatePrevio} className="modal-body">
-              {/* SELECCIÓN DE CLIENTE Y METADATOS */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginBottom: 16 }}>
                 <div className="form-group">
                   <label className="form-label">Cliente Depositante <span className="required">*</span></label>
@@ -661,7 +1058,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              {/* DATOS DE TRANSPORTE */}
               <div style={{ background: 'var(--bg-secondary)', padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--primary)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Truck size={14} /> Datos de Transporte y Chofer
@@ -682,7 +1078,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              {/* ZONA DE CARGA DE ARCHIVO EXCEL */}
               <div style={{
                 border: '2px dashed var(--border)',
                 borderRadius: 10,
@@ -734,7 +1129,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              {/* RESUMEN DEL ANÁLISIS DE EXCEL */}
               {excelAnalysis && (
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
@@ -854,10 +1248,7 @@ export function Receiving() {
               </div>
             </div>
 
-            {/* CONTENIDO DEL REPORTE IMPRIMIBLE */}
             <div className="modal-body" id="printable-reception-report" style={{ padding: '20px 24px' }}>
-              
-              {/* Header Empresa & Folio */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid var(--border)', paddingBottom: 16, marginBottom: 16 }}>
                 <div>
                   <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--primary)', letterSpacing: '-0.02em' }}>GIVING OUT WMS 360+</div>
@@ -874,7 +1265,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              {/* Metadatos de la Entrada */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, padding: '12px 16px', background: 'var(--bg-secondary)', borderRadius: 8, marginBottom: 16, fontSize: 12 }}>
                 <div>
                   <span style={{ color: 'var(--text-tertiary)' }}>Depositante:</span>
@@ -894,7 +1284,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              {/* Tarjetas KPI de Balance */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 16 }}>
                 <div style={{ padding: '10px 12px', background: 'var(--bg-card)', borderRadius: 8, border: '1px solid var(--border)', textAlign: 'center' }}>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Total Esperado</div>
@@ -920,7 +1309,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              {/* Tabla Comparativa Detallada */}
               <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', marginBottom: 20 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
@@ -959,7 +1347,6 @@ export function Receiving() {
                 </table>
               </div>
 
-              {/* Cuadro de Firmas de Conformidad */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 40, marginTop: 30, paddingTop: 20 }}>
                 <div style={{ borderTop: '1px solid var(--border)', textAlign: 'center', paddingTop: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 700 }}>Firma y Nombre del Transportista</div>
@@ -1002,7 +1389,7 @@ export function Receiving() {
                 <th style={{ minWidth: '160px' }}>TRANSPORTE / CHOFER</th>
                 <th style={{ width: '70px', textAlign: 'center' }}>LÍNEAS</th>
                 <th style={{ width: '110px' }}>ESTADO</th>
-                <th style={{ width: '180px', minWidth: '160px', textAlign: 'right' }}>ACCIONES</th>
+                <th style={{ width: '220px', minWidth: '180px', textAlign: 'right' }}>ACCIONES</th>
               </tr>
             </thead>
             <tbody>
@@ -1049,6 +1436,17 @@ export function Receiving() {
                         <td style={{ textAlign: 'right' }} onClick={e => e.stopPropagation()}>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                             
+                            {/* BOTÓN EDITAR PREVIO */}
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              title="Editar metadatos del previo (Factura, Transporte, Chofer)"
+                              onClick={() => setEditReceiptModal(r)}
+                              style={{ padding: '4px 6px' }}
+                            >
+                              <Settings2 size={14} />
+                            </button>
+
                             {/* BOTÓN IMPRIMIR ETIQUETAS */}
                             <button
                               type="button"
@@ -1070,6 +1468,19 @@ export function Receiving() {
                             >
                               <FileText size={15} />
                             </button>
+
+                            {/* BOTÓN ELIMINAR PREVIO */}
+                            {!isClosed && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                title="Eliminar previo de recibo"
+                                onClick={() => setDeleteReceiptConfirm(r)}
+                                style={{ padding: '4px 6px', color: 'var(--error)' }}
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            )}
 
                             <button 
                               type="button"
@@ -1103,6 +1514,18 @@ export function Receiving() {
                                 </div>
 
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  {/* BOTÓN AGREGAR PRODUCTO MANUAL */}
+                                  {!isClosed && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => setShowAddLineModal({ receiptId: r.id, clienteId: r.clienteId })}
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+                                    >
+                                      <PlusCircle size={14} /> Agregar Producto Manual
+                                    </button>
+                                  )}
+
                                   {/* BOTÓN CERRAR RECEPCIÓN */}
                                   {!isClosed && (
                                     <button
@@ -1231,6 +1654,7 @@ export function Receiving() {
                                               <div style={{ fontWeight: 500 }}>{skuObj?.descripcion}</div>
                                               <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
                                                 {skuObj?.talla ? `Talla ${skuObj.talla}` : ''} {skuObj?.color ? `· ${skuObj.color}` : ''}
+                                                {l.notas ? ` | ${l.notas}` : ''}
                                               </div>
                                             </td>
                                             <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700 }}>
@@ -1252,7 +1676,7 @@ export function Receiving() {
                                               )}
                                             </td>
                                             <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                                              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', alignItems: 'center' }}>
                                                 {!isClosed && (
                                                   <button
                                                     type="button"
@@ -1267,18 +1691,47 @@ export function Receiving() {
                                                         ubicacionNoConformeId: '',
                                                         lote: '',
                                                         fechaVencimiento: '',
-                                                        tipoHu: clientObj?.uomPrincipal === 'PALLET' ? 'PALLET' : 'CAJA'
+                                                        tipoHu: clientObj?.uomPrincipal === 'PALLET' ? 'PALLET' : 'CAJA',
+                                                        permitirExcedente: false,
                                                       });
                                                     }}
                                                   >
                                                     Ingresar
                                                   </button>
                                                 )}
+                                                
+                                                {/* EDITAR LÍNEA */}
+                                                {!isClosed && (
+                                                  <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm"
+                                                    title="Editar cantidad esperada de esta línea"
+                                                    onClick={() => setEditingLine({ id: l.id, cantidadEsperada: esperada, notas: l.notas || '', codigo: skuObj?.codigo, descripcion: skuObj?.descripcion })}
+                                                    style={{ padding: '4px 6px' }}
+                                                  >
+                                                    <Edit3 size={14} />
+                                                  </button>
+                                                )}
+
+                                                {/* ELIMINAR LÍNEA */}
+                                                {!isClosed && (
+                                                  <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm"
+                                                    title="Quitar producto de este previo"
+                                                    onClick={() => setDeleteLineConfirm({ lineId: l.id, receiptId: r.id, codigo: skuObj?.codigo })}
+                                                    style={{ padding: '4px 6px', color: 'var(--error)' }}
+                                                  >
+                                                    <Trash2 size={14} />
+                                                  </button>
+                                                )}
+
                                                 <button
                                                   type="button"
                                                   className="btn btn-secondary btn-sm"
                                                   title="Imprimir etiquetas de este producto"
                                                   onClick={() => setPrintModalReceipt({ ...r, lineas: [l] })}
+                                                  style={{ padding: '4px 6px' }}
                                                 >
                                                   <Printer size={13} />
                                                 </button>
@@ -1286,11 +1739,38 @@ export function Receiving() {
                                             </td>
                                           </tr>
 
-                                          {/* FORMULARIO DE INGRESO DUAL INLINE */}
+                                          {/* FORMULARIO DE INGRESO DUAL INLINE CON VALIDACIÓN DE EXCEDENTES */}
                                           {processLineId === l.id && (
                                             <tr>
                                               <td colSpan={8} style={{ padding: 18, background: 'rgba(13,148,136,0.03)', borderTop: '1px solid var(--border)' }}>
                                                 <form onSubmit={(e) => handleProcessLine(e, r.id, l.id)}>
+                                                  
+                                                  {/* ADVERTENCIA DE EXCEDENTE EN TIEMPO REAL */}
+                                                  {(processForm.cantidadConforme + processForm.cantidadNoConforme) > Math.max(0, esperada - totalRecibido) && (
+                                                    <div style={{
+                                                      padding: '12px 16px',
+                                                      background: 'rgba(239, 68, 68, 0.08)',
+                                                      borderRadius: 8,
+                                                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                                                      marginBottom: 16
+                                                    }}>
+                                                      <div style={{ fontWeight: 700, color: 'var(--error)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                        <AlertTriangle size={16} /> ⛔ Exceso de Piezas Detectado (+{(processForm.cantidadConforme + processForm.cantidadNoConforme) - Math.max(0, esperada - totalRecibido)} piezas en exceso)
+                                                      </div>
+                                                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 10px' }}>
+                                                        Se esperaban {esperada} piezas (quedan {Math.max(0, esperada - totalRecibido)} pendientes por recibir) y estás intentando ingresar {processForm.cantidadConforme + processForm.cantidadNoConforme} piezas.
+                                                      </div>
+                                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', fontWeight: 600, color: 'var(--text-primary)', background: 'var(--bg-card)', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                                                        <input 
+                                                          type="checkbox" 
+                                                          checked={Boolean(processForm.permitirExcedente)} 
+                                                          onChange={e => setProcessForm({ ...processForm, permitirExcedente: e.target.checked })} 
+                                                        />
+                                                        <span><strong>Autorizo el recibo de este excedente de mercancía</strong> (Registra auditoría en sistema)</span>
+                                                      </label>
+                                                    </div>
+                                                  )}
+
                                                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
                                                     
                                                     {/* ZONA CONFORME CON SMART LOCATION SELECT */}
@@ -1390,7 +1870,14 @@ export function Receiving() {
 
                                                   <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
                                                     <button type="button" className="btn btn-ghost" onClick={() => setProcessLineId(null)}>Cancelar</button>
-                                                    <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                                    <button 
+                                                      type="submit" 
+                                                      className="btn btn-primary" 
+                                                      disabled={
+                                                        submitting || 
+                                                        ((processForm.cantidadConforme + processForm.cantidadNoConforme) > Math.max(0, esperada - totalRecibido) && !processForm.permitirExcedente)
+                                                      }
+                                                    >
                                                       {submitting ? 'Registrando ingreso...' : 'Confirmar Ingreso a Almacén'}
                                                     </button>
                                                   </div>
