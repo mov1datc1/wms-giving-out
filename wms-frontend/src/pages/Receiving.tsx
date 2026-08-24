@@ -1511,6 +1511,117 @@ export function Receiving() {
         />
       )}
 
+      {/* --- STITCH INDUSTRIAL DOCK STAGING PROGRESS & KPI SUITE --- */}
+      {(() => {
+        let globalConforme = 0;
+        let globalCuarentena = 0;
+        let globalPendiente = 0;
+        let globalEsperado = 0;
+
+        receipts.forEach(r => {
+          r.lineas?.forEach((l: any) => {
+            const conf = l.cantidadRecibida || 0;
+            const dan = l.cantidadDanada || 0;
+            const esp = l.cantidadEsperada || 0;
+            globalConforme += conf;
+            globalCuarentena += dan;
+            globalPendiente += Math.max(0, esp - (conf + dan));
+            globalEsperado += esp;
+          });
+        });
+
+        const activeReceipt = filtered.find(r => r.estado !== 'CERRADO');
+        let activeProgress = 0;
+        if (activeReceipt && activeReceipt.lineas) {
+          let recTot = 0;
+          let espTot = 0;
+          activeReceipt.lineas.forEach((l: any) => {
+            recTot += (l.cantidadRecibida || 0) + (l.cantidadDanada || 0);
+            espTot += l.cantidadEsperada || 0;
+          });
+          activeProgress = espTot > 0 ? Math.round((recTot / espTot) * 100) : 0;
+        }
+
+        return (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 20 }}>
+              <div className="stitch-kpi-card">
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--emerald)' }}>
+                  🟢 Conforme (Liberado)
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--emerald)', marginTop: 4 }}>
+                  {globalConforme} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Inventario recibido libre vendible</div>
+              </div>
+
+              <div className="stitch-kpi-card">
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warning)' }}>
+                  🟡 Cuarentena (Merma)
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--warning)', marginTop: 4 }}>
+                  {globalCuarentena} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>En retención o daño de empaque</div>
+              </div>
+
+              <div className="stitch-kpi-card">
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--info)' }}>
+                  🔵 Pendiente por Descargar
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--info)', marginTop: 4 }}>
+                  {globalPendiente} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Pendiente de conteo en andén</div>
+              </div>
+
+              <div className="stitch-kpi-card">
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)' }}>
+                  📦 Total Manifestado Factura
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', marginTop: 4 }}>
+                  {globalEsperado} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Total ASN registrado en sistema</div>
+              </div>
+            </div>
+
+            {activeReceipt && (
+              <div className="stitch-dock-card" style={{ marginBottom: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(45, 212, 191, 0.2)', color: '#2DD4BF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Truck size={20} />
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: 15, color: '#F8FAFC' }}>
+                        🚛 Bahía de Descarga Activa — Andén REC-01 ({activeReceipt.codigo})
+                      </div>
+                      <div style={{ fontSize: 12, color: '#CBD5E1' }}>
+                        Transporte: <strong>{activeReceipt.lineaTransporte || 'N/A'}</strong> {activeReceipt.placa ? `(Placa: ${activeReceipt.placa})` : ''} · Chofer: <strong>{activeReceipt.nombreChofer || 'N/A'}</strong>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span className="badge badge-success" style={{ background: 'rgba(16,185,129,0.2)', color: '#34D399', borderColor: 'rgba(16,185,129,0.4)', fontWeight: 700 }}>
+                      ⚡ DESCARGA EN PROCESO
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 600 }}>
+                  <span style={{ color: '#94A3B8' }}>Avance de Verificación Física:</span>
+                  <span style={{ color: '#2DD4BF' }}>{activeProgress}% Completado</span>
+                </div>
+                <div className="stitch-progress-bar-track">
+                  <div className="stitch-progress-bar-fill" style={{ width: `${activeProgress}%` }} />
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
+
       {/* --- TABLA DE RECEPCIONES --- */}
       <div className="card">
         <div className="table-responsive">
