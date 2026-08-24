@@ -3071,9 +3071,78 @@ code {
 
 /* Full Dark Theme Canvas */
 .stitch-page-dark {
-  background-color: #0B0F17;
-  color: #F8FAFC;
+  background-color: #0B0F17 !important;
+  color: #F8FAFC !important;
   min-height: 100vh;
+}
+
+.stitch-page-dark .page-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.stitch-page-dark .page-title {
+  color: #F8FAFC !important;
+}
+
+.stitch-page-dark .page-subtitle {
+  color: #94A3B8 !important;
+}
+
+.stitch-page-dark .card,
+.stitch-page-dark .glass-card {
+  background: #0F172A !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #F8FAFC !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4) !important;
+}
+
+.stitch-page-dark .data-table {
+  background: #0F172A !important;
+  color: #F8FAFC !important;
+}
+
+.stitch-page-dark .data-table th {
+  background: #1E293B !important;
+  color: #94A3B8 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.stitch-page-dark .data-table td {
+  background: #0F172A !important;
+  color: #F8FAFC !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+
+.stitch-page-dark .data-table tr:hover td {
+  background: rgba(30, 41, 59, 0.6) !important;
+}
+
+.stitch-page-dark .data-table tr[style*="background"] td {
+  background: #162032 !important;
+}
+
+/* Inner Detail Tables in Dark Mode */
+.stitch-page-dark [style*="background: var(--bg-card)"],
+.stitch-page-dark [style*="background: var(--bg-secondary)"] {
+  background: #162032 !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: #F8FAFC !important;
+}
+
+.stitch-page-dark [style*="color: var(--text-primary)"] {
+  color: #F8FAFC !important;
+}
+
+.stitch-page-dark [style*="color: var(--text-secondary)"],
+.stitch-page-dark [style*="color: var(--text-tertiary)"] {
+  color: #94A3B8 !important;
+}
+
+.stitch-page-dark .form-input,
+.stitch-page-dark .form-select {
+  background: #0B0F17 !important;
+  color: #F8FAFC !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
 }
 
 .stitch-card-dark {
@@ -3110,5 +3179,6 @@ code {
 .stitch-table-dark tr:hover td {
   background: rgba(30, 41, 59, 0.5);
 }
+
 
 

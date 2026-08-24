@@ -1587,13 +1587,13 @@ export function Receiving() {
               </div>
 
               <div className="stitch-kpi-card">
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94A3B8' }}>
                   📦 Total Manifestado Factura
                 </div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', marginTop: 4 }}>
-                  {globalEsperado} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
+                <div style={{ fontSize: 24, fontWeight: 800, color: '#F8FAFC', marginTop: 4 }}>
+                  {globalEsperado} <span style={{ fontSize: 13, fontWeight: 500, color: '#94A3B8' }}>PZA</span>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Total ASN registrado en sistema</div>
+                <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>Total ASN registrado en sistema</div>
               </div>
             </div>
 
