@@ -1064,70 +1064,70 @@ export function Receiving() {
         </div>
       )}
 
-      {/* --- MODAL DE ALOJAMIENTO / PUTAWAY DE ANDÉN A RACKS --- */}
+      {/* --- STITCH DRAWER DE ALOJAMIENTO / PUTAWAY DE ANDÉN A RACKS --- */}
       {putawayModalReceipt && (
-        <div className="modal-overlay" onClick={() => setPutawayModalReceipt(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Box size={20} />
+        <div className="stitch-drawer-overlay" onClick={() => setPutawayModalReceipt(null)}>
+          <div className="stitch-drawer-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '20px 24px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(13,148,136,0.15)', color: '#2DD4BF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Box size={22} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Alojamiento a Racks (Putaway) — Previo {putawayModalReceipt.codigo}</h2>
-                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-tertiary)' }}>Traslada la mercancía descargada en Andén de Recepción (REC-01) a sus racks de almacenamiento definitivo</p>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#F8FAFC' }}>Alojamiento a Racks (Putaway)</h2>
+                  <p style={{ margin: 0, fontSize: 12, color: '#94A3B8' }}>Previo {putawayModalReceipt.codigo} · Traslado de Andén REC-01 a Racks</p>
                 </div>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setPutawayModalReceipt(null)}><X size={18} /></button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#94A3B8' }}><X size={20} /></button>
             </div>
 
-            <form onSubmit={handleExecutePutaway} className="modal-body">
-              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', marginBottom: 16 }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                  <thead>
-                    <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-tertiary)' }}>
-                      <th style={{ padding: '8px 12px' }}>SKU / DESCRIPCIÓN</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'center' }}>CANTIDAD RECIBIDA</th>
-                      <th style={{ padding: '8px 12px' }}>UBICACIÓN RACK DESTINO SUGERIDA</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {putawayMoves.map((m, idx) => (
-                      <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
-                        <td style={{ padding: '10px 12px' }}>
-                          <div style={{ fontWeight: 700, color: 'var(--primary)' }}>{m.codigo}</div>
-                          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{m.descripcion}</div>
-                        </td>
-                        <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700 }}>
-                          {m.cantidad} PZA
-                        </td>
-                        <td style={{ padding: '10px 12px' }}>
-                          <select 
-                            className="form-select form-select-full" 
-                            style={{ fontSize: 12 }}
-                            value={m.ubicacionDestinoId} 
-                            onChange={e => {
-                              const updated = [...putawayMoves];
-                              updated[idx].ubicacionDestinoId = e.target.value;
-                              setPutawayMoves(updated);
-                            }}
-                          >
-                            {locations.filter(l => l.tipoUbicacion !== 'RECIBO' && l.tipoUbicacion !== 'DEVOLUCION').map(loc => (
-                              <option key={loc.id} value={loc.id}>
-                                {loc.codigo} ({loc.zona?.nombre || loc.pasillo})
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <form onSubmit={handleExecutePutaway} style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 24, overflowY: 'auto' }}>
+              <div style={{ padding: '12px 16px', background: 'rgba(13,148,136,0.08)', borderRadius: 8, border: '1px solid rgba(13,148,136,0.2)', marginBottom: 20 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#2DD4BF', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Sparkles size={15} /> Sugerencias de Ubicación por Algoritmo Putaway (3PL Rules)
+                </div>
+                <div style={{ fontSize: 12, color: '#CBD5E1', marginTop: 4 }}>
+                  El motor asignó los racks óptimos según la zona asignada al depositante (Textil / Alimentos) y rotación FIFO/FEFO.
+                </div>
               </div>
 
-              <div className="modal-footer">
-                <button type="button" className="btn btn-ghost" onClick={() => setPutawayModalReceipt(null)}>Cancelar</button>
-                <button type="submit" className="btn btn-primary" disabled={submitting}>
+              <div style={{ flex: 1 }}>
+                {putawayMoves.map((m, idx) => (
+                  <div key={idx} style={{ background: 'rgba(30, 41, 59, 0.6)', borderRadius: 10, padding: 16, border: '1px solid rgba(255, 255, 255, 0.08)', marginBottom: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: '#2DD4BF', fontSize: 14 }}>{m.codigo}</div>
+                        <div style={{ fontSize: 12, color: '#94A3B8' }}>{m.descripcion}</div>
+                      </div>
+                      <span className="stitch-ean-badge">{m.cantidad} PZA</span>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ubicación Rack Destino</label>
+                      <select 
+                        className="form-select form-select-full" 
+                        style={{ fontSize: 13, background: '#0F172A', color: '#F8FAFC', borderColor: 'rgba(255,255,255,0.15)' }}
+                        value={m.ubicacionDestinoId} 
+                        onChange={e => {
+                          const updated = [...putawayMoves];
+                          updated[idx].ubicacionDestinoId = e.target.value;
+                          setPutawayMoves(updated);
+                        }}
+                      >
+                        {locations.filter(l => l.tipoUbicacion !== 'RECIBO' && l.tipoUbicacion !== 'DEVOLUCION').map(loc => (
+                          <option key={loc.id} value={loc.id}>
+                            📍 {loc.codigo} ({loc.zona?.nombre || loc.pasillo}) — Libres: {loc.capacidadUnits - (loc.ocupacion || 0)} uds
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="modal-footer" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 16, marginTop: 20, display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-ghost" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#94A3B8' }}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={submitting} style={{ background: '#0D9488', borderColor: '#0D9488', padding: '10px 20px' }}>
                   {submitting ? 'Ejecutando Alojamiento...' : '📦 Confirmar Alojamiento a Racks'}
                 </button>
               </div>
