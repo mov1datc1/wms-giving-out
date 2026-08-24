@@ -3054,16 +3054,61 @@ code {
 }
 
 .stitch-kpi-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  background: #0F172A;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-md);
-  padding: 16px 20px;
+  padding: 18px 22px;
+  color: #F8FAFC;
   transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
 }
 
 .stitch-kpi-card:hover {
   transform: translateY(-2px);
-  border-color: var(--accent-primary);
-  box-shadow: var(--glass-shadow);
+  border-color: rgba(45, 212, 191, 0.4);
+  box-shadow: 0 8px 30px rgba(13, 148, 136, 0.15);
 }
+
+/* Full Dark Theme Canvas */
+.stitch-page-dark {
+  background-color: #0B0F17;
+  color: #F8FAFC;
+  min-height: 100vh;
+}
+
+.stitch-card-dark {
+  background: #0F172A;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  color: #F8FAFC;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.stitch-table-dark {
+  width: 100%;
+  border-collapse: collapse;
+  color: #F8FAFC;
+}
+
+.stitch-table-dark th {
+  background: #1E293B;
+  color: #94A3B8;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.stitch-table-dark td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+}
+
+.stitch-table-dark tr:hover td {
+  background: rgba(30, 41, 59, 0.5);
+}
+
 

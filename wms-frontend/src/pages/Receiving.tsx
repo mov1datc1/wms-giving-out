@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, Plus, X, Package, MapPin, Truck, UploadCloud,
   FileSpreadsheet, Download, CheckCircle2, AlertTriangle, FileText, Sparkles,
   Printer, QrCode, Scan, ArrowRight, Tag, Box, CheckSquare, ShieldCheck,
-  UserCheck, Layers, Edit3, Trash2, Settings2, PlusCircle
+  UserCheck, Layers, Edit3, Trash2, Settings2, PlusCircle, ClipboardCheck
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationSelect } from '../components/LocationSelect';
@@ -800,17 +800,28 @@ export function Receiving() {
   };
 
   return (
-    <div className="page-container">
-      <div className="page-header">
+    <div className="page-container stitch-page-dark" style={{ background: '#0B0F17', padding: '24px 28px', borderRadius: 16, border: '1px solid rgba(255,255,255,0.06)' }}>
+      <div className="page-header" style={{ marginBottom: 20, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 16 }}>
         <div>
-          <h1 className="page-title">Previos de Recibo & Entrada (3PL)</h1>
-          <p className="page-subtitle">Ingesta ASN/Excel, validación física dual, control de excedentes, edición de previo y reporte oficial de cierre</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: 'rgba(13,148,136,0.2)', color: '#2DD4BF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <ClipboardCheck size={20} />
+            </div>
+            <h1 className="page-title" style={{ fontSize: 24, fontWeight: 800, color: '#F8FAFC', margin: 0, letterSpacing: '-0.02em' }}>
+              Recepción y Estrechamiento (Dock Staging)
+            </h1>
+          </div>
+          <p className="page-subtitle" style={{ fontSize: 13, color: '#94A3B8', margin: 0 }}>
+            Ingesta de ASN/Excel, control de bahía de descarga en tiempo real, validación física dual y alojamiento sugerido a racks (Stitch 3PL Layout)
+          </p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }}>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }} style={{ background: '#0D9488', borderColor: '#0D9488', fontWeight: 600 }}>
             <UploadCloud size={16} /> Cargar Previo (ASN)
           </button>
-          <button className="btn btn-secondary" onClick={loadData}><RefreshCw size={16} /> Actualizar</button>
+          <button className="btn btn-secondary" onClick={loadData} style={{ background: '#1E293B', color: '#F8FAFC', borderColor: 'rgba(255,255,255,0.1)' }}>
+            <RefreshCw size={16} /> Actualizar
+          </button>
         </div>
       </div>
 
