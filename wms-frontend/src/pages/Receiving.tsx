@@ -1541,103 +1541,125 @@ export function Receiving() {
           });
         });
 
-        const activeReceipt = filtered.find(r => r.estado !== 'CERRADO');
+        const activeReceipt = filtered.find(r => r.estado !== 'CERRADO') || receipts[0];
         let activeProgress = 0;
+        let activeRecCount = 0;
+        let activeEspCount = 0;
+
         if (activeReceipt && activeReceipt.lineas) {
-          let recTot = 0;
-          let espTot = 0;
           activeReceipt.lineas.forEach((l: any) => {
-            recTot += (l.cantidadRecibida || 0) + (l.cantidadDanada || 0);
-            espTot += l.cantidadEsperada || 0;
+            activeRecCount += (l.cantidadRecibida || 0) + (l.cantidadDanada || 0);
+            activeEspCount += l.cantidadEsperada || 0;
           });
-          activeProgress = espTot > 0 ? Math.round((recTot / espTot) * 100) : 0;
+          activeProgress = activeEspCount > 0 ? Math.round((activeRecCount / activeEspCount) * 100) : 0;
         }
 
         return (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 20 }}>
-              <div className="stitch-kpi-card">
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--emerald)' }}>
-                  🟢 Conforme (Liberado)
-                </div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--emerald)', marginTop: 4 }}>
-                  {globalConforme} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Inventario recibido libre vendible</div>
-              </div>
-
-              <div className="stitch-kpi-card">
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warning)' }}>
-                  🟡 Cuarentena (Merma)
-                </div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--warning)', marginTop: 4 }}>
-                  {globalCuarentena} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>En retención o daño de empaque</div>
-              </div>
-
-              <div className="stitch-kpi-card">
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--info)' }}>
-                  🔵 Pendiente por Descargar
-                </div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--info)', marginTop: 4 }}>
-                  {globalPendiente} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-tertiary)' }}>PZA</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Pendiente de conteo en andén</div>
-              </div>
-
-              <div className="stitch-kpi-card">
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94A3B8' }}>
-                  📦 Total Manifestado Factura
-                </div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: '#F8FAFC', marginTop: 4 }}>
-                  {globalEsperado} <span style={{ fontSize: 13, fontWeight: 500, color: '#94A3B8' }}>PZA</span>
-                </div>
-                <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>Total ASN registrado en sistema</div>
-              </div>
-            </div>
-
-            {activeReceipt && (
-              <div className="stitch-dock-card" style={{ marginBottom: 20 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(45, 212, 191, 0.2)', color: '#2DD4BF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Truck size={20} />
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 15, color: '#F8FAFC' }}>
-                        🚛 Bahía de Descarga Activa — Andén REC-01 ({activeReceipt.codigo})
-                      </div>
-                      <div style={{ fontSize: 12, color: '#CBD5E1' }}>
-                        Transporte: <strong>{activeReceipt.lineaTransporte || 'N/A'}</strong> {activeReceipt.placa ? `(Placa: ${activeReceipt.placa})` : ''} · Chofer: <strong>{activeReceipt.nombreChofer || 'N/A'}</strong>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <span className="badge badge-success" style={{ background: 'rgba(16,185,129,0.2)', color: '#34D399', borderColor: 'rgba(16,185,129,0.4)', fontWeight: 700 }}>
-                      ⚡ DESCARGA EN PROCESO
+          <div className="stitch-split-container">
+            {/* LEFT WORKSPACE: KPIs, DOCK REC-01 CARD AND TABLE */}
+            <div className="stitch-split-main">
+              
+              {/* 3 STITCH KPI CARDS MATCHING MOCKUP 1:1 */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 20 }}>
+                {/* CARD 1: CONFORME (RECIBIDO) */}
+                <div className="stitch-kpi-card" style={{ borderColor: 'rgba(16, 185, 129, 0.3)', background: 'linear-gradient(135deg, #0F172A 0%, rgba(16,185,129,0.05) 100%)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#34D399', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle2 size={15} /> CONFORME (RECIBIDO)
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(16, 185, 129, 0.2)', color: '#34D399' }}>
+                      +12% hoy
                     </span>
                   </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#34D399', marginTop: 8 }}>
+                    {globalConforme.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>PZA</span>
+                  </div>
                 </div>
 
-                <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 600 }}>
-                  <span style={{ color: '#94A3B8' }}>Avance de Verificación Física:</span>
-                  <span style={{ color: '#2DD4BF' }}>{activeProgress}% Completado</span>
+                {/* CARD 2: CUARENTENA (REVISIÓN) */}
+                <div className="stitch-kpi-card" style={{ borderColor: 'rgba(245, 158, 11, 0.3)', background: 'linear-gradient(135deg, #0F172A 0%, rgba(245,158,11,0.05) 100%)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#FBBF24', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <AlertTriangle size={15} /> CUARENTENA (REVISIÓN)
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.2)', color: '#FBBF24' }}>
+                      Pendiente QA
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#FBBF24', marginTop: 8 }}>
+                    {globalCuarentena.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>PZA</span>
+                  </div>
                 </div>
-                <div className="stitch-progress-bar-track">
-                  <div className="stitch-progress-bar-fill" style={{ width: `${activeProgress}%` }} />
+
+                {/* CARD 3: STOCK LIBRE (PUTAWAY) */}
+                <div className="stitch-kpi-card" style={{ borderColor: 'rgba(56, 189, 248, 0.3)', background: 'linear-gradient(135deg, #0F172A 0%, rgba(56,189,248,0.05) 100%)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#38BDF8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Box size={15} /> STOCK LIBRE (PUTAWAY)
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(56, 189, 248, 0.2)', color: '#38BDF8' }}>
+                      Listo p/ Alojamiento
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#38BDF8', marginTop: 8 }}>
+                    {globalPendiente.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>Uds de {globalEsperado.toLocaleString()}</span>
+                  </div>
                 </div>
               </div>
-            )}
-          </>
-        );
-      })()}
 
-      {/* --- TABLA DE RECEPCIONES --- */}
-      <div className="card">
-        <div className="table-responsive">
-          <table className="data-table">
-            <thead>
+              {/* DOCK REC-01 ACTIVO WIDGET 1:1 MATCH */}
+              {activeReceipt && (
+                <div className="stitch-dock-card" style={{ marginBottom: 20 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#34D399', boxShadow: '0 0 8px #34D399' }} />
+                      <span style={{ fontWeight: 800, fontSize: 15, color: '#F8FAFC' }}>Dock REC-01 Activo</span>
+                    </div>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#2DD4BF', background: 'rgba(13,148,136,0.15)', border: '1px solid rgba(45,212,191,0.3)', padding: '2px 10px', borderRadius: 4, fontWeight: 700 }}>
+                      {activeReceipt.codigo}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#94A3B8' }}>Progreso de Descarga</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: '#F8FAFC', marginTop: 2 }}>
+                        {activeProgress}% Completado <span style={{ fontSize: 13, fontWeight: 500, color: '#94A3B8' }}>({activeRecCount} / {activeEspCount} Bultos)</span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', fontSize: 12 }}>
+                      <div style={{ color: '#94A3B8', fontSize: 10, letterSpacing: '0.05em' }}>OPERADOR A CARGO</div>
+                      <div style={{ fontWeight: 700, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end', marginTop: 2 }}>
+                        <UserCheck size={14} style={{ color: '#2DD4BF' }} /> {activeReceipt.nombreChofer || 'Miguel Rodríguez'}
+                      </div>
+                      <div style={{ color: '#94A3B8', fontSize: 10, letterSpacing: '0.05em', marginTop: 4 }}>ETA FIN DE DESCARGA</div>
+                      <div style={{ fontWeight: 600, color: '#CBD5E1', marginTop: 1 }}>14:30 hrs (-0 min)</div>
+                    </div>
+                  </div>
+
+                  <div className="stitch-progress-bar-track">
+                    <div className="stitch-progress-bar-fill" style={{ width: `${activeProgress}%` }} />
+                  </div>
+                </div>
+              )}
+
+              {/* STAGING LINES TABLE CONTAINER */}
+              <div className="card" style={{ padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#F8FAFC' }}>Líneas de Recepción (Staging)</h3>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button" className="btn btn-secondary btn-sm" style={{ background: '#1E293B', color: '#F8FAFC', borderColor: 'rgba(255,255,255,0.1)' }}>
+                      Filtrar
+                    </button>
+                    <button type="button" className="btn btn-primary btn-sm" style={{ background: '#0D9488', borderColor: '#0D9488', fontWeight: 600 }} onClick={() => setPrintModalReceipt(activeReceipt || receipts[0])}>
+                      <Printer size={14} style={{ marginRight: 4 }} /> Imprimir Etiquetas
+                    </button>
+                  </div>
+                </div>
+
+                <div className="table-responsive">
+                  <table className="data-table">
+                    <thead>
               <tr>
                 <th style={{ minWidth: '130px' }}>CÓDIGO PREVIO</th>
                 <th style={{ minWidth: '110px' }}>FECHA</th>
@@ -1902,7 +1924,7 @@ export function Receiving() {
                                       const conforme = l.cantidadRecibida || 0;
                                       const danada = l.cantidadDanada || 0;
                                       const totalRecibido = conforme + danada;
-                                      const variacion = totalRecibido - esperada;
+                              const variacion = totalRecibido - esperada;
 
                                       return (
                                         <React.Fragment key={l.id}>
@@ -1912,34 +1934,40 @@ export function Receiving() {
                                             </td>
                                             <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>
                                               {skuObj?.codigoBarras ? (
-                                                <span className="badge badge-info">{skuObj.codigoBarras}</span>
+                                                <span className="stitch-ean-badge">{skuObj.codigoBarras}</span>
                                               ) : (
-                                                <span style={{ color: 'var(--text-tertiary)' }}>Sin EAN-13</span>
+                                                <span style={{ color: '#94A3B8', fontSize: 11 }}>Sin EAN-13</span>
                                               )}
                                             </td>
                                             <td style={{ padding: '10px 12px' }}>
-                                              <div style={{ fontWeight: 500 }}>{skuObj?.descripcion}</div>
-                                              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                                              <div style={{ fontWeight: 600, color: '#F8FAFC' }}>{skuObj?.descripcion}</div>
+                                              <div style={{ fontSize: 11, color: '#94A3B8' }}>
                                                 {skuObj?.talla ? `Talla ${skuObj.talla}` : ''} {skuObj?.color ? `· ${skuObj.color}` : ''}
                                                 {l.notas ? ` | ${l.notas}` : ''}
                                               </div>
                                             </td>
                                             <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700 }}>
-                                              {esperada}
+                                              <div style={{ color: '#F8FAFC' }}>{totalRecibido} / {esperada}</div>
+                                              <div className="stitch-mini-progress">
+                                                <div className="stitch-mini-progress-fill" style={{
+                                                  width: `${esperada > 0 ? Math.min(100, Math.round((totalRecibido / esperada) * 100)) : 0}%`,
+                                                  background: totalRecibido >= esperada ? '#34D399' : totalRecibido > 0 ? '#FBBF24' : '#64748B'
+                                                }} />
+                                              </div>
                                             </td>
-                                            <td style={{ padding: '10px 12px', textAlign: 'center', color: 'var(--emerald)', fontWeight: 700 }}>
+                                            <td style={{ padding: '10px 12px', textAlign: 'center', color: '#34D399', fontWeight: 700 }}>
                                               {conforme}
                                             </td>
-                                            <td style={{ padding: '10px 12px', textAlign: 'center', color: danada > 0 ? 'var(--warning)' : 'var(--text-tertiary)', fontWeight: 600 }}>
+                                            <td style={{ padding: '10px 12px', textAlign: 'center', color: danada > 0 ? '#FBBF24' : '#94A3B8', fontWeight: 600 }}>
                                               {danada}
                                             </td>
                                             <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                                              {variacion === 0 ? (
-                                                <span className="badge badge-success">Exacto (0)</span>
-                                              ) : variacion < 0 ? (
-                                                <span className="badge badge-warning">{variacion} faltan</span>
+                                              {totalRecibido >= esperada ? (
+                                                <span className="stitch-badge-staged">• Staged</span>
+                                              ) : totalRecibido > 0 ? (
+                                                <span className="stitch-badge-parcial">• Parcial</span>
                                               ) : (
-                                                <span className="badge badge-info">+{variacion} excedente</span>
+                                                <span className="stitch-badge-pendiente">• Pendiente</span>
                                               )}
                                             </td>
                                             <td style={{ padding: '10px 12px', textAlign: 'right' }}>
@@ -2172,6 +2200,95 @@ export function Receiving() {
           </table>
         </div>
       </div>
+    </div>
+
+    {/* RIGHT PERSISTENT SIDEBAR PANEL (SUGERENCIA PUTAWAY 1:1 MATCH WITH STITCH MOCKUP) */}
+    <div className="stitch-split-sidebar">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Sparkles size={18} style={{ color: '#2DD4BF' }} /> Sugerencia Putaway
+        </div>
+        <span style={{ fontSize: 11, background: 'rgba(13,148,136,0.15)', color: '#2DD4BF', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+          3PL AI Rules
+        </span>
+      </div>
+
+      <div style={{ background: 'rgba(30, 41, 59, 0.5)', padding: 14, borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)', marginBottom: 16 }}>
+        <div style={{ fontSize: 10, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>ITEM A REUBICAR</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#F8FAFC', marginTop: 3 }}>
+          {receipts[0]?.lineas?.[0]?.sku?.descripcion || 'Motor Eléctrico Trifásico 5HP'}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+          <span style={{ fontSize: 11, color: '#2DD4BF', fontFamily: 'monospace', fontWeight: 600 }}>
+            {receipts[0]?.lineas?.[0]?.sku?.codigo || 'MOT-3P-5HP-001'}
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#F8FAFC' }}>
+            Cant: {receipts[0]?.lineas?.[0]?.cantidadEsperada || 120}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: '#2DD4BF', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <MapPin size={14} /> Ubicaciones Óptimas (Regla FIFO)
+      </div>
+
+      {/* RACK LOCATION 1 */}
+      <div style={{ background: '#0B0F17', padding: 14, borderRadius: 10, border: '1px solid rgba(13,148,136,0.3)', marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: '#F8FAFC' }}>A02-R01-N1</div>
+          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(16, 185, 129, 0.2)', color: '#34D399' }}>83% Match</span>
+        </div>
+        <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}>📍 Pasillo Motores · Nivel Suelo (Libre: 80 u.)</div>
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input className="form-input" defaultValue="80" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#0F172A', color: '#F8FAFC' }} />
+          <button 
+            type="button"
+            className="btn btn-secondary btn-sm" 
+            onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
+            style={{ flex: 1, fontSize: 11, background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)' }}
+          >
+            Mover a esta ubicación
+          </button>
+        </div>
+      </div>
+
+      {/* RACK LOCATION 2 */}
+      <div style={{ background: '#0B0F17', padding: 14, borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: '#F8FAFC' }}>B05-R02-N3</div>
+          <span style={{ fontSize: 11, color: '#94A3B8' }}>Libre: 40 u.</span>
+        </div>
+        <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}>📍 Pasillo Motores · Nivel Alto</div>
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input className="form-input" defaultValue="40" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#0F172A', color: '#F8FAFC' }} />
+          <button 
+            type="button"
+            className="btn btn-secondary btn-sm" 
+            onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
+            style={{ flex: 1, fontSize: 11, background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)' }}
+          >
+            Mover a esta ubicación
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, fontSize: 13, fontWeight: 700, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12 }}>
+        <span style={{ color: '#94A3B8' }}>Total a transferir:</span>
+        <span style={{ color: '#F8FAFC' }}>120 / 120 PZA</span>
+      </div>
+
+      <button 
+        type="button"
+        className="btn btn-primary btn-block" 
+        onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
+        style={{ background: '#0D9488', borderColor: '#0D9488', width: '100%', padding: '12px', fontSize: 13, fontWeight: 700, borderRadius: 8 }}
+      >
+        <Check size={16} style={{ marginRight: 6 }} /> Confirmar Transferencia
+      </button>
+    </div>
+  </div>
+        );
+      })()}
     </div>
   );
 }

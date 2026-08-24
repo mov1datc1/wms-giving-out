@@ -3145,6 +3145,87 @@ code {
   border-color: rgba(255, 255, 255, 0.15) !important;
 }
 
+/* --- Stitch Split Layout (Main + Right Panel) --- */
+.stitch-split-container {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.stitch-split-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.stitch-split-sidebar {
+  width: 360px;
+  flex-shrink: 0;
+  background: #0F172A;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  color: #F8FAFC;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 1200px) {
+  .stitch-split-container {
+    flex-direction: column;
+  }
+  .stitch-split-sidebar {
+    width: 100%;
+  }
+}
+
+/* Status Badges 1:1 Stitch */
+.stitch-badge-staged {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34D399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stitch-badge-parcial {
+  background: rgba(245, 158, 11, 0.15);
+  color: #FBBF24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stitch-badge-pendiente {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94A3B8;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stitch-mini-progress {
+  width: 100%;
+  max-width: 120px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.stitch-mini-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 300ms ease;
+}
+
+
 .stitch-card-dark {
   background: #0F172A;
   border: 1px solid rgba(255, 255, 255, 0.08);
