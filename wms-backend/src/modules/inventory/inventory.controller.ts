@@ -139,7 +139,11 @@ export class InventoryController {
       );
     }
 
-    if (!body.partidas || !Array.isArray(body.partidas) || body.partidas.length === 0) {
+    const partidasList = (Array.isArray(body.partidas) && body.partidas.length > 0)
+      ? body.partidas
+      : (Array.isArray((body as any).items) && (body as any).items.length > 0 ? (body as any).items : null);
+
+    if (!partidasList || partidasList.length === 0) {
       throw new HttpException(
         { statusCode: HttpStatus.BAD_REQUEST, message: 'Debe especificar al menos una partida para desviar', error: 'Bad Request' },
         HttpStatus.BAD_REQUEST,
@@ -158,7 +162,7 @@ export class InventoryController {
     const locs = await this.ensureVirtualLocations();
 
     let totalPieces = 0;
-    for (const p of body.partidas) {
+    for (const p of partidasList) {
       const qty = Number(p.cantidad) || 0;
       if (qty <= 0) {
         throw new HttpException(
@@ -166,14 +170,12 @@ export class InventoryController {
           HttpStatus.BAD_REQUEST,
         );
       }
-      if (!p.motivo || !p.motivo.trim()) {
-        throw new HttpException(
-          { statusCode: HttpStatus.BAD_REQUEST, message: `Debe proveer un motivo o dictamen técnico para la partida ${p.skuId}`, error: 'Bad Request' },
-          HttpStatus.BAD_REQUEST,
-        );
-      }
+      p.motivo = p.motivo?.trim() || (p as any).motivoEspecifico?.trim() || (body as any).motivo?.trim() || (body as any).notas?.trim() || 'Desvío operativo a almacén virtual';
+      p.tipoDesvio = p.tipoDesvio || ((body as any).tipoDesvio === 'EXCESO' || (body as any).tipoDesvio === 'PRODUCTO_EXCESO' ? 'PRODUCTO_EXCESO' : 'MERCANCIA_DANADA');
       totalPieces += qty;
     }
+
+    const usuarioResponsable = body.usuario || (body as any).user || 'Supervisor Giving Out';
 
     return this.prisma.$transaction(async (tx) => {
       // Contador para folio de acta oficial
@@ -185,7 +187,7 @@ export class InventoryController {
       let huSequence = await tx.handlingUnit.count();
       const divertedDetails: any[] = [];
 
-      for (const item of body.partidas) {
+      for (const item of partidasList) {
         const sku = await tx.skuMaster.findUnique({ where: { id: item.skuId } });
         if (!sku) {
           throw new HttpException(
@@ -251,7 +253,7 @@ export class InventoryController {
             huId: hu.id,
             toLocationId: destLocId,
             cantidad: item.cantidad,
-            usuario: body.usuario,
+            usuario: usuarioResponsable,
             motivo: `[${item.tipoDesvio}] ${item.motivo.trim()} (Acta: ${folioActa})`,
             documentoOrigen: body.receiptId ? `REC-${body.receiptId}` : folioActa,
           },

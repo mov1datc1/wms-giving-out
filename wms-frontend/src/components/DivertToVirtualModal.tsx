@@ -217,20 +217,26 @@ export function DivertToVirtualModal({
 
     setSubmitting(true);
     try {
+      const mappedItems = validItems.map(it => ({
+        skuId: it.skuId,
+        cantidad: Number(it.cantidad),
+        tipoDesvio: tipoDesvio === 'MERMA' ? ('MERCANCIA_DANADA' as const) : ('PRODUCTO_EXCESO' as const),
+        motivo: it.motivoEspecifico?.trim() || motivoGeneral.trim() || 'Desvío a almacén virtual de cuarentena',
+        lote: it.lote.trim() || undefined,
+        fechaVencimiento: it.fechaVencimiento || undefined,
+        receiptLineId: it.receiptLineId,
+      }));
+
       const payload = {
         clienteId,
-        tipoDesvio,
+        tipoDesvio: tipoDesvio === 'MERMA' ? 'MERCANCIA_DANADA' : 'PRODUCTO_EXCESO',
         receiptId: receipt?.id,
+        usuario: 'Supervisor Giving Out',
         motivo: motivoGeneral.trim(),
         notas: notas.trim() || undefined,
-        items: validItems.map(it => ({
-          skuId: it.skuId,
-          cantidad: Number(it.cantidad),
-          lote: it.lote.trim() || undefined,
-          fechaVencimiento: it.fechaVencimiento || undefined,
-          receiptLineId: it.receiptLineId,
-          motivoEspecifico: it.motivoEspecifico.trim() || undefined,
-        })),
+        notasGenerales: notas.trim() || undefined,
+        partidas: mappedItems,
+        items: mappedItems,
       };
 
       const res = await fetch(`${API}/inventory/divert-to-virtual`, {
