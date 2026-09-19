@@ -1332,15 +1332,41 @@ export function Receiving() {
 
   // --- DESCARGAR PLANTILLA EXCEL ---
   function handleDownloadTemplate() {
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['factura', 'Ean', 'Cantidad a recibir'],
-      ['FAC-2026-001', 'CAM-BLA-S', 100],
-      ['FAC-2026-001', 'CAM-BLA-M', 150],
-      ['FAC-2026-001', 'CAM-BLA-L', 200]
-    ]);
+    const selectedClient = clients.find(c => c.id === newPrevio.clienteId);
+    const clientSkus = newPrevio.clienteId ? skus.filter(s => s.clienteId === newPrevio.clienteId) : [];
+
+    let rows: any[][] = [];
+
+    if (selectedClient && clientSkus.length > 0) {
+      // Plantilla inteligente con el catálogo real de productos del depositante seleccionado
+      rows.push(['factura', 'Ean', 'Cantidad a recibir', 'Descripcion (Referencia)', 'Categoria']);
+      clientSkus.forEach(s => {
+        rows.push([
+          newPrevio.facturaRespaldo || 'FAC-2026-001',
+          s.codigo || s.codigoBarras,
+          0,
+          s.descripcion || '',
+          s.categoria || ''
+        ]);
+      });
+    } else {
+      // Plantilla base genérica con ejemplos ilustrativos
+      rows = [
+        ['factura', 'Ean', 'Cantidad a recibir', 'Descripcion (Referencia)'],
+        ['FAC-2026-001', 'CAM-BLA-S', 100, 'Camiseta Básica Blanca S'],
+        ['FAC-2026-001', 'CAM-BLA-M', 150, 'Camiseta Básica Blanca M'],
+        ['FAC-2026-001', 'CAM-BLA-L', 200, 'Camiseta Básica Blanca L']
+      ];
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'PrevioRecibo');
-    XLSX.writeFile(wb, 'Plantilla_Previo_Recibo_GivingOut.xlsx');
+    const sheetTitle = selectedClient ? selectedClient.nombreComercial.slice(0, 25) : 'PrevioRecibo';
+    XLSX.utils.book_append_sheet(wb, ws, sheetTitle);
+    const filename = selectedClient 
+      ? `Plantilla_Previo_${selectedClient.nombreComercial.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`
+      : 'Plantilla_Previo_Recibo_GivingOut.xlsx';
+    XLSX.writeFile(wb, filename);
   }
 
   // --- CREAR PREVIO (TAREA 2: FORMULARIO Y/O CARGA DE ARCHIVO A /api/receipts/previo) ---
