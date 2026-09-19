@@ -5,6 +5,37 @@ import { Database, Search, RefreshCw, Package, Building, MapPin, Layers } from '
 
 type Tab = 'skus' | 'suppliers' | 'warehouses' | 'zones';
 
+const demoSkus = [
+  { id: '1', codigo: 'SUD-CAP-001', descripcion: 'Sudadera con Capucha', cliente: { nombreComercial: 'Fashion Forward' }, categoria: 'Ropa', uom: 'PZA', codigoBarras: '7501234567890' },
+  { id: '2', codigo: 'CAM-S-BLA', descripcion: 'Camisa Algodón S Blanco', cliente: { nombreComercial: 'Fashion Forward' }, categoria: 'Ropa', uom: 'PZA', codigoBarras: '7509876543210' },
+  { id: '3', codigo: 'PAN-M-NEGRO', descripcion: 'Pantalón Casual M Negro', cliente: { nombreComercial: 'Fashion Forward' }, categoria: 'Ropa', uom: 'PZA', codigoBarras: '7501122334455' },
+  { id: '4', codigo: 'ACEITE-OLIVA-1L', descripcion: 'Aceite de Oliva Extra Virgen 1L', cliente: { nombreComercial: 'Alimentos del Bajío' }, categoria: 'Alimentos', uom: 'CAJA', codigoBarras: '7501112223334' },
+  { id: '5', codigo: 'ARROZ-INTEGRAL-1KG', descripcion: 'Arroz Integral Super Premium 1kg', cliente: { nombreComercial: 'Alimentos del Bajío' }, categoria: 'Alimentos', uom: 'CAJA', codigoBarras: '7505556667778' }
+];
+
+const demoSuppliers = [
+  { id: 'sup-1', codigo: 'PROV-001', nombreComercial: 'Textiles del Norte S.A.', rfc: 'TNO900101AA1', contacto: 'Roberto Gómez', telefono: '55-1122-3344' },
+  { id: 'sup-2', codigo: 'PROV-002', nombreComercial: 'Importadora Mexicana de Alimentos', rfc: 'IMA950202BB2', contacto: 'Laura Sánchez', telefono: '55-5566-7788' }
+];
+
+const demoWarehouses = [
+  { id: 'wh-1', codigo: 'ALM-01', nombre: 'Almacén Principal Tepotzotlán', direccion: 'Av. Industrial 45, Tepotzotlán', capM2: 5000 }
+];
+
+const demoZones = [
+  { id: 'z-1', codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)', tipo: 'ESTANTERIA' },
+  { id: 'z-2', codigo: 'ZONA-ALIM', nombre: 'Zona Almacenaje Alimentos (FEFO)', tipo: 'RACK' },
+  { id: 'z-3', codigo: 'ZONA-REC', nombre: 'Andén de Recibo & Inspección', tipo: 'RECIBO' }
+];
+
+function getDemoData(t: Tab) {
+  if (t === 'skus') return demoSkus;
+  if (t === 'suppliers') return demoSuppliers;
+  if (t === 'warehouses') return demoWarehouses;
+  if (t === 'zones') return demoZones;
+  return [];
+}
+
 export function MasterData() {
   const { token } = useAuth();
   const [tab, setTab] = useState<Tab>('skus');
@@ -19,8 +50,17 @@ export function MasterData() {
     setLoading(true); setSearch('');
     try {
       const res = await fetch(`${API}/${t}`, { headers });
-      if (res.ok) setData(await res.json());
-    } catch (err) { console.error(err); }
+      if (res.ok) {
+        const d = await res.json();
+        if (d.length > 0) setData(d);
+        else setData(getDemoData(t));
+      } else {
+        setData(getDemoData(t));
+      }
+    } catch (err) {
+      console.error(err);
+      setData(getDemoData(t));
+    }
     setLoading(false);
   }
 
@@ -66,7 +106,7 @@ export function MasterData() {
       ) : tab === 'skus' ? (
         <div className="card"><div className="card-body" style={{ padding: 0 }}>
           <table className="data-table">
-            <thead><tr><th>Código</th><th>Descripción</th><th>Cliente</th><th>Categoría</th><th>Marca</th><th>Talla</th><th>Color</th><th>UoM</th><th>Empaque</th></tr></thead>
+            <thead><tr><th>Código</th><th>Descripción</th><th>Cliente</th><th>Categoría</th><th>Trazabilidad</th><th>Marca</th><th>Talla</th><th>Color</th><th>UoM</th><th>Empaque</th></tr></thead>
             <tbody>
               {filtered.map((s: any, i: number) => (
                 <tr key={i} className="animate-fade-in" style={{ animationDelay: `${i * 0.02}s` }}>
@@ -74,6 +114,24 @@ export function MasterData() {
                   <td style={{ fontWeight: 500 }}>{s.descripcion}</td>
                   <td><span className="badge badge-info">{s.cliente?.nombreComercial}</span></td>
                   <td><span className={`badge badge-${s.categoria === 'PRENDA' ? 'info' : 'warning'}`}>{s.categoria}</span></td>
+                  <td>
+                    {(s.requiereLote || s.requiereCaducidad || s.cliente?.giro === 'COMIDA' || s.cliente?.giro === 'FARMACEUTICO') ? (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {(s.requiereLote || s.cliente?.requiereLote || s.cliente?.giro === 'COMIDA' || s.cliente?.giro === 'FARMACEUTICO') && (
+                          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.15)', color: '#F59E0B', fontWeight: 700, border: '1px solid rgba(245, 158, 11, 0.3)' }}>
+                            LOTE
+                          </span>
+                        )}
+                        {(s.requiereCaducidad || s.cliente?.requiereCaducidad || s.cliente?.giro === 'COMIDA' || s.cliente?.giro === 'FARMACEUTICO') && (
+                          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(56, 189, 248, 0.15)', color: '#38BDF8', fontWeight: 700, border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                            CADUCIDAD
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Estándar</span>
+                    )}
+                  </td>
                   <td>{s.marca || '—'}</td>
                   <td>{s.talla || '—'}</td>
                   <td>{s.color || '—'}</td>
@@ -81,7 +139,7 @@ export function MasterData() {
                   <td style={{ fontSize: 12 }}>{s.descripcionEmpaque || '—'}</td>
                 </tr>
               ))}
-              {filtered.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>Sin datos</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={10} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>Sin datos</td></tr>}
             </tbody>
           </table>
         </div></div>

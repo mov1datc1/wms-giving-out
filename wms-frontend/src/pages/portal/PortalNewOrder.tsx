@@ -12,7 +12,7 @@ interface OrderLine {
   skuCode: string;
   skuDesc: string;
   uom: string;
-  cantidadSolicitada: number;
+  cantidadSolicitada: number | string;
   available: number;
   reserved: number;
 }
@@ -110,10 +110,25 @@ export function PortalNewOrder() {
     setLines(updated);
   }
 
-  function updateQty(idx: number, qty: number) {
+  function updateQty(idx: number, val: string | number) {
     const updated = [...lines];
-    updated[idx] = { ...updated[idx], cantidadSolicitada: Math.max(0, qty) };
+    if (val === '') {
+      updated[idx] = { ...updated[idx], cantidadSolicitada: '' };
+    } else {
+      const parsed = parseInt(String(val), 10);
+      updated[idx] = { ...updated[idx], cantidadSolicitada: isNaN(parsed) ? '' : Math.max(0, parsed) };
+    }
     setLines(updated);
+  }
+
+  function handleQtyBlur(idx: number) {
+    const line = lines[idx];
+    if (!line) return;
+    let numVal = typeof line.cantidadSolicitada === 'number' ? line.cantidadSolicitada : parseInt(String(line.cantidadSolicitada), 10);
+    if (isNaN(numVal) || numVal <= 0) {
+      numVal = line.available > 0 ? 1 : 0;
+    }
+    updateQty(idx, numVal);
   }
 
   function removeLine(idx: number) {
@@ -126,17 +141,19 @@ export function PortalNewOrder() {
     const updated = lines.map(line => {
       if (!line.skuId) return line;
       const stockInfo = getSkuStockInfo(line.skuId, newWhId);
+      const currQty = Number(line.cantidadSolicitada) || 0;
       return {
         ...line,
         available: stockInfo.available,
         reserved: stockInfo.reserved,
+        cantidadSolicitada: currQty === 0 && stockInfo.available > 0 ? 1 : currQty
       };
     });
     setLines(updated);
   }
 
-  const hasStockErrors = lines.some(l => l.skuId && l.cantidadSolicitada > l.available);
-  const totalItems = lines.reduce((sum, l) => sum + l.cantidadSolicitada, 0);
+  const hasStockErrors = lines.some(l => l.skuId && Number(l.cantidadSolicitada) > l.available);
+  const totalItems = lines.reduce((sum, l) => sum + (Number(l.cantidadSolicitada) || 0), 0);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -147,7 +164,7 @@ export function PortalNewOrder() {
     if (!horaCompromiso) { setError('La hora de compromiso / cita es obligatoria'); return; }
     if (lines.length === 0) { setError('Agrega al menos un producto a tu pedido'); return; }
     if (lines.some(l => !l.skuId)) { setError('Selecciona un producto en todas las líneas'); return; }
-    if (lines.some(l => l.cantidadSolicitada <= 0)) { setError('La cantidad solicitada debe ser mayor a 0'); return; }
+    if (lines.some(l => Number(l.cantidadSolicitada) <= 0)) { setError('La cantidad solicitada debe ser mayor a 0'); return; }
     if (hasStockErrors) { setError('Uno o más productos exceden el stock disponible libre. Ajusta las cantidades antes de enviar.'); return; }
 
     setSubmitting(true);
@@ -337,7 +354,7 @@ export function PortalNewOrder() {
                   </thead>
                   <tbody>
                     {lines.map((line, idx) => {
-                      const isOverStock = line.skuId && line.cantidadSolicitada > line.available;
+                      const isOverStock = Boolean(line.skuId && Number(line.cantidadSolicitada) > line.available);
 
                       return (
                         <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -380,7 +397,9 @@ export function PortalNewOrder() {
                               min={1} 
                               max={line.available || undefined}
                               value={line.cantidadSolicitada}
-                              onChange={e => updateQty(idx, parseInt(e.target.value) || 0)}
+                              onFocus={e => e.target.select()}
+                              onChange={e => updateQty(idx, e.target.value)}
+                              onBlur={() => handleQtyBlur(idx)}
                               style={{ 
                                 textAlign: 'center', 
                                 fontSize: 14, 

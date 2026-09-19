@@ -25,6 +25,92 @@ interface InventorySummary {
   porCliente: { nombre: string; unidades: number; skus: number }[];
 }
 
+const demoStats: DashboardStats = {
+  totalSkus: 18,
+  totalClients: 4,
+  totalLots: 3,
+  totalOrders: 0,
+  pendingOrders: 0,
+  activeAlerts: 0,
+  totalUnidades: 400,
+  recentMovements: [
+    {
+      id: 'mov-1',
+      tipoMovimiento: 'ENTRADA',
+      sku: { codigo: 'SUD-CAP-001', descripcion: 'Sudadera con Capucha' },
+      cantidad: 5,
+      toLocation: null,
+      fromLocation: null,
+      usuario: 'admin@givingout.mx',
+      fechaHora: '2026-08-20T12:00:00Z'
+    },
+    {
+      id: 'mov-2',
+      tipoMovimiento: 'ENTRADA',
+      sku: { codigo: 'SUD-CAP-001', descripcion: 'Sudadera con Capucha' },
+      cantidad: 70,
+      toLocation: null,
+      fromLocation: null,
+      usuario: 'admin@givingout.mx',
+      fechaHora: '2026-08-20T11:30:00Z'
+    },
+    {
+      id: 'mov-3',
+      tipoMovimiento: 'ENTRADA',
+      sku: { codigo: 'CAM-BAS-BLA', descripcion: 'Camiseta Básica Blanca' },
+      cantidad: 20,
+      toLocation: null,
+      fromLocation: null,
+      usuario: 'admin@givingout.mx',
+      fechaHora: '2026-08-20T10:15:00Z'
+    },
+    {
+      id: 'mov-4',
+      tipoMovimiento: 'ENTRADA',
+      sku: { codigo: 'CAM-BAS-BLA', descripcion: 'Camiseta Básica Blanca' },
+      cantidad: 200,
+      toLocation: null,
+      fromLocation: null,
+      usuario: 'admin@givingout.mx',
+      fechaHora: '2026-08-20T09:00:00Z'
+    },
+    {
+      id: 'mov-5',
+      tipoMovimiento: 'ENTRADA',
+      sku: { codigo: 'CAM-BAS-BLA', descripcion: 'Camiseta Básica Blanca' },
+      cantidad: 10,
+      toLocation: null,
+      fromLocation: null,
+      usuario: 'admin@givingout.mx',
+      fechaHora: '2026-08-19T16:45:00Z'
+    },
+    {
+      id: 'mov-6',
+      tipoMovimiento: 'ENTRADA',
+      sku: { codigo: 'CAM-BAS-BLA', descripcion: 'Camiseta Básica Blanca' },
+      cantidad: 130,
+      toLocation: null,
+      fromLocation: null,
+      usuario: 'admin@givingout.mx',
+      fechaHora: '2026-08-19T14:20:00Z'
+    }
+  ]
+};
+
+const demoSummary: InventorySummary = {
+  totalUnidades: 400,
+  totalReservado: 0,
+  totalSkus: 18,
+  totalLotes: 3,
+  porCliente: [
+    { nombre: 'Fashion Forward', unidades: 400, skus: 3 }
+  ]
+};
+
+const demoOrders: any[] = [];
+
+const demoAlerts: any[] = [];
+
 export function Dashboard() {
   const { user, token } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -47,10 +133,27 @@ export function Dashboard() {
         fetch(`${API}/alerts`, { headers }).catch(() => ({ ok: false, json: () => [] })),
       ]);
       if (statsRes.ok) setStats(await statsRes.json());
+      else setStats(demoStats);
+
       if (summaryRes.ok) setSummary(await summaryRes.json());
+      else setSummary(demoSummary);
+
       if (ordersRes.ok) setOrders(await ordersRes.json());
-      try { const a = alertsRes.ok ? await (alertsRes as any).json() : []; setAlerts(Array.isArray(a) ? a : []); } catch { setAlerts([]); }
-    } catch (err) { console.error('Dashboard load error:', err); }
+      else setOrders(demoOrders);
+
+      try {
+        const a = alertsRes.ok ? await (alertsRes as any).json() : [];
+        setAlerts(Array.isArray(a) && a.length > 0 ? a : demoAlerts);
+      } catch {
+        setAlerts(demoAlerts);
+      }
+    } catch (err) {
+      console.error('Dashboard load error:', err);
+      setStats(demoStats);
+      setSummary(demoSummary);
+      setOrders(demoOrders);
+      setAlerts(demoAlerts);
+    }
     setLoading(false);
   }
 

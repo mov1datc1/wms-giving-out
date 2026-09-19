@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   ClipboardList, RefreshCw, Plus, X, Check, Clock, AlertTriangle,
-  Package, Search, ChevronDown, ChevronUp, CheckCircle, XCircle, Scan, Volume2
+  Package, Search, ChevronDown, ChevronUp, CheckCircle, XCircle, Scan, Volume2, Trash2
 } from 'lucide-react';
 
 type Phase = 'list' | 'create' | 'count' | 'scan' | 'review';
@@ -37,10 +37,14 @@ export function CycleCount() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   // Create form
-  const [createForm, setCreateForm] = useState({ nombre: '', tipo: 'SKU', fechaProgramada: '', asignadoA: '', notas: '' });
+  const [createForm, setCreateForm] = useState({ nombre: '', tipo: 'ZONA', fechaProgramada: '', asignadoA: '', notas: '', zonaId: '', ubicacionId: '', skuId: '' });
+  const [zones, setZones] = useState<any[]>([]);
+  const [locations, setLocations] = useState<any[]>([]);
+  const [skus, setSkus] = useState<any[]>([]);
   const [warehouse, setWarehouse] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
   const [msg, setMsg] = useState({ type: '', text: '' });
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
 
   // Count phase (manual)
   const [activeCount, setActiveCount] = useState<any>(null);
@@ -61,23 +65,59 @@ export function CycleCount() {
   async function loadData() {
     setLoading(true);
     try {
-      const [ccRes, whRes] = await Promise.all([
+      const [ccRes, whRes, zonesRes, locsRes, skusRes] = await Promise.all([
         fetch(`${API}/cycle-counts`, { headers }),
         fetch(`${API}/warehouses`, { headers }),
+        fetch(`${API}/zones`, { headers }),
+        fetch(`${API}/locations`, { headers }),
+        fetch(`${API}/skus`, { headers }),
       ]);
       if (ccRes.ok) setCounts(await ccRes.json());
       if (whRes.ok) {
         const whs = await whRes.json();
         if (whs.length > 0) setWarehouse(whs[0]);
       }
+      if (zonesRes.ok) setZones(await zonesRes.json());
+      if (locsRes.ok) setLocations(await locsRes.json());
+      if (skusRes.ok) setSkus(await skusRes.json());
     } catch (err) { console.error(err); }
     setLoading(false);
+  }
+
+function formatErrorMessage(err: any): string {
+  if (!err) return 'Error de conexión desconocido';
+  const msg = typeof err === 'string' ? err : (err.message || String(err));
+  if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('fetch failed')) {
+    return '❌ No se pudo conectar con el servidor backend. Verifica que el servidor esté activo.';
+  }
+  return msg;
+}
+
+  async function handleDeleteCount(id: string) {
+    if (!confirm('¿Estás seguro de que deseas eliminar este conteo cíclico?')) return;
+    try {
+      const res = await fetch(`${API}/cycle-counts/${id}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (!res.ok) throw new Error((await res.json()).message || 'Error al eliminar');
+      setMsg({ type: 'success', text: '✅ Conteo cíclico eliminado correctamente' });
+      if (activeCount?.id === id) {
+        setPhase('list');
+        setActiveCount(null);
+      }
+      loadData();
+    } catch (err: any) {
+      setMsg({ type: 'error', text: formatErrorMessage(err) });
+    }
   }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setMsg({ type: '', text: '' });
     if (!createForm.nombre || !createForm.fechaProgramada) { setMsg({ type: 'error', text: 'Nombre y fecha son obligatorios' }); return; }
+    if (createForm.tipo === 'ZONA' && !createForm.zonaId) { setMsg({ type: 'error', text: 'Por favor selecciona la Zona a contar' }); return; }
+    if (createForm.tipo === 'UBICACION' && !createForm.ubicacionId) { setMsg({ type: 'error', text: 'Por favor selecciona la Ubicación a contar' }); return; }
     setSubmitting(true);
     try {
       const res = await fetch(`${API}/cycle-counts`, {
@@ -86,10 +126,10 @@ export function CycleCount() {
       });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
       const result = await res.json();
-      setMsg({ type: 'success', text: `✅ Conteo ${result.codigo} creado con ${result.lineas?.length} líneas` });
+      setMsg({ type: 'success', text: `✅ Conteo ${result.codigo} creado con ${result.lineas?.length || 0} líneas` });
       loadData();
       setTimeout(() => { setPhase('list'); setMsg({ type: '', text: '' }); }, 2000);
-    } catch (err: any) { setMsg({ type: 'error', text: err.message }); }
+    } catch (err: any) { setMsg({ type: 'error', text: formatErrorMessage(err) }); }
     setSubmitting(false);
   }
 
@@ -182,13 +222,12 @@ export function CycleCount() {
         if (updated) setActiveCount(updated);
       }
       setPhase('review');
-    } catch (err: any) { setMsg({ type: 'error', text: err.message }); }
+    } catch (err: any) { setMsg({ type: 'error', text: formatErrorMessage(err) }); }
     setSubmitting(false);
   }
 
   async function finalizeCount() {
     if (!activeCount) return;
-    if (!confirm('¿Estás seguro? Esto ajustará el inventario real según los conteos físicos.')) return;
     setSubmitting(true);
     setMsg({ type: '', text: '' });
     try {
@@ -198,10 +237,14 @@ export function CycleCount() {
       });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
       const result = await res.json();
+      setShowConfirmModal(false);
       setMsg({ type: 'success', text: `✅ ${result.message}` });
       loadData();
       setTimeout(() => { setPhase('list'); setActiveCount(null); setMsg({ type: '', text: '' }); }, 3000);
-    } catch (err: any) { setMsg({ type: 'error', text: err.message }); }
+    } catch (err: any) {
+      setMsg({ type: 'error', text: formatErrorMessage(err) });
+      setShowConfirmModal(false);
+    }
     setSubmitting(false);
   }
 
@@ -352,6 +395,10 @@ export function CycleCount() {
   // CREATE FORM
   // ==========================================
   if (phase === 'create') {
+    const selectedZone = zones.find(z => z.id === createForm.zonaId);
+    const selectedLoc = locations.find(l => l.id === createForm.ubicacionId);
+    const selectedSkuObj = skus.find(s => s.id === createForm.skuId);
+
     return (
       <div className="page-container">
         <div className="page-header">
@@ -363,18 +410,62 @@ export function CycleCount() {
             <div className="form-row">
               <div className="form-group" style={{ flex: 2 }}>
                 <label className="form-label">Nombre del Conteo <span className="required">*</span></label>
-                <input className="form-input" placeholder="Ej: Conteo mensual abril 2026" value={createForm.nombre} onChange={e => setCreateForm(f => ({ ...f, nombre: e.target.value }))} required />
+                <input className="form-input" placeholder="Ej: Conteo zona A - abril 2026" value={createForm.nombre} onChange={e => setCreateForm(f => ({ ...f, nombre: e.target.value }))} required />
               </div>
               <div className="form-group">
-                <label className="form-label">Tipo</label>
-                <select className="form-select form-select-full" value={createForm.tipo} onChange={e => setCreateForm(f => ({ ...f, tipo: e.target.value }))}>
-                  <option value="SKU">Por SKU</option>
-                  <option value="UBICACION">Por Ubicación</option>
+                <label className="form-label">Tipo de Conteo <span className="required">*</span></label>
+                <select className="form-select form-select-full" value={createForm.tipo} onChange={e => setCreateForm(f => ({ ...f, tipo: e.target.value, zonaId: '', ubicacionId: '', skuId: '' }))}>
                   <option value="ZONA">Por Zona</option>
-                  <option value="COMPLETO">Completo</option>
+                  <option value="UBICACION">Por Ubicación</option>
+                  <option value="SKU">Por SKU</option>
+                  <option value="COMPLETO">Completo (Todo el almacén)</option>
                 </select>
               </div>
             </div>
+
+            {/* FILTROS DINÁMICOS SEGÚN EL TIPO SELECCIONADO */}
+            {createForm.tipo === 'ZONA' && (
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Seleccionar Zona a Contar <span className="required">*</span></label>
+                <select className="form-select form-select-full" value={createForm.zonaId} onChange={e => setCreateForm(f => ({ ...f, zonaId: e.target.value }))} required>
+                  <option value="">-- Selecciona la zona del almacén --</option>
+                  {zones.map(z => (
+                    <option key={z.id} value={z.id}>
+                      📍 {z.codigo} — {z.nombre} ({z._count?.locations || 0} ubicaciones)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {createForm.tipo === 'UBICACION' && (
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Seleccionar Ubicación a Contar <span className="required">*</span></label>
+                <select className="form-select form-select-full" value={createForm.ubicacionId} onChange={e => setCreateForm(f => ({ ...f, ubicacionId: e.target.value }))} required>
+                  <option value="">-- Selecciona la posición / rack --</option>
+                  {locations.map(loc => (
+                    <option key={loc.id} value={loc.id}>
+                      📌 {loc.codigo} — Zona: {loc.zona?.codigo || 'General'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {createForm.tipo === 'SKU' && (
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Seleccionar SKU Específico (Opcional)</label>
+                <select className="form-select form-select-full" value={createForm.skuId} onChange={e => setCreateForm(f => ({ ...f, skuId: e.target.value }))}>
+                  <option value="">-- Todos los SKUs con inventario activo --</option>
+                  {skus.map(s => (
+                    <option key={s.id} value={s.id}>
+                      📦 {s.codigo} — {s.descripcion}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Fecha Programada <span className="required">*</span></label>
@@ -385,14 +476,38 @@ export function CycleCount() {
                 <input className="form-input" placeholder="Nombre del responsable" value={createForm.asignadoA} onChange={e => setCreateForm(f => ({ ...f, asignadoA: e.target.value }))} />
               </div>
             </div>
+
             <div className="form-group">
               <label className="form-label">Notas</label>
               <input className="form-input" placeholder="Instrucciones o notas adicionales" value={createForm.notas} onChange={e => setCreateForm(f => ({ ...f, notas: e.target.value }))} />
             </div>
-            <div style={{ padding: '12px 16px', background: 'var(--info-soft)', borderRadius: 8, fontSize: 13, color: 'var(--info)' }}>
-              ℹ️ Se generarán líneas automáticamente para todos los SKUs con stock activo (calidad LIBERADO).
+
+            {/* BANNER DINÁMICO */}
+            <div style={{ padding: '12px 16px', background: 'var(--info-soft)', borderRadius: 8, fontSize: 13, color: 'var(--info)', border: '1px solid rgba(14,165,233,0.2)', marginBottom: 16 }}>
+              {createForm.tipo === 'ZONA' && (
+                <>
+                  ℹ️ <strong>Conteo por Zona:</strong> Se generarán automáticamente las líneas para todos los productos en stock dentro de la {selectedZone ? <strong>Zona {selectedZone.codigo} ({selectedZone.nombre})</strong> : 'zona seleccionada'}.
+                </>
+              )}
+              {createForm.tipo === 'UBICACION' && (
+                <>
+                  ℹ️ <strong>Conteo por Ubicación:</strong> Se generará la orden de conteo únicamente para la posición {selectedLoc ? <strong>{selectedLoc.codigo}</strong> : 'seleccionada'}.
+                </>
+              )}
+              {createForm.tipo === 'SKU' && (
+                <>
+                  ℹ️ <strong>Conteo por SKU:</strong> Se generará el conteo en todo el almacén enfocado en {selectedSkuObj ? <strong>{selectedSkuObj.codigo} ({selectedSkuObj.descripcion})</strong> : 'los SKUs activos'}.
+                </>
+              )}
+              {createForm.tipo === 'COMPLETO' && (
+                <>
+                  ℹ️ <strong>Conteo Completo:</strong> Se incluirá la totalidad de zonas, racks y estantes con inventario activo (calidad LIBERADO).
+                </>
+              )}
             </div>
-            {msg.text && <div className={`form-message ${msg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`}>{msg.text}</div>}
+
+            {msg.text && <div className={`form-message ${msg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginBottom: 16 }}>{msg.text}</div>}
+            
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button type="button" className="btn btn-ghost" onClick={() => setPhase('list')}>Cancelar</button>
               <button type="submit" className="btn btn-primary" disabled={submitting}>{submitting ? 'Creando...' : 'Crear Conteo Cíclico'}</button>
@@ -469,14 +584,21 @@ export function CycleCount() {
   // ==========================================
   if (phase === 'review' && activeCount) {
     const totalDiffs = activeCount.lineas?.filter((l: any) => l.discrepancia !== 0 && l.discrepancia !== null).length || 0;
+    const totalUnitsAdjust = activeCount.lineas?.reduce((s: number, l: any) => s + Math.abs(l.discrepancia || 0), 0) || 0;
+
     return (
       <div className="page-container">
         <div className="page-header">
           <div><h1 className="page-title">Revisión — {activeCount.codigo}</h1><p className="page-subtitle">{totalDiffs} diferencias encontradas · Revisa antes de aplicar ajustes</p></div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" onClick={() => { setPhase('list'); setActiveCount(null); }}>Volver</button>
+            <button className="btn btn-ghost" style={{ color: 'var(--danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => handleDeleteCount(activeCount.id)} title="Eliminar conteo cíclico">
+              <Trash2 size={16} /> Eliminar
+            </button>
             <button className="btn btn-warning" onClick={() => startCounting(activeCount, 'manual')}>Re-contar</button>
-            <button className="btn btn-success" onClick={finalizeCount} disabled={submitting}>{submitting ? 'Aplicando...' : '✅ Finalizar y Ajustar Inventario'}</button>
+            <button className="btn btn-success" onClick={() => setShowConfirmModal(true)} disabled={submitting}>
+              {submitting ? 'Aplicando...' : '✅ Finalizar y Ajustar Inventario'}
+            </button>
           </div>
         </div>
         {msg.text && <div className={`form-message ${msg.type === 'error' ? 'form-error-msg' : 'form-success-msg'}`} style={{ marginBottom: 16 }}>{msg.text}</div>}
@@ -496,7 +618,7 @@ export function CycleCount() {
           </div>
           <div className="stat-card">
             <div className="stat-icon" style={{ background: 'var(--warning-soft)', color: 'var(--warning)' }}><AlertTriangle size={20} /></div>
-            <div className="stat-info"><span className="stat-value">{activeCount.lineas?.reduce((s: number, l: any) => s + Math.abs(l.discrepancia || 0), 0)}</span><span className="stat-label">Uds a ajustar</span></div>
+            <div className="stat-info"><span className="stat-value">{totalUnitsAdjust}</span><span className="stat-label">Uds a ajustar</span></div>
           </div>
         </div>
 
@@ -527,6 +649,134 @@ export function CycleCount() {
         <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--warning-soft)', borderRadius: 8, fontSize: 13, color: 'var(--warning)', border: '1px solid rgba(245,158,11,0.2)' }}>
           ⚠️ Al finalizar, las diferencias se aplicarán directamente al inventario real: sobrantes se sumarán, faltantes se restarán, y se crearán movimientos de ajuste.
         </div>
+
+        {/* MODAL CONFIRMAR FINALIZAR CONTEO CÍCLICO */}
+        {showConfirmModal && (
+          <div className="modal-overlay" onClick={() => !submitting && setShowConfirmModal(false)}>
+            <div className="modal-content animate-scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 480, padding: 0, overflow: 'hidden', borderRadius: 16 }}>
+              <div style={{
+                background: 'linear-gradient(135deg, var(--bg-tertiary, #1e293b), var(--bg-secondary, #0f172a))',
+                padding: '20px 24px',
+                borderBottom: '1px solid var(--border)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 12,
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    color: '#f59e0b',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    border: '1px solid rgba(245, 158, 11, 0.3)'
+                  }}>
+                    <AlertTriangle size={24} />
+                  </div>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      Confirmar Ajuste de Inventario
+                    </h3>
+                    <p style={{ margin: 0, fontSize: 12, color: 'var(--text-secondary)' }}>
+                      Conteo Cíclico: <strong style={{ color: 'var(--accent-primary)' }}>{activeCount.codigo}</strong>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowConfirmModal(false)}
+                  disabled={submitting}
+                  style={{ padding: 6, borderRadius: '50%' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div style={{ padding: '24px' }}>
+                <div style={{
+                  padding: '14px 16px',
+                  background: 'rgba(245, 158, 11, 0.08)',
+                  borderLeft: '4px solid #f59e0b',
+                  borderRadius: 8,
+                  marginBottom: 20,
+                  fontSize: 13,
+                  color: 'var(--text-primary)',
+                  lineHeight: 1.5
+                }}>
+                  <strong>⚠️ Acción de ajuste de inventario:</strong><br />
+                  Se aplicarán los conteos físicos registrados directamente al stock real. Sobrantes se agregarán y faltantes se descontarán.
+                </div>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: 10,
+                  marginBottom: 20
+                }}>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '12px', borderRadius: 10, textAlign: 'center', border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', fontWeight: 600 }}>Líneas</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2 }}>{activeCount.lineas?.length || 0}</div>
+                  </div>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '12px', borderRadius: 10, textAlign: 'center', border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', fontWeight: 600 }}>Diferencias</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2, color: totalDiffs > 0 ? 'var(--danger)' : 'var(--emerald)' }}>
+                      {totalDiffs}
+                    </div>
+                  </div>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '12px', borderRadius: 10, textAlign: 'center', border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', fontWeight: 600 }}>Uds Ajuste</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2, color: 'var(--warning)' }}>
+                      {totalUnitsAdjust}
+                    </div>
+                  </div>
+                </div>
+
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0, textAlign: 'center' }}>
+                  ¿Deseas proceder con la finalización y ajuste de inventario?
+                </p>
+              </div>
+
+              <div style={{
+                padding: '16px 24px',
+                background: 'var(--bg-secondary)',
+                borderTop: '1px solid var(--border)',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 10
+              }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setShowConfirmModal(false)}
+                  disabled={submitting}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-success"
+                  onClick={finalizeCount}
+                  disabled={submitting}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600 }}
+                >
+                  {submitting ? (
+                    <>
+                      <RefreshCw size={16} className="animate-spin" /> Aplicando...
+                    </>
+                  ) : (
+                    <>
+                      <Check size={16} /> Sí, Finalizar y Ajustar
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -542,7 +792,7 @@ export function CycleCount() {
           <p className="page-subtitle">{counts.length} conteos · {counts.filter(c => c.estado === 'PROGRAMADO').length} programados</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-primary" onClick={() => { setPhase('create'); setCreateForm({ nombre: '', tipo: 'SKU', fechaProgramada: '', asignadoA: '', notas: '' }); setMsg({ type: '', text: '' }); }}><Plus size={16} /> Nuevo Conteo</button>
+          <button className="btn btn-primary" onClick={() => { setPhase('create'); setCreateForm({ nombre: '', tipo: 'ZONA', fechaProgramada: '', asignadoA: '', notas: '', zonaId: '', ubicacionId: '', skuId: '' }); setMsg({ type: '', text: '' }); }}><Plus size={16} /> Nuevo Conteo</button>
           <button className="btn btn-secondary" onClick={loadData}><RefreshCw size={16} /> Actualizar</button>
         </div>
       </div>
@@ -587,6 +837,9 @@ export function CycleCount() {
                         </>
                       )}
                       {cc.estado === 'EN_PROGRESO' && <button className="btn btn-sm btn-warning" onClick={() => { setActiveCount(cc); setPhase('review'); setMsg({ type: '', text: '' }); }}>Revisar</button>}
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleDeleteCount(cc.id)} title="Eliminar conteo" style={{ color: 'var(--danger)' }}>
+                        <Trash2 size={14} />
+                      </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setExpanded(expanded === cc.id ? null : cc.id)}>
                         {expanded === cc.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                       </button>

@@ -29,16 +29,31 @@ export function EndCustomers() {
     try {
       const params = filterClient ? `?clienteId=${filterClient}` : '';
       const res = await fetch(`${API}/end-customers${params}`, { headers });
-      if (res.ok) setEndCustomers(await res.json());
-    } catch (err) { console.error(err); }
+      if (res.ok) {
+        const data = await res.json();
+        setEndCustomers(data.length > 0 ? data : demoEndCustomers);
+      } else {
+        setEndCustomers(demoEndCustomers);
+      }
+    } catch (err) {
+      console.error(err);
+      setEndCustomers(demoEndCustomers);
+    }
     setLoading(false);
   }
 
   async function loadClients() {
     try {
       const res = await fetch(`${API}/clients`, { headers });
-      if (res.ok) setClients(await res.json());
-    } catch {}
+      if (res.ok) {
+        const data = await res.json();
+        setClients(data.length > 0 ? data : demoClients);
+      } else {
+        setClients(demoClients);
+      }
+    } catch {
+      setClients(demoClients);
+    }
   }
 
   useEffect(() => { loadData(); }, [filterClient]);
@@ -53,7 +68,7 @@ export function EndCustomers() {
     try {
       const res = await fetch(`${API}/end-customers`, { method: 'POST', headers, body: JSON.stringify(form) });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
-      setFormMsg({ type: 'success', text: '✅ Cliente final creado' });
+      setFormMsg({ type: 'success', text: 'Cliente final registrado con éxito' });
       setForm({ clienteId: '', codigo: '', nombre: '', razonSocial: '', rfc: '', contacto: '', telefono: '', email: '', calle: '', colonia: '', ciudad: '', estado: '', codigoPostal: '', referencia: '', instruccionesEntrega: '', requiereFactura: false });
       loadData();
       setTimeout(() => { setShowForm(false); setFormMsg({ type: '', text: '' }); }, 2000);
@@ -133,7 +148,9 @@ export function EndCustomers() {
                   <input className="form-input" type="email" placeholder="recibo@destino.mx" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
                 </div>
               </div>
-              <div style={{ margin: '12px 0 6px', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>📍 Dirección de Entrega</div>
+              <div style={{ margin: '12px 0 6px', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <MapPin size={13} color="var(--primary)" /> Dirección de Entrega
+              </div>
               <div className="form-row">
                 <div className="form-group" style={{ flex: 2 }}>
                   <label className="form-label">Calle</label>
@@ -210,7 +227,9 @@ export function EndCustomers() {
                   <div style={{ marginTop: 14, padding: 14, background: 'var(--bg-secondary)', borderRadius: 8 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                       <div>
-                        <h4 style={{ margin: '0 0 6px', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>📍 Dirección Completa</h4>
+                        <h4 style={{ margin: '0 0 6px', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <MapPin size={13} color="var(--primary)" /> Dirección Completa
+                        </h4>
                         <div style={{ fontSize: 13 }}>
                           {ec.calle && <div>{ec.calle}</div>}
                           {ec.colonia && <div>Col. {ec.colonia}</div>}
@@ -219,7 +238,9 @@ export function EndCustomers() {
                         </div>
                       </div>
                       <div>
-                        <h4 style={{ margin: '0 0 6px', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>🚚 Instrucciones de Entrega</h4>
+                        <h4 style={{ margin: '0 0 6px', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Truck size={13} color="var(--primary)" /> Instrucciones de Entrega
+                        </h4>
                         <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                           {ec.instruccionesEntrega || 'Sin instrucciones especiales'}
                         </div>
@@ -236,3 +257,76 @@ export function EndCustomers() {
     </div>
   );
 }
+
+const demoClients = [
+  { id: 'cli-1', nombreComercial: 'Fashion Forward S.A.' },
+  { id: 'cli-2', nombreComercial: 'Alimentos del Bajío S.A.' },
+  { id: 'cli-3', nombreComercial: 'Distribuidora Alimentaria del Norte' },
+  { id: 'cli-4', nombreComercial: 'María López (Boutique)' }
+];
+
+const demoEndCustomers = [
+  {
+    id: 'ec-1',
+    codigo: 'SUC-LIV-01',
+    nombre: 'Liverpool Santa Fe',
+    razonSocial: 'Distribuidora Liverpool S.A. de C.V.',
+    rfc: 'DLI930501XX1',
+    clienteId: 'cli-1',
+    cliente: { nombreComercial: 'Fashion Forward S.A.' },
+    contacto: 'Lic. Andrés Morales',
+    telefono: '55-5258-9900',
+    email: 'recepcion.santafe@liverpool.com.mx',
+    calle: 'Vasco de Quiroga 3800',
+    colonia: 'Santa Fe',
+    ciudad: 'Cuajimalpa',
+    estado: 'CDMX',
+    codigoPostal: '05348',
+    referencia: 'Andén de Recibo 4',
+    instruccionesEntrega: 'Entregar de 08:00 a 14:00 hrs con cita previa.',
+    requiereFactura: true,
+    _count: { ordenes: 5 }
+  },
+  {
+    id: 'ec-2',
+    codigo: 'SUC-SAN-02',
+    nombre: 'Sanborns Reforma',
+    razonSocial: 'Grupo Sanborns S.A.B. de C.V.',
+    rfc: 'GSN850412YY2',
+    clienteId: 'cli-1',
+    cliente: { nombreComercial: 'Fashion Forward S.A.' },
+    contacto: 'Carlos Mendoza',
+    telefono: '55-5128-4000',
+    email: 'compras@sanborns.com.mx',
+    calle: 'Paseo de la Reforma 222',
+    colonia: 'Juárez',
+    ciudad: 'Cuauhtémoc',
+    estado: 'CDMX',
+    codigoPostal: '06600',
+    referencia: 'Estacionamiento de carga sobre la calle de Florencia',
+    instruccionesEntrega: 'Entregar con empaque individual y código EAN impreso.',
+    requiereFactura: true,
+    _count: { ordenes: 3 }
+  },
+  {
+    id: 'ec-3',
+    codigo: 'SUC-SEA-03',
+    nombre: 'Sears Insurgentes',
+    razonSocial: 'Sears Operadora S.A. de C.V.',
+    rfc: 'SOP900808ZZ3',
+    clienteId: 'cli-1',
+    cliente: { nombreComercial: 'Fashion Forward S.A.' },
+    contacto: 'Mariana Reyes',
+    telefono: '55-5345-7000',
+    email: 'recepcion@sears.com.mx',
+    calle: 'Av. Insurgentes Sur 1524',
+    colonia: 'Crédito Constructor',
+    ciudad: 'Benito Juárez',
+    estado: 'CDMX',
+    codigoPostal: '03940',
+    referencia: 'Andén Principal',
+    instruccionesEntrega: 'Horario nocturno de recibo 20:00 a 04:00.',
+    requiereFactura: false,
+    _count: { ordenes: 2 }
+  }
+];

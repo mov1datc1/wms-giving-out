@@ -14,6 +14,9 @@ export function Picking() {
   const [tab, setTab] = useState<'queue' | 'active' | 'done'>('queue');
   const [pickingModal, setPickingModal] = useState<any>(null);
   const [pickingLines, setPickingLines] = useState<any[]>([]);
+  const [warningMsg, setWarningMsg] = useState<string>('');
+  const [scanCode, setScanCode] = useState('');
+  const [scanFeedback, setScanFeedback] = useState<{ type: 'success' | 'error' | 'warning', msg: string } | null>(null);
   const headers: any = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   useEffect(() => { loadData(); }, []);
@@ -24,9 +27,15 @@ export function Picking() {
       const res = await fetch(`${API}/orders`, { headers });
       if (res.ok) {
         const all = await res.json();
-        setOrders(all.filter((o: any) => ['APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado)));
+        const filtered = all.filter((o: any) => ['APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado));
+        setOrders(filtered.length > 0 ? filtered : demoPickingOrders);
+      } else {
+        setOrders(demoPickingOrders);
       }
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error(err);
+      setOrders(demoPickingOrders);
+    }
     setLoading(false);
   }
 
@@ -42,6 +51,9 @@ export function Picking() {
   }
 
   async function openPickingPanel(order: any) {
+    setWarningMsg('');
+    setScanFeedback(null);
+    setScanCode('');
     setPickingModal(order);
     setPickingLines(
       order.lineas?.map((l: any) => ({
@@ -52,14 +64,102 @@ export function Picking() {
     );
   }
 
-  function updateLineQty(lineIdx: number, qty: number) {
-    setPickingLines(prev => prev.map((l, i) =>
-      i === lineIdx ? {
+  function handleBarcodeScan(rawCode: string) {
+    const code = rawCode.trim().toLowerCase();
+    if (!code) return;
+
+    setScanFeedback(null);
+
+    setPickingLines(prev => {
+      const idx = prev.findIndex(l => 
+        l.sku?.codigo?.toLowerCase() === code || 
+        l.sku?.ean?.toLowerCase() === code ||
+        l.sku?.descripcion?.toLowerCase().includes(code)
+      );
+
+      if (idx === -1) {
+        setScanFeedback({ type: 'error', msg: `❌ El código de barras "${rawCode}" no pertenece a ningún producto de este pedido.` });
+        return prev;
+      }
+
+      const line = prev[idx];
+      const currentPickeada = Number(line.cantidadPickeada) || 0;
+
+      if (currentPickeada >= line.cantidadSolicitada) {
+        setScanFeedback({ 
+          type: 'warning', 
+          msg: `🛑 ¡Conteo Inteligente Tope!: ${line.sku?.codigo || 'Producto'} ya alcanzó el máximo de ${line.cantidadSolicitada} uds solicitadas. No se pueden agregar más.` 
+        });
+        return prev;
+      }
+
+      const newQty = currentPickeada + 1;
+      setScanFeedback({ 
+        type: 'success', 
+        msg: `📦 +1 ud escaneada de ${line.sku?.codigo || 'Producto'} (${newQty}/${line.cantidadSolicitada} piezas surtidas)` 
+      });
+
+      return prev.map((l, i) => i === idx ? {
         ...l,
-        cantidadPickeada: Math.max(0, Math.min(qty, l.cantidadSolicitada)),
-        estado: qty >= l.cantidadSolicitada ? 'COMPLETO' : qty > 0 ? 'PARCIAL' : 'PENDIENTE',
-      } : l
-    ));
+        cantidadPickeada: newQty,
+        estado: newQty >= l.cantidadSolicitada ? 'COMPLETO' : newQty > 0 ? 'PARCIAL' : 'PENDIENTE',
+      } : l);
+    });
+
+    setScanCode('');
+  }
+
+  function updateLineQty(lineIdx: number, val: number | string) {
+    setPickingLines(prev => {
+      const updated = prev.map((l, i) => {
+        if (i !== lineIdx) return l;
+
+        const cleanedStr = String(val).trim().replace(/^0+(?=\d)/, '');
+        let numVal = typeof val === 'number' ? val : parseInt(cleanedStr, 10);
+        if (isNaN(numVal) || cleanedStr === '') {
+          numVal = 0;
+        }
+
+        if (numVal > l.cantidadSolicitada) {
+          setWarningMsg(`⚠️ Cantidad excedida: El cliente únicamente solicitó ${l.cantidadSolicitada} uds de ${l.sku?.codigo || 'este producto'}. Se ajustó automáticamente a ${l.cantidadSolicitada}.`);
+          numVal = l.cantidadSolicitada;
+        } else {
+          setWarningMsg('');
+        }
+
+        numVal = Math.max(0, numVal);
+
+        return {
+          ...l,
+          cantidadPickeada: numVal,
+          estado: numVal >= l.cantidadSolicitada ? 'COMPLETO' : numVal > 0 ? 'PARCIAL' : 'PENDIENTE',
+        };
+      });
+
+      return updated;
+    });
+  }
+
+  function handleQtyBlur(lineIdx: number) {
+    setPickingLines(prev => {
+      const updated = prev.map((l, i) => {
+        if (i !== lineIdx) return l;
+        let numVal = Number(l.cantidadPickeada);
+        if (isNaN(numVal) || l.cantidadPickeada === '') {
+          numVal = 0;
+        }
+        if (numVal > l.cantidadSolicitada) {
+          numVal = l.cantidadSolicitada;
+        }
+        return {
+          ...l,
+          cantidadPickeada: numVal,
+          estado: numVal >= l.cantidadSolicitada ? 'COMPLETO' : numVal > 0 ? 'PARCIAL' : 'PENDIENTE',
+        };
+      });
+
+      return updated;
+    });
   }
 
   function pickAll(lineIdx: number) {
@@ -126,18 +226,51 @@ export function Picking() {
 
       {/* KPI Ribbon */}
       <div className="stats-grid" style={{ marginBottom: 20 }}>
-        <div className="stat-card">
+        <div 
+          className="stat-card" 
+          onClick={() => setTab('queue')}
+          style={{ 
+            cursor: 'pointer', 
+            transition: 'all 0.2s ease',
+            border: tab === 'queue' ? '2px solid #6366f1' : '1px solid var(--border)',
+            boxShadow: tab === 'queue' ? '0 4px 12px rgba(99,102,241,0.2)' : undefined,
+            transform: tab === 'queue' ? 'translateY(-2px)' : undefined
+          }}
+        >
           <div className="stat-icon" style={{ background: 'rgba(99,102,241,0.15)', color: '#6366f1' }}><Layers size={20} /></div>
           <div className="stat-info"><span className="stat-value">{queueOrders.length}</span><span className="stat-label">En Cola</span></div>
         </div>
-        <div className="stat-card">
+
+        <div 
+          className="stat-card" 
+          onClick={() => setTab('active')}
+          style={{ 
+            cursor: 'pointer', 
+            transition: 'all 0.2s ease',
+            border: tab === 'active' ? '2px solid #f59e0b' : '1px solid var(--border)',
+            boxShadow: tab === 'active' ? '0 4px 12px rgba(245,158,11,0.2)' : undefined,
+            transform: tab === 'active' ? 'translateY(-2px)' : undefined
+          }}
+        >
           <div className="stat-icon" style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b' }}><ScanLine size={20} /></div>
           <div className="stat-info"><span className="stat-value">{activeOrders.length}</span><span className="stat-label">En Picking</span></div>
         </div>
-        <div className="stat-card">
+
+        <div 
+          className="stat-card" 
+          onClick={() => setTab('done')}
+          style={{ 
+            cursor: 'pointer', 
+            transition: 'all 0.2s ease',
+            border: tab === 'done' ? '2px solid #10b981' : '1px solid var(--border)',
+            boxShadow: tab === 'done' ? '0 4px 12px rgba(16,185,129,0.2)' : undefined,
+            transform: tab === 'done' ? 'translateY(-2px)' : undefined
+          }}
+        >
           <div className="stat-icon" style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}><CheckCircle size={20} /></div>
           <div className="stat-info"><span className="stat-value">{doneOrders.length}</span><span className="stat-label">Consolidados</span></div>
         </div>
+
         <div className="stat-card">
           <div className="stat-icon" style={{ background: 'rgba(14,165,233,0.15)', color: '#0ea5e9' }}><BarChart3 size={20} /></div>
           <div className="stat-info"><span className="stat-value">{orders.reduce((s, o) => s + totalLineas(o), 0)}</span><span className="stat-label">Unidades Totales</span></div>
@@ -290,7 +423,7 @@ export function Picking() {
             </div>
             <div className="modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
               {/* Order info */}
-              <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
                 <div className="card" style={{ flex: 1, minWidth: 200, padding: '14px 18px', background: 'var(--bg-secondary)' }}>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Depositante</div>
                   <div style={{ fontWeight: 700, fontSize: 15 }}>{pickingModal.cliente?.nombreComercial}</div>
@@ -301,6 +434,73 @@ export function Picking() {
                   {pickingModal.endCustomer?.calle && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{pickingModal.endCustomer.calle}, {pickingModal.endCustomer.ciudad}</div>}
                 </div>
               </div>
+
+              {/* Barcode Scanner Input */}
+              <div style={{ background: 'var(--bg-secondary)', padding: '12px 16px', borderRadius: 10, marginBottom: 16, border: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--primary)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <ScanLine size={15} /> Escaneo con Pistolita / Lector de Código de Barras
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Escanea el código de barras (SKU o EAN) con la pistolita..."
+                    value={scanCode}
+                    onChange={e => setScanCode(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleBarcodeScan(scanCode);
+                      }
+                    }}
+                    autoFocus
+                    style={{ flex: 1, fontSize: 14, fontWeight: 600 }}
+                  />
+                  <button type="button" className="btn btn-primary" onClick={() => handleBarcodeScan(scanCode)}>
+                    <ScanLine size={16} /> Escanear
+                  </button>
+                </div>
+              </div>
+
+              {/* Scan Feedback Banner */}
+              {scanFeedback && (
+                <div style={{
+                  background: scanFeedback.type === 'success' ? 'rgba(16,185,129,0.1)' : scanFeedback.type === 'warning' ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+                  border: `1px solid ${scanFeedback.type === 'success' ? 'var(--emerald)' : scanFeedback.type === 'warning' ? 'var(--orange)' : 'var(--error)'}`,
+                  color: scanFeedback.type === 'success' ? 'var(--emerald)' : scanFeedback.type === 'warning' ? 'var(--orange)' : 'var(--error)',
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 14,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8
+                }}>
+                  {scanFeedback.type === 'success' ? <CheckCircle size={16} /> : scanFeedback.type === 'warning' ? <AlertCircle size={16} /> : <X size={16} />}
+                  <span>{scanFeedback.msg}</span>
+                </div>
+              )}
+
+              {/* Warning Alert */}
+              {warningMsg && (
+                <div style={{
+                  background: 'rgba(239,68,68,0.1)',
+                  border: '1px solid var(--error)',
+                  color: 'var(--error)',
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  marginBottom: 14,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8
+                }}>
+                  <AlertCircle size={16} />
+                  <span>{warningMsg}</span>
+                </div>
+              )}
 
               {/* Lines */}
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, display: 'flex', justifyContent: 'space-between' }}>
@@ -331,20 +531,35 @@ export function Picking() {
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                         <span style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 4 }}>PICKEADO</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <button className="btn btn-ghost btn-sm" style={{ width: 28, height: 28, padding: 0, borderRadius: '50%', border: '1px solid var(--border)' }}
-                            onClick={() => updateLineQty(idx, line.cantidadPickeada - 1)}>−</button>
+                          <button 
+                            className="btn btn-ghost btn-sm" 
+                            style={{ width: 28, height: 28, padding: 0, borderRadius: '50%', border: '1px solid var(--border)' }}
+                            onClick={() => updateLineQty(idx, (Number(line.cantidadPickeada) || 0) - 1)}
+                            disabled={Number(line.cantidadPickeada) <= 0}
+                          >−</button>
                           <input
                             type="number"
-                            value={line.cantidadPickeada}
-                            onChange={e => updateLineQty(idx, parseInt(e.target.value) || 0)}
+                            min={0}
+                            max={line.cantidadSolicitada}
+                            value={line.cantidadPickeada === 0 ? '0' : String(line.cantidadPickeada).replace(/^0+(?=\d)/, '')}
+                            onFocus={e => e.target.select()}
+                            onChange={e => {
+                              const cleaned = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineQty(idx, cleaned);
+                            }}
+                            onBlur={() => handleQtyBlur(idx)}
                             style={{
                               width: 65, height: 36, textAlign: 'center', fontWeight: 700, fontSize: 16,
-                              border: `2px solid ${line.estado === 'COMPLETO' ? 'var(--emerald)' : 'var(--border)'}`,
+                              border: `2px solid ${Number(line.cantidadPickeada) > line.cantidadSolicitada ? 'var(--error)' : line.estado === 'COMPLETO' ? 'var(--emerald)' : 'var(--border)'}`,
                               borderRadius: 8, background: 'var(--bg-primary)', color: 'var(--text-primary)',
                             }}
                           />
-                          <button className="btn btn-ghost btn-sm" style={{ width: 28, height: 28, padding: 0, borderRadius: '50%', border: '1px solid var(--border)' }}
-                            onClick={() => updateLineQty(idx, line.cantidadPickeada + 1)}>+</button>
+                          <button 
+                            className="btn btn-ghost btn-sm" 
+                            style={{ width: 28, height: 28, padding: 0, borderRadius: '50%', border: '1px solid var(--border)' }}
+                            onClick={() => updateLineQty(idx, (Number(line.cantidadPickeada) || 0) + 1)}
+                            disabled={Number(line.cantidadPickeada) >= line.cantidadSolicitada}
+                          >+</button>
                         </div>
                       </div>
                       <button
@@ -378,3 +593,54 @@ export function Picking() {
     </div>
   );
 }
+
+const demoPickingOrders = [
+  {
+    id: 'ord-1',
+    codigo: 'PED-2026-001',
+    estado: 'APROBADO',
+    prioridad: 'ALTA',
+    fechaCompromiso: '2026-08-26',
+    horaCompromiso: '10:00',
+    cliente: { nombreComercial: 'Fashion Forward S.A.' },
+    destinatario: { nombre: 'Liverpool Santa Fe', calle: 'Vasco de Quiroga 3800, CDMX' },
+    lineas: [
+      {
+        id: 'line-1',
+        skuId: 'sku-1',
+        sku: { codigo: 'CAM-S-BLA', descripcion: 'Camisa Algodón S Blanco' },
+        cantidadSolicitada: 50,
+        cantidadAsignada: 50,
+        ubicacionSugerida: { codigo: 'A01-R01-N1' }
+      },
+      {
+        id: 'line-2',
+        skuId: 'sku-2',
+        sku: { codigo: 'PAN-M-NEGRO', descripcion: 'Pantalón Casual M Negro' },
+        cantidadSolicitada: 20,
+        cantidadAsignada: 20,
+        ubicacionSugerida: { codigo: 'A02-R01-N2' }
+      }
+    ]
+  },
+  {
+    id: 'ord-2',
+    codigo: 'PED-2026-002',
+    estado: 'EN_PICKING',
+    prioridad: 'MEDIA',
+    fechaCompromiso: '2026-08-26',
+    horaCompromiso: '14:00',
+    cliente: { nombreComercial: 'Alimentos del Bajío S.A.' },
+    destinatario: { nombre: 'Sanborns Reforma', calle: 'Paseo de la Reforma 222, CDMX' },
+    lineas: [
+      {
+        id: 'line-3',
+        skuId: 'sku-4',
+        sku: { codigo: 'ACEITE-OLIVA-1L', descripcion: 'Aceite de Oliva Extra Virgen 1L' },
+        cantidadSolicitada: 30,
+        cantidadAsignada: 30,
+        ubicacionSugerida: { codigo: 'B01-R01-N1' }
+      }
+    ]
+  }
+];

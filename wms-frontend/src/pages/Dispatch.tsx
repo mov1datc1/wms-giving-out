@@ -484,21 +484,67 @@ export function Dispatch() {
                 {detailModal.nombreReceptor && <InfoCard label="Recibió" value={detailModal.nombreReceptor} />}
               </div>
 
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Líneas del pedido</div>
-              <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
-                <table className="data-table" style={{ fontSize: 13 }}>
-                  <thead><tr><th>SKU</th><th>Producto</th><th>Solicitado</th><th>Asignado</th></tr></thead>
-                  <tbody>
-                    {detailModal.lineas?.map((l: any, j: number) => (
-                      <tr key={j}>
-                        <td><code style={{ fontSize: 11 }}>{l.sku?.codigo}</code></td>
-                        <td>{l.sku?.descripcion}</td>
-                        <td style={{ fontWeight: 600 }}>{l.cantidadSolicitada}</td>
-                        <td style={{ fontWeight: 700, color: l.cantidadAsignada >= l.cantidadSolicitada ? 'var(--emerald)' : 'var(--orange)' }}>{l.cantidadAsignada}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10, marginTop: 16 }}>
+                Líneas del pedido ({detailModal.lineas?.length || 0})
+              </div>
+
+              <div style={{ display: 'grid', gap: 10 }}>
+                {detailModal.lineas && detailModal.lineas.length > 0 ? (
+                  detailModal.lineas.map((l: any, j: number) => {
+                    const codigo = l.sku?.codigo || l.skuCode || 'SKU';
+                    const descripcion = l.sku?.descripcion || l.skuDesc || 'Producto sin descripción';
+                    const solicitada = Number(l.cantidadSolicitada) || 0;
+                    const pickeado = Number(l.cantidadAsignada ?? l.cantidadPickeada ?? 0);
+                    const esCompleto = solicitada > 0 && pickeado >= solicitada;
+
+                    return (
+                      <div key={j} style={{
+                        padding: '12px 16px',
+                        borderRadius: 10,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-secondary)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 12
+                      }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                            <code style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', background: 'rgba(99,102,241,0.1)', padding: '2px 6px', borderRadius: 4 }}>
+                              {codigo}
+                            </code>
+                            <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>{descripcion}</span>
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                            Cantidad solicitada por cliente: <strong style={{ color: 'var(--text-secondary)' }}>{solicitada} uds</strong>
+                          </div>
+                        </div>
+
+                        <div>
+                          <span style={{ 
+                            fontWeight: 700, 
+                            color: esCompleto ? 'var(--emerald)' : pickeado > 0 ? 'var(--orange)' : 'var(--text-tertiary)',
+                            background: esCompleto ? 'rgba(16,185,129,0.1)' : pickeado > 0 ? 'rgba(245,158,11,0.1)' : 'var(--bg-primary)',
+                            border: `1px solid ${esCompleto ? 'var(--emerald)' : pickeado > 0 ? 'var(--orange)' : 'var(--border)'}`,
+                            padding: '6px 12px',
+                            borderRadius: 20,
+                            fontSize: 12,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6
+                          }}>
+                            {esCompleto ? <CheckCircle size={14} /> : <Clock size={14} />}
+                            {pickeado} / {solicitada} uds {esCompleto ? 'Surtido 100%' : 'En Surtido'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                    No hay líneas de producto registradas en este pedido.
+                  </div>
+                )}
               </div>
 
               {detailModal.notas && (

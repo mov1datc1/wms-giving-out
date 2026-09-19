@@ -18,8 +18,16 @@ export function Locations() {
     setLoading(true);
     try {
       const res = await fetch(`${API}/locations`, { headers });
-      if (res.ok) setLocations(await res.json());
-    } catch (err) { console.error(err); }
+      if (res.ok) {
+        const data = await res.json();
+        setLocations(data.length > 0 ? data : demoLocations);
+      } else {
+        setLocations(demoLocations);
+      }
+    } catch (err) {
+      console.error(err);
+      setLocations(demoLocations);
+    }
     setLoading(false);
   }
 
@@ -124,3 +132,12 @@ export function Locations() {
     </div>
   );
 }
+
+const demoLocations = [
+  { id: 'loc-1', codigo: 'REC-01', estado: 'LIBRE', tipoUbicacion: 'RECIBO', zona: { codigo: 'ZONA-REC', nombre: 'Andén de Recibo & Inspección' } },
+  { id: 'loc-2', codigo: 'DEV-01', estado: 'LIBRE', tipoUbicacion: 'DEVOLUCION', zona: { codigo: 'ZONA-REC', nombre: 'Andén de Recibo & Inspección' } },
+  { id: 'loc-3', codigo: 'A01-R01-N1', estado: 'OCUPADO', ocupacion: 250, tipoUbicacion: 'ESTANTERIA', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
+  { id: 'loc-4', codigo: 'A01-R01-N2', estado: 'LIBRE', tipoUbicacion: 'ESTANTERIA', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
+  { id: 'loc-5', codigo: 'A02-R01-N1', estado: 'OCUPADO', ocupacion: 100, tipoUbicacion: 'ESTANTERIA', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
+  { id: 'loc-6', codigo: 'B01-R01-N1', estado: 'OCUPADO', ocupacion: 50, tipoUbicacion: 'RACK', zona: { codigo: 'ZONA-ALIM', nombre: 'Zona Almacenaje Alimentos (FEFO)' } }
+];

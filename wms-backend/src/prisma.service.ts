@@ -36,6 +36,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "zonaAsignadaId" TEXT;`,
         `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "colorPortal" TEXT DEFAULT '#2563EB';`,
         `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "logoUrl" TEXT;`,
+        `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "regimenFiscal" TEXT;`,
+        `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "pais" TEXT DEFAULT 'México';`,
+        `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "cfdiDefault" TEXT;`,
+        `ALTER TABLE "Client" ADD COLUMN IF NOT EXISTS "sitioWeb" TEXT;`,
       ];
 
       for (const sql of sqls) {

@@ -28,6 +28,8 @@ export interface PrintLineItem {
   selected: boolean;
   ubicacionId?: string;
   ubicacionCodigo?: string;
+  lote?: string;
+  fechaVencimiento?: string;
 }
 
 interface ReceiptPrintModalProps {
@@ -44,13 +46,15 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
   const [previewIndex, setPreviewIndex] = useState<number>(0);
   const [isPrinting, setIsPrinting] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [modalAlert, setModalAlert] = useState<string | null>(null);
   const previewSvgRef = useRef<SVGSVGElement>(null);
 
   // Inicializar líneas y asignar ubicaciones sugeridas automáticamente
   useEffect(() => {
     if (!receipt || !receipt.lineas) return;
 
-    const storageLocations = locations.filter(l => l.estado === 'DISPONIBLE' && l.codigo && !l.codigo.startsWith('DEV'));
+    const locList = Array.isArray(locations) ? locations : [];
+    const storageLocations = locList.filter(l => l && (l.estado === 'DISPONIBLE' || !l.estado) && l.codigo && !l.codigo.startsWith('DEV'));
 
     const initialLines: PrintLineItem[] = receipt.lineas.map((l: any, idx: number) => {
       let suggestedLoc = storageLocations[idx % (storageLocations.length || 1)];
@@ -61,6 +65,8 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
         id: l.id,
         skuId: l.skuId,
         sku: l.sku || { codigo: 'SKU', descripcion: 'Producto', codigoBarras: '' },
+        lote: l.loteAsignado || l.loteEsperado || l.lote || '',
+        fechaVencimiento: l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : (l.fechaCaducidadEsperada ? String(l.fechaCaducidadEsperada).slice(0, 10) : ''),
         cantidadEsperada: l.cantidadEsperada || 1,
         printQuantity: l.cantidadEsperada || 1,
         selected: true,
@@ -112,11 +118,11 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
         const isEan13 = /^\d{13}$/.test(barcodeValue);
         JsBarcode(previewSvgRef.current, barcodeValue, {
           format: isEan13 ? 'EAN13' : 'CODE128',
-          width: labelFormat === '50x25' ? 1.4 : 1.8,
-          height: labelFormat === '50x25' ? 32 : 48,
+          width: labelFormat === '50x25' ? 1.3 : 1.8,
+          height: labelFormat === '50x25' ? 26 : 48,
           displayValue: true,
-          fontSize: labelFormat === '50x25' ? 10 : 12,
-          margin: 4,
+          fontSize: labelFormat === '50x25' ? 8.5 : 12,
+          margin: 2,
           background: '#ffffff',
           lineColor: '#000000'
         });
@@ -144,9 +150,10 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
   // Solicitar confirmación antes de imprimir el lote completo
   function handleRequestPrint() {
     if (selectedLines.length === 0) {
-      alert('Selecciona al menos un producto para imprimir.');
+      setModalAlert('Selecciona al menos un producto para imprimir.');
       return;
     }
+    setModalAlert(null);
     setShowConfirmModal(true);
   }
 
@@ -154,15 +161,16 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
   function handlePrintTestLabel(customItem?: PrintLineItem) {
     const item = customItem || currentPreviewItem || selectedLines[0];
     if (!item) {
-      alert('Selecciona un producto para imprimir la etiqueta de prueba.');
+      setModalAlert('Selecciona un producto para imprimir la etiqueta de prueba.');
       return;
     }
 
     const printWindow = window.open('', '_blank', 'width=800,height=600');
     if (!printWindow) {
-      alert('Habilita las ventanas emergentes para imprimir la etiqueta de prueba.');
+      setModalAlert('Habilita las ventanas emergentes (popups) en tu navegador para imprimir la etiqueta de prueba.');
       return;
     }
+    setModalAlert(null);
 
     const barcodeValue = item.sku.codigoBarras || item.sku.codigo;
     const skuCode = item.sku.codigo;
@@ -182,6 +190,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
           <div class="label-client">${clientName} [PRUEBA]</div>
           <div class="label-title">${skuDesc}</div>
           <div class="label-sku">SKU: <strong>${skuCode}</strong> ${extras ? `(${extras})` : ''}</div>
+          ${(item.lote || item.fechaVencimiento) ? `<div style="font-size: 5.5pt; font-weight: 700; color: #1e3a8a; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">LOTE: <strong>${item.lote || '-'}</strong> | CAD: <strong>${item.fechaVencimiento || '-'}</strong></div>` : ''}
           <div class="label-barcode-box">
             <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
           </div>
@@ -203,6 +212,8 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
           <div class="product-meta">
             <span>SKU: <strong>${skuCode}</strong></span>
             <span>${extras}</span>
+            ${item.lote ? `<span class="location-badge" style="background:#fef3c7;color:#92400e;border:1px solid #d97706;">Lote: <strong>${item.lote}</strong></span>` : ''}
+            ${item.fechaVencimiento ? `<span class="location-badge" style="background:#e0f2fe;color:#0369a1;border:1px solid #0284c7;">Cad: <strong>${item.fechaVencimiento}</strong></span>` : ''}
             <span class="location-badge">📍 Ubic Destino: <strong>${ubicacion}</strong></span>
           </div>
           <div class="barcode-container">
@@ -247,27 +258,38 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             .label-50x25 {
               width: 50mm;
               height: 25mm;
-              padding: 1.5mm 2mm;
+              padding: 1.2mm 2mm 1mm;
               font-size: 7pt;
-              line-height: 1.1;
+              line-height: 1.15;
             }
             .label-50x25 .label-client {
               font-size: 6pt;
               font-weight: 800;
               text-transform: uppercase;
-              letter-spacing: 0.5px;
-              color: #333;
+              letter-spacing: 0.3px;
+              color: #222;
+              line-height: 1.1;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
             .label-50x25 .label-title {
               font-size: 7.5pt;
-              font-weight: 700;
+              font-weight: 800;
+              line-height: 1.15;
+              margin-top: 1px;
+              margin-bottom: 1px;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
             }
             .label-50x25 .label-sku {
-              font-size: 6.5pt;
-              color: #222;
+              font-size: 6.2pt;
+              line-height: 1.1;
+              color: #111;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
             .label-50x25 .label-barcode-box {
               text-align: center;
@@ -275,15 +297,23 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             }
             .label-50x25 .label-barcode-box svg {
               max-width: 46mm;
-              height: 11mm !important;
+              height: 9mm !important;
             }
             .label-50x25 .label-footer {
               display: flex;
               justify-content: space-between;
+              align-items: center;
               font-size: 5.5pt;
-              color: #222;
-              border-top: 0.5px solid #ddd;
+              color: #111;
+              border-top: 0.5px solid #aaa;
               padding-top: 1px;
+              line-height: 1.1;
+              white-space: nowrap;
+            }
+            .label-50x25 .label-footer span {
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             /* 100x50 mm */
@@ -358,18 +388,21 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                 var isEan13 = /^\\d{13}$/.test(code);
                 JsBarcode(el, code, {
                   format: isEan13 ? 'EAN13' : 'CODE128',
-                  width: ${is50x25 ? 1.4 : 2},
-                  height: ${is50x25 ? 30 : 50},
+                  width: ${is50x25 ? 1.3 : 2},
+                  height: ${is50x25 ? 26 : 50},
                   displayValue: true,
-                  fontSize: ${is50x25 ? 9 : 12},
-                  margin: 2
+                  fontSize: ${is50x25 ? 8.5 : 12},
+                  margin: 1
                 });
               } catch(e) {
-                JsBarcode(el, code, { format: 'CODE128', width: 1.4, height: 30, displayValue: true });
+                JsBarcode(el, code, { format: 'CODE128', width: 1.3, height: 26, displayValue: true });
               }
             });
             window.onload = function() {
               window.print();
+            };
+            window.onafterprint = function() {
+              window.close();
             };
           </script>
         </body>
@@ -400,7 +433,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
 
     const printWindow = window.open('', '_blank', 'width=800,height=600');
     if (!printWindow) {
-      alert('Por favor habilita las ventanas emergentes en tu navegador para imprimir etiquetas.');
+      setModalAlert('Por favor habilita las ventanas emergentes (popups) en tu navegador para imprimir etiquetas.');
       setIsPrinting(false);
       return;
     }
@@ -424,6 +457,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
               <div class="label-client">${clientName}</div>
               <div class="label-title">${skuDesc}</div>
               <div class="label-sku">SKU: <strong>${skuCode}</strong> ${extras ? `(${extras})` : ''}</div>
+              ${(item.lote || item.fechaVencimiento) ? `<div style="font-size: 5.5pt; font-weight: 700; color: #1e3a8a; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">LOTE: <strong>${item.lote || '-'}</strong> | CAD: <strong>${item.fechaVencimiento || '-'}</strong></div>` : ''}
               <div class="label-barcode-box">
                 <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
               </div>
@@ -446,6 +480,8 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
               <div class="product-meta">
                 <span>SKU: <strong>${skuCode}</strong></span>
                 <span>${extras}</span>
+                ${item.lote ? `<span class="location-badge" style="background:#fef3c7;color:#92400e;border:1px solid #d97706;">Lote: <strong>${item.lote}</strong></span>` : ''}
+                ${item.fechaVencimiento ? `<span class="location-badge" style="background:#e0f2fe;color:#0369a1;border:1px solid #0284c7;">Cad: <strong>${item.fechaVencimiento}</strong></span>` : ''}
                 <span class="location-badge">📍 Ubic Destino: <strong>${ubicacion}</strong></span>
               </div>
               <div class="barcode-container">
@@ -494,27 +530,38 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             .label-50x25 {
               width: 50mm;
               height: 25mm;
-              padding: 1.5mm 2mm;
+              padding: 1.2mm 2mm 1mm;
               font-size: 7pt;
-              line-height: 1.1;
+              line-height: 1.15;
             }
             .label-50x25 .label-client {
               font-size: 6pt;
               font-weight: 800;
               text-transform: uppercase;
-              letter-spacing: 0.5px;
-              color: #333;
+              letter-spacing: 0.3px;
+              color: #222;
+              line-height: 1.1;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
             .label-50x25 .label-title {
               font-size: 7.5pt;
-              font-weight: 700;
+              font-weight: 800;
+              line-height: 1.15;
+              margin-top: 1px;
+              margin-bottom: 1px;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
             }
             .label-50x25 .label-sku {
-              font-size: 6.5pt;
-              color: #222;
+              font-size: 6.2pt;
+              line-height: 1.1;
+              color: #111;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
             .label-50x25 .label-barcode-box {
               text-align: center;
@@ -522,15 +569,23 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             }
             .label-50x25 .label-barcode-box svg {
               max-width: 46mm;
-              height: 11mm !important;
+              height: 9mm !important;
             }
             .label-50x25 .label-footer {
               display: flex;
               justify-content: space-between;
+              align-items: center;
               font-size: 5.5pt;
-              color: #222;
-              border-top: 0.5px solid #ddd;
+              color: #111;
+              border-top: 0.5px solid #aaa;
               padding-top: 1px;
+              line-height: 1.1;
+              white-space: nowrap;
+            }
+            .label-50x25 .label-footer span {
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             /* 100x50 mm */
@@ -605,11 +660,11 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                 var isEan13 = /^\\d{13}$/.test(code);
                 JsBarcode(el, code, {
                   format: isEan13 ? 'EAN13' : 'CODE128',
-                  width: ${is50x25 ? 1.4 : 2},
-                  height: ${is50x25 ? 30 : 50},
+                  width: ${is50x25 ? 1.3 : 2},
+                  height: ${is50x25 ? 26 : 50},
                   displayValue: true,
-                  fontSize: ${is50x25 ? 9 : 12},
-                  margin: 2
+                  fontSize: ${is50x25 ? 8.5 : 12},
+                  margin: 1
                 });
               } catch(e) {
                 JsBarcode(el, code, { format: 'CODE128', width: 1.4, height: 30, displayValue: true });
@@ -617,6 +672,9 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             });
             window.onload = function() {
               window.print();
+            };
+            window.onafterprint = function() {
+              window.close();
             };
           </script>
         </body>
@@ -657,6 +715,26 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
 
         {/* MODAL BODY */}
         <div className="modal-body" style={{ overflowY: 'auto', flex: 1, padding: 20 }}>
+          {modalAlert && (
+            <div style={{
+              marginBottom: 16,
+              padding: '12px 16px',
+              background: 'rgba(239,68,68,0.1)',
+              border: '1px solid rgba(239,68,68,0.3)',
+              borderRadius: 8,
+              color: '#ef4444',
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontWeight: 500
+            }}>
+              <span>⚠️ {modalAlert}</span>
+              <button className="btn btn-ghost btn-sm" onClick={() => setModalAlert(null)} style={{ padding: 4, height: 'auto', minHeight: 0, color: '#ef4444' }}>
+                <X size={16} />
+              </button>
+            </div>
+          )}
           
           {/* BARRA DE CONFIGURACIÓN DE IMPRESIÓN */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 18 }}>
@@ -801,6 +879,12 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                     <span>EAN: {currentPreviewItem.sku.codigoBarras || currentPreviewItem.sku.codigo}</span>
                     <span>Cant: {currentPreviewItem.cantidadEsperada} uds</span>
                   </div>
+                  {(currentPreviewItem.lote || currentPreviewItem.fechaVencimiento) && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8.5, color: '#0369a1', background: '#f0f9ff', padding: '1px 4px', marginTop: 2, borderRadius: 2, fontWeight: 700, border: '1px solid #bae6fd' }}>
+                      <span>LOTE: {currentPreviewItem.lote || '-'}</span>
+                      <span>CAD: {currentPreviewItem.fechaVencimiento || '-'}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -857,6 +941,20 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                       <td>
                         <div style={{ fontWeight: 600 }}>{item.sku.codigo}</div>
                         <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{item.sku.descripcion}</div>
+                        {(item.lote || item.fechaVencimiento) && (
+                          <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
+                            {item.lote && (
+                              <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: 'rgba(245, 158, 11, 0.15)', color: '#D97706', fontWeight: 700 }}>
+                                Lote: {item.lote}
+                              </span>
+                            )}
+                            {item.fechaVencimiento && (
+                              <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: 'rgba(56, 189, 248, 0.15)', color: '#0284C7', fontWeight: 700 }}>
+                                Cad: {item.fechaVencimiento}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td style={{ fontFamily: 'monospace', fontWeight: 600, color: item.sku.codigoBarras ? 'var(--primary)' : 'var(--orange)' }}>
                         {item.sku.codigoBarras || (

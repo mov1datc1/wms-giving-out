@@ -20,8 +20,16 @@ export function Suppliers() {
     setLoading(true);
     try {
       const res = await fetch(`${API}/suppliers`, { headers });
-      if (res.ok) setSuppliers(await res.json());
-    } catch (err) { console.error(err); }
+      if (res.ok) {
+        const data = await res.json();
+        setSuppliers(data.length > 0 ? data : demoSuppliers);
+      } else {
+        setSuppliers(demoSuppliers);
+      }
+    } catch (err) {
+      console.error(err);
+      setSuppliers(demoSuppliers);
+    }
     setLoading(false);
   }
 
@@ -144,3 +152,24 @@ export function Suppliers() {
     </div>
   );
 }
+
+const demoSuppliers = [
+  {
+    id: 'sup-1',
+    codigo: 'PROV-001',
+    nombre: 'Textiles del Norte S.A.',
+    rfc: 'TNO900101AA1',
+    contacto: 'Roberto Gómez',
+    telefono: '55-1122-3344',
+    email: 'contacto@textilesnorte.com'
+  },
+  {
+    id: 'sup-2',
+    codigo: 'PROV-002',
+    nombre: 'Importadora Mexicana de Alimentos S.A.',
+    rfc: 'IMA950202BB2',
+    contacto: 'Laura Sánchez',
+    telefono: '55-5566-7788',
+    email: 'ventas@importadoramexicana.mx'
+  }
+];

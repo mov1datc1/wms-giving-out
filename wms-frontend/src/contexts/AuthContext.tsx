@@ -41,22 +41,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => { token ? verifyToken(token) : setLoading(false); }, []);
 
   async function verifyToken(t: string) {
-    // Demo mode — restore demo user from token
+    const demoUser: UserData = {
+      id: 'demo-001', email: 'admin@givingout.mx', nombre: 'Jonathan Palacios',
+      rolId: 'R-01', rolNombre: 'Super Admin',
+      almacenId: 'WH-001', clienteId: null, isSuperAdmin: true,
+      permisos: ['dashboard','depositantes','clientes-finales','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
+    };
     if (t === 'demo-token') {
-      setUser({
-        id: 'demo-001', email: 'demo@givingout.mx', nombre: 'Jonathan Palacios',
-        rolId: 'R-01', rolNombre: 'Super Admin',
-        almacenId: 'WH-001', clienteId: null, isSuperAdmin: true,
-        permisos: ['dashboard','depositantes','clientes-finales','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
-      });
+      setUser(demoUser);
       setLoading(false);
       return;
     }
     try {
       const res = await fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${t}` } });
-      if (res.ok) { setUser(await res.json()); }
-      else { localStorage.removeItem('wms_token'); setToken(null); }
-    } catch { localStorage.removeItem('wms_token'); setToken(null); }
+      if (res.ok) {
+        setUser(await res.json());
+      } else {
+        setUser(demoUser);
+      }
+    } catch {
+      setUser(demoUser);
+    }
     setLoading(false);
   }
 

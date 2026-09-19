@@ -100,9 +100,13 @@ model Client {
   ciudad            String?
   estado            String?
   codigoPostal      String?
+  pais              String?  @default("México")
+  regimenFiscal     String?  // 601 General de Ley, 612 Personas Físicas Actividades Empresariales, 626 RESICO, etc.
+  cfdiDefault       String?  // G03 Gastos en general, G01 Adquisición de mercancías, etc.
   telefono          String?
   email             String?
   contactoPrincipal String?
+  sitioWeb          String?
 
   // === Configuración operativa 3PL ===
   uomPrincipal        String   @default("PZA")      // PZA, CAJA, MASTER — unidad de manejo principal
@@ -358,47 +362,70 @@ model InventoryMovement {
 // ---------------------------------------------------------
 // 7. RECEPTION (Inbound)
 // ---------------------------------------------------------
+// 7. RECEPTION (Inbound / Previos de Recibo - Sprint #2)
+// ---------------------------------------------------------
 
 model Receipt {
-  id               String   @id @default(uuid())
-  codigo           String   @unique          // REC-2026-0001
-  clienteId        String
-  proveedorId      String?
-  proveedorNombre  String?
-  fechaRecepcion   DateTime @default(now())
-  estado           String   @default("PENDIENTE")  // PENDIENTE, EN_PROCESO, COMPLETO, CERRADO
-  tipoRecepcion    String   @default("NORMAL")     // NORMAL, DEVOLUCION, TRANSFERENCIA
-  ocReferencia     String?                          // Purchase order reference
+  id                  String    @id @default(uuid())
+  codigo              String    @unique          // REC-2026-0001
+  clienteId           String
+  proveedorId         String?
+  proveedorNombre     String?
+  fechaRecepcion      DateTime  @default(now())
+  estado              String    @default("PENDIENTE")  // PENDIENTE, PENDIENTE_ARRIBO, EN_PROCESO, COMPLETO, CERRADO
+  tipoRecepcion       String    @default("NORMAL")     // NORMAL, DEVOLUCION, TRANSFERENCIA
+  ocReferencia        String?                          // Purchase order reference / Orden de compra
   
-  // === Campos de Previo de Recibo ===
-  origen           String?                          // IMPORTACION, NACIONAL
-  lineaTransporte  String?
-  placa            String?
-  nombreChofer     String?
-  archivoPrevioUrl String?                          // URL del Excel cargado
+  // === Modelo de Datos de Previos de Recibo (Tarea 1) ===
+  facturaRespaldo     String?                          // Factura comercial o fiscal de respaldo
+  origen              String?   @default("NACIONAL")   // NACIONAL, IMPORTACION
+  tipoImportacion     String?                          // DEFINITIVA, TEMPORAL, TRANSITO, VIRTUAL, NO_APLICA
+  folioTransporte     String?                          // Folio para escaneo Code-128 (ej. 23120690080)
+  lineaTransporte     String?
+  capacidadCarga      String?                          // ej. CAMION 3.5 TONELADA, TRAILER 53'
+  placa               String?
+  nombreChofer        String?
+  fechaTransporte     DateTime?
+  fechaConfirmacion   DateTime?
+  fechaArriboEstimada DateTime?
+  archivoPrevioUrl    String?                          // URL del Excel cargado
 
-  notas            String?
-  evidenciaUrl     String?                          // Photo evidence URL
-  recibidoPor      String?
-  cerradoPor       String?
-  fechaCierre      DateTime?
+  // === Candado Operativo de Andén (Tarea 3) ===
+  bloqueado           Boolean   @default(false)        // Congela edición al confirmar arribo a andén
+  bloqueadoPor        String?
+  fechaBloqueo        DateTime?
 
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  notas               String?
+  evidenciaUrl        String?                          // Photo evidence URL
+  recibidoPor         String?
+  cerradoPor          String?
+  fechaCierre         DateTime?
 
-  cliente          Client    @relation(fields: [clienteId], references: [id])
-  proveedor        Supplier? @relation(fields: [proveedorId], references: [id])
-  lineas           ReceiptLine[]
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  cliente             Client    @relation(fields: [clienteId], references: [id])
+  proveedor           Supplier? @relation(fields: [proveedorId], references: [id])
+  lineas              ReceiptLine[]
 }
 
 model ReceiptLine {
-  id                 String   @id @default(uuid())
+  id                 String    @id @default(uuid())
   recepcionId        String
   skuId              String
-  cantidadEsperada   Float?
-  cantidadRecibida   Float    @default(0)
-  cantidadDanada     Float    @default(0)
-  estado             String   @default("PENDIENTE")  // PENDIENTE, PARCIAL, COMPLETO, DISCREPANCIA
+  cantidadEsperada   Float?                           // Lista de SKUs esperados: Cantidad programada
+  cantidadRecibida   Float     @default(0)
+  cantidadDanada     Float     @default(0)
+  estado             String    @default("PENDIENTE")  // PENDIENTE, PARCIAL, COMPLETO, DISCREPANCIA
+  
+  // Metadatos de previo y bultos
+  folio              String?                          // Folio de bulto o sub-empaque (ej. 18966)
+  sucursal           String?                          // Sucursal o tienda de procedencia (ej. N1050001)
+  tipoContenedor     String?                          // Caja devolucion, Bandeja azul, Tarima
+  uom                String?   @default("PZA")        // Unidad de medida esperada
+  precioUnitario     Float?                           // Valor factura unitario
+  loteEsperado       String?
+  
   loteAsignado       String?
   serieAsignada      String?
   fechaVencimiento   DateTime?
