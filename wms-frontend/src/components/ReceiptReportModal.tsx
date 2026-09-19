@@ -103,6 +103,7 @@ export function ReceiptReportModal({ receipt, onClose, defaultMode }: ReceiptRep
   // Totales agrupados por tipo para la tabla inferior derecha
   const summaryGrouped: Record<string, { total: number; diferencia: number | string }> = {};
   let grandTotalCajas = 0;
+  let grandTotalDiferencia: number | null = null;
 
   bultoLines.forEach(l => {
     const t = (l.tipo || 'Caja máster').toUpperCase();
@@ -116,6 +117,7 @@ export function ReceiptReportModal({ receipt, onClose, defaultMode }: ReceiptRep
     if (typeof l.diferencia === 'number') {
       const currentDif = typeof summaryGrouped[t].diferencia === 'number' ? summaryGrouped[t].diferencia : 0;
       summaryGrouped[t].diferencia = (currentDif as number) + l.diferencia;
+      grandTotalDiferencia = (grandTotalDiferencia ?? 0) + l.diferencia;
     }
   });
 
@@ -801,8 +803,13 @@ ${summaryRows.map(s => {
                             <span>{grandTotalCajas}</span>
                           </div>
                         </td>
-                        <td style={{ border: '1.5px solid #000000', padding: '6px 10px', textAlign: 'center' }}>
-                          -
+                        <td style={{
+                          border: '1.5px solid #000000',
+                          padding: '6px 10px',
+                          textAlign: 'center',
+                          color: grandTotalDiferencia === 0 ? '#059669' : (grandTotalDiferencia !== null && grandTotalDiferencia > 0) ? '#0284c7' : (grandTotalDiferencia !== null && grandTotalDiferencia < 0) ? '#d97706' : '#000000'
+                        }}>
+                          {grandTotalDiferencia === null ? '-' : grandTotalDiferencia === 0 ? '0' : grandTotalDiferencia > 0 ? `+${grandTotalDiferencia}` : grandTotalDiferencia}
                         </td>
                       </tr>
                     </tbody>
@@ -845,54 +852,87 @@ ${summaryRows.map(s => {
                 }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f1f5f9' }}>
-                      <th style={{ border: '1px solid #000000', padding: '7px 8px', textAlign: 'left', width: '18%' }}>SKU / CÓDIGO</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 8px', textAlign: 'left', width: '26%' }}>DESCRIPCIÓN</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '14%' }}>LOTE</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '12%' }}>CADUCIDAD</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '10%' }}>ESPERADO</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '10%' }}>CONFORME</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '10%' }}>MERMA / QA</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 8px', textAlign: 'left', width: '16%' }}>SKU / CÓDIGO</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 8px', textAlign: 'left', width: '22%' }}>DESCRIPCIÓN</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '13%' }}>LOTE</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '11%' }}>CADUCIDAD</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '9%' }}>ESPERADO</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '9%' }}>CONFORME</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '9%' }}>MERMA / QA</th>
+                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '11%' }}>VARIACIÓN</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {skuLines.map((line, i) => (
-                      <tr key={i}>
-                        <td style={{ border: '1px solid #000000', padding: '6px 8px' }}>
-                          <div style={{ fontWeight: 800 }}>{line.codigo}</div>
-                          <div style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>EAN: {line.ean}</div>
-                        </td>
-                        <td style={{ border: '1px solid #000000', padding: '6px 8px' }}>{line.descripcion}</td>
-                        <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', fontWeight: 600 }}>
-                          {line.lote !== '-' ? (
-                            <span style={{ backgroundColor: '#fef3c7', color: '#92400e', padding: '2px 5px', borderRadius: '3px' }}>
-                              {line.lote}
-                            </span>
-                          ) : (
-                            <span style={{ color: '#94a3b8' }}>-</span>
-                          )}
-                        </td>
-                        <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', fontWeight: 600 }}>
-                          {line.fechaVencimiento !== '-' ? (
-                            <span style={{ backgroundColor: '#e0f2fe', color: '#0369a1', padding: '2px 5px', borderRadius: '3px' }}>
-                              {line.fechaVencimiento}
-                            </span>
-                          ) : (
-                            <span style={{ color: '#94a3b8' }}>-</span>
-                          )}
-                        </td>
-                        <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700 }}>{line.esperada}</td>
-                        <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700, color: '#059669' }}>{line.conforme}</td>
-                        <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 600, color: line.merma > 0 ? '#d97706' : '#64748b' }}>{line.merma}</td>
-                      </tr>
-                    ))}
-                    <tr style={{ backgroundColor: '#f8fafc', fontWeight: 900 }}>
-                      <td colSpan={4} style={{ border: '1.5px solid #000000', padding: '8px 10px', textAlign: 'right' }}>
-                        TOTAL PIEZAS FÍSICAS:
-                      </td>
-                      <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center' }}>{totalEsperadoSKU}</td>
-                      <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center', color: '#059669' }}>{totalConformeSKU}</td>
-                      <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center', color: totalMermaSKU > 0 ? '#d97706' : '#000000' }}>{totalMermaSKU}</td>
-                    </tr>
+                    {skuLines.map((line, i) => {
+                      const fisico = line.conforme + line.merma;
+                      const variacion = fisico - line.esperada;
+                      return (
+                        <tr key={i}>
+                          <td style={{ border: '1px solid #000000', padding: '6px 8px' }}>
+                            <div style={{ fontWeight: 800 }}>{line.codigo}</div>
+                            <div style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>EAN: {line.ean}</div>
+                          </td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 8px' }}>{line.descripcion}</td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', fontWeight: 600 }}>
+                            {line.lote !== '-' ? (
+                              <span style={{ backgroundColor: '#fef3c7', color: '#92400e', padding: '2px 5px', borderRadius: '3px' }}>
+                                {line.lote}
+                              </span>
+                            ) : (
+                              <span style={{ color: '#94a3b8' }}>-</span>
+                            )}
+                          </td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', fontWeight: 600 }}>
+                            {line.fechaVencimiento !== '-' ? (
+                              <span style={{ backgroundColor: '#e0f2fe', color: '#0369a1', padding: '2px 5px', borderRadius: '3px' }}>
+                                {line.fechaVencimiento}
+                              </span>
+                            ) : (
+                              <span style={{ color: '#94a3b8' }}>-</span>
+                            )}
+                          </td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700 }}>{line.esperada}</td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700, color: '#059669' }}>{line.conforme}</td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 600, color: line.merma > 0 ? '#d97706' : '#64748b' }}>{line.merma}</td>
+                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700 }}>
+                            {variacion === 0 ? (
+                              <span style={{ color: '#059669' }}>0 (Exacto)</span>
+                            ) : variacion > 0 ? (
+                              <span style={{ color: '#0284c7' }}>+{variacion} (Sobrante)</span>
+                            ) : (
+                              <span style={{ color: '#d97706' }}>{variacion} (Faltante)</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {(() => {
+                      const totalFisicoSKU = totalConformeSKU + totalMermaSKU;
+                      const totalVariacionSKU = totalFisicoSKU - totalEsperadoSKU;
+                      return (
+                        <tr style={{ backgroundColor: '#f8fafc', fontWeight: 900 }}>
+                          <td colSpan={4} style={{ border: '1.5px solid #000000', padding: '8px 10px', textAlign: 'right' }}>
+                            TOTAL PIEZAS FÍSICAS:
+                          </td>
+                          <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center' }}>{totalEsperadoSKU}</td>
+                          <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center', color: '#059669' }}>{totalConformeSKU}</td>
+                          <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center', color: totalMermaSKU > 0 ? '#d97706' : '#000000' }}>{totalMermaSKU}</td>
+                          <td style={{
+                            border: '1.5px solid #000000',
+                            padding: '8px 8px',
+                            textAlign: 'center',
+                            color: totalVariacionSKU === 0 ? '#059669' : totalVariacionSKU > 0 ? '#0284c7' : '#d97706'
+                          }}>
+                            {totalVariacionSKU === 0
+                              ? '0 (Cuadrada)'
+                              : totalVariacionSKU > 0
+                                ? `+${totalVariacionSKU} (Excedente)`
+                                : `${totalVariacionSKU} (Faltante)`
+                            }
+                          </td>
+                        </tr>
+                      );
+                    })()}
                   </tbody>
                 </table>
               </div>

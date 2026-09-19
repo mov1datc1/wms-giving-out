@@ -945,10 +945,20 @@ export function Receiving() {
 
     const allAlreadyReceived = (receipt.lineas || []).length > 0 && (receipt.lineas || []).every((l: any) => ((l.cantidadRecibida || 0) + (l.cantidadDanada || 0)) >= (l.cantidadEsperada || 0));
 
+    if (allAlreadyReceived) {
+      const totalHist = (receipt.lineas || []).reduce((acc: number, l: any) => acc + (l.cantidadRecibida || 0), 0);
+      setMatrixSuccessBanner({
+        receiptId: receipt.id,
+        text: `ℹ️ Esta factura ya cuenta con el 100% de sus piezas recibidas y guardadas en inventario (${totalHist} pzas históricas). No hay piezas pendientes por recibir. Si recibiste producto excedente en andén, captúralo manualmente en la partida correspondiente.`,
+      });
+      setMatrixErrorBanner(null);
+      return;
+    }
+
     (receipt.lineas || []).forEach((l: any) => {
       const esp = l.cantidadEsperada || 0;
       const yaRec = (l.cantidadRecibida || 0) + (l.cantidadDanada || 0);
-      const restante = allAlreadyReceived ? esp : Math.max(0, esp - yaRec);
+      const restante = Math.max(0, esp - yaRec);
       newLinesDraft[l.id] = {
         cantidadConforme: restante,
         cantidadNoConforme: 0,
@@ -964,19 +974,11 @@ export function Receiving() {
       [receipt.id]: newLinesDraft,
     }));
 
-    if (allAlreadyReceived) {
-      setMatrixSuccessBanner({
-        receiptId: receipt.id,
-        text: `⚡ Conforme al 100% aplicado: Se asignaron las cantidades completas de la factura (${totalPieces} piezas en ${count} partidas).`,
-      });
-      setMatrixErrorBanner(null);
-    } else {
-      setMatrixSuccessBanner({
-        receiptId: receipt.id,
-        text: `⚡ 100% Conforme aplicado: ${count} partidas calculadas (${totalPieces} piezas pendientes asignadas a Conforme).`,
-      });
-      setMatrixErrorBanner(null);
-    }
+    setMatrixSuccessBanner({
+      receiptId: receipt.id,
+      text: `⚡ 100% Conforme aplicado: ${count} partidas calculadas (${totalPieces} piezas pendientes asignadas a Conforme).`,
+    });
+    setMatrixErrorBanner(null);
   }
 
   // Limpiar valores capturados en la planilla para reiniciar a ceros
