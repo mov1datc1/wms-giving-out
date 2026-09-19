@@ -4,6 +4,32 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.6.1] — 2026-09-19
+
+### 🎯 Estabilización E2E, Plantillas Inteligentes y Corrección de Filtros en Almacén Virtual
+
+#### 📊 Corrección de Filtro y Métricas en Almacén Virtual de Cuarentena (`Inventory.tsx` & `inventory.controller.ts`)
+- **Resolución de Filtrado de Merma (`GET /api/inventory/virtual-warehouse`):**
+  - Corrección de la condición de búsqueda en base de datos: el backend ahora clasifica y recupera lotes no solo por texto en notas, sino prioritariamente por códigos de ubicación física asignados (`DEV-01`, `NC-MERMA-01` vs `NC-EXCESO-01`) y tipo de ubicación (`DEVOLUCION`).
+  - Incorporadas insignias numéricas reactivas en las pestañas de filtro: `Todos (25)`, `Merma / Dañado (20)` y `Sobrante / Exceso (5)`.
+  - Tarjetas de KPIs superiores (`TOTAL UNIDADES EN CUARENTENA`, `MERMA / DAÑO FÍSICO`, `EXCEDENTES NO AMPARADOS`) fijadas para mantener la visibilidad del resumen global independientemente del filtro activo.
+
+#### 📑 Descarga Inteligente de Plantillas Excel con SKUs Reales (`Receiving.tsx`)
+- **Generación Dinámica de Archivo Previo por Depositante:**
+  - El botón "Descargar Plantilla" ahora detecta al cliente seleccionado y genera al vuelo un archivo Excel estructurado (`.xlsx`) precargado con el catálogo real de SKUs, descripciones y unidades de medida (UOM) de dicho cliente en Supabase.
+  - Formato estandarizado con columnas exactas para conteo ciego, lote y caducidad, optimizando el tiempo de captura para los supervisores en andén.
+
+#### 🛡️ Candados de Cierre y Reporte Ejecutivo con Variación (`ReceiptReportModal.tsx` & `Receiving.tsx`)
+- **Columna de Variación y Excedentes en Reporte SKU:**
+  - Desglose visual de diferencias (Factura vs Físico Recibido) con marcadores de color por partida.
+  - Bloqueo de auto-llenado duplicado en recepciones que ya se encuentran al 100% recibidas o cerradas.
+  - Mapeo unificado de payloads (`partidas` e `items`) en el modal de desvío a cuarentena (`DivertToVirtualModal`).
+
+#### ⚡ Optimización de Conexión a Base de Datos (Supabase Transaction Pooler)
+- Migración de cadena de conexión en backend al puerto `6543` (`?pgbouncer=true`), erradicando límites de conexiones simultáneas en sesión y garantizando alta disponibilidad concurrente.
+
+---
+
 ## [1.6.0] — 2026-09-19
 
 ### 🚀 Sprint #1 — Módulo de Depositantes y Giros Comerciales (6 Subtareas Culminadas al 100%)
