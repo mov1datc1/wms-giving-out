@@ -29,7 +29,7 @@ async function runTests() {
     // 0. Preparar datos base
     const clientsRes = await fetch(`${BASE_URL}/clients`);
     const clients = await clientsRes.json();
-    const testClient = clients[0];
+    const testClient = clients.find(c => c.nombreComercial === 'Fashion Forward') || clients[0];
     if (!testClient) throw new Error('No se encontró ningún cliente en base de datos');
 
     const skusRes = await fetch(`${BASE_URL}/skus?clienteId=${testClient.id}`);
