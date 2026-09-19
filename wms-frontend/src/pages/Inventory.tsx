@@ -65,7 +65,7 @@ export function Inventory() {
   
   // Virtual Warehouse Data (Tarea 5)
   const [virtualData, setVirtualData] = useState<any[]>([]);
-  const [virtualStats, setVirtualStats] = useState({ totalItems: 0, totalUnidades: 0, totalMerma: 0, totalExceso: 0 });
+  const [virtualStats, setVirtualStats] = useState({ totalItems: 0, totalUnidades: 0, totalMerma: 0, totalExceso: 0, lotesMerma: 0, lotesExceso: 0 });
   const [virtualTipoFilter, setVirtualTipoFilter] = useState<'TODOS' | 'MERMA' | 'EXCESO'>('TODOS');
   
   // Shared filters & UI states
@@ -114,15 +114,17 @@ export function Inventory() {
           const rawLots = resJson.lotes || resJson.data || [];
           const normalized = rawLots.map((v: any) => ({
             ...v,
-            tipoDesvio: v.tipoDesvio || (v.ubicacion?.codigo === 'NC-EXCESO-01' ? 'EXCESO' : 'MERMA'),
+            tipoDesvio: v.tipoDesvio || (v.ubicacion?.codigo === 'NC-EXCESO-01' || v.notas?.includes('PRODUCTO_EXCESO') ? 'EXCESO' : 'MERMA'),
             folioActa: v.folioActa || (v.notas?.includes('ACTA-NC-') ? v.notas.match(/ACTA-NC-[A-Z0-9-]+/)?.[0] : null) || `ACTA-NC-${new Date(v.createdAt).getFullYear()}-${v.id.slice(0, 5).toUpperCase()}`,
           }));
           setVirtualData(normalized);
           setVirtualStats({
-            totalItems: resJson.totalLotes ?? resJson.totalItems ?? normalized.length,
-            totalUnidades: resJson.totalPiezasBloqueadas ?? resJson.totalUnidades ?? 0,
-            totalMerma: resJson.piezasDanadas ?? resJson.totalMerma ?? 0,
-            totalExceso: resJson.piezasExceso ?? resJson.totalExceso ?? 0,
+            totalItems: resJson.totalLotes ?? normalized.length,
+            totalUnidades: resJson.totalPiezasBloqueadas ?? 0,
+            totalMerma: resJson.piezasDanadas ?? 0,
+            totalExceso: resJson.piezasExceso ?? 0,
+            lotesMerma: resJson.lotesMerma ?? normalized.filter((x: any) => x.tipoDesvio === 'MERMA' || x.ubicacion?.codigo !== 'NC-EXCESO-01').length,
+            lotesExceso: resJson.lotesExceso ?? normalized.filter((x: any) => x.tipoDesvio === 'EXCESO' || x.ubicacion?.codigo === 'NC-EXCESO-01').length,
           });
         }
         if (clientsRes.ok) setClients(await clientsRes.json());
@@ -154,13 +156,17 @@ export function Inventory() {
 
   // Filtrado Almacén Virtual
   const filteredVirtual = virtualData.filter(v => {
+    const matchTipo = virtualTipoFilter === 'TODOS' ||
+      (virtualTipoFilter === 'MERMA' && (v.tipoDesvio === 'MERMA' || v.ubicacion?.codigo !== 'NC-EXCESO-01')) ||
+      (virtualTipoFilter === 'EXCESO' && (v.tipoDesvio === 'EXCESO' || v.ubicacion?.codigo === 'NC-EXCESO-01'));
     const matchSearch = !search ||
       v.sku?.codigo?.toLowerCase().includes(search.toLowerCase()) ||
       v.sku?.nombre?.toLowerCase().includes(search.toLowerCase()) ||
+      v.sku?.descripcion?.toLowerCase().includes(search.toLowerCase()) ||
       v.lote?.toLowerCase().includes(search.toLowerCase()) ||
       v.folioActa?.toLowerCase().includes(search.toLowerCase()) ||
       v.handlingUnits?.some((hu: any) => hu.codigo?.toLowerCase().includes(search.toLowerCase()));
-    return matchSearch;
+    return matchTipo && matchSearch;
   });
 
   const totalUnidades = filteredLots.reduce((s, l) => s + (l.cantidadDisponible || 0), 0);
@@ -376,14 +382,14 @@ export function Inventory() {
                 onClick={() => setVirtualTipoFilter('MERMA')}
                 style={{ color: virtualTipoFilter === 'MERMA' ? '#FFF' : '#F87171' }}
               >
-                <AlertTriangle size={13} /> Merma / Dañado
+                <AlertTriangle size={13} /> Merma / Dañado ({virtualStats.lotesMerma})
               </button>
               <button
                 className={`btn btn-sm ${virtualTipoFilter === 'EXCESO' ? 'btn-primary' : 'btn-ghost'}`}
                 onClick={() => setVirtualTipoFilter('EXCESO')}
                 style={{ color: virtualTipoFilter === 'EXCESO' ? '#FFF' : '#38BDF8' }}
               >
-                <Boxes size={13} /> Sobrante / Exceso
+                <Boxes size={13} /> Sobrante / Exceso ({virtualStats.lotesExceso})
               </button>
             </div>
           )}

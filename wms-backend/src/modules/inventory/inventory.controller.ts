@@ -324,19 +324,71 @@ export class InventoryController {
   @Get('virtual-warehouse')
   @ApiOperation({ summary: 'Consultar inventario en Almacén Virtual de No Conforme / Merma' })
   @ApiQuery({ name: 'clienteId', required: false, description: 'Filtrar por cliente depositante' })
-  @ApiQuery({ name: 'tipoDesvio', required: false, enum: ['TODOS', 'MERCANCIA_DANADA', 'PRODUCTO_EXCESO'], description: 'Filtrar por tipo de no conformidad' })
+  @ApiQuery({ name: 'tipoDesvio', required: false, enum: ['TODOS', 'MERMA', 'EXCESO', 'MERCANCIA_DANADA', 'PRODUCTO_EXCESO'], description: 'Filtrar por tipo de no conformidad' })
   async getVirtualWarehouse(
     @Query('clienteId') clienteId?: string,
     @Query('tipoDesvio') tipoDesvio?: string,
   ) {
-    const where: any = {
+    const baseWhere: any = {
       cantidadBloqueada: { gt: 0 },
       estadoCalidad: { in: ['CUARENTENA', 'BLOQUEADO', 'MERMA'] },
     };
-    if (clienteId) where.clienteId = clienteId;
+    if (clienteId) baseWhere.clienteId = clienteId;
+
+    // Calcular estadísticas globales antes de aplicar filtro de tipo
+    const allLots = await this.prisma.lotInventory.findMany({
+      where: baseWhere,
+      include: {
+        ubicacion: { select: { codigo: true } },
+      },
+    });
+
+    let totalPiezasBloqueadas = 0;
+    let piezasDanadas = 0;
+    let piezasExceso = 0;
+    let lotesMerma = 0;
+    let lotesExceso = 0;
+
+    for (const l of allLots) {
+      totalPiezasBloqueadas += l.cantidadBloqueada;
+      const isExceso = l.ubicacion?.codigo === 'NC-EXCESO-01' || (l.notas && l.notas.includes('PRODUCTO_EXCESO'));
+      if (isExceso) {
+        piezasExceso += l.cantidadBloqueada;
+        lotesExceso++;
+      } else {
+        piezasDanadas += l.cantidadBloqueada;
+        lotesMerma++;
+      }
+    }
+
+    const where: any = { ...baseWhere };
 
     if (tipoDesvio && tipoDesvio !== 'TODOS') {
-      where.notas = { contains: tipoDesvio };
+      const cleanTipo = tipoDesvio.toUpperCase();
+      if (cleanTipo === 'MERMA' || cleanTipo === 'MERCANCIA_DANADA' || cleanTipo === 'DANADO') {
+        where.AND = [
+          {
+            OR: [
+              { ubicacion: { codigo: { in: ['DEV-01', 'NC-MERMA-01'] } } },
+              { ubicacion: { tipoUbicacion: 'DEVOLUCION' } },
+              { notas: { contains: 'MERCANCIA_DANADA' } },
+              { notas: { contains: 'MERMA' } },
+              { notas: null },
+            ],
+          },
+          {
+            ubicacion: { codigo: { not: 'NC-EXCESO-01' } },
+          },
+        ];
+      } else if (cleanTipo === 'EXCESO' || cleanTipo === 'PRODUCTO_EXCESO' || cleanTipo === 'SOBRANTE') {
+        where.OR = [
+          { ubicacion: { codigo: 'NC-EXCESO-01' } },
+          { notas: { contains: 'PRODUCTO_EXCESO' } },
+          { notas: { contains: 'EXCESO' } },
+        ];
+      } else {
+        where.notas = { contains: tipoDesvio };
+      }
     }
 
     const lots = await this.prisma.lotInventory.findMany({
@@ -350,21 +402,11 @@ export class InventoryController {
       orderBy: { createdAt: 'desc' },
     });
 
-    let totalPiezasBloqueadas = 0;
-    let piezasDanadas = 0;
-    let piezasExceso = 0;
-
-    for (const l of lots) {
-      totalPiezasBloqueadas += l.cantidadBloqueada;
-      if (l.notas && l.notas.includes('PRODUCTO_EXCESO')) {
-        piezasExceso += l.cantidadBloqueada;
-      } else {
-        piezasDanadas += l.cantidadBloqueada;
-      }
-    }
-
     return {
-      totalLotes: lots.length,
+      totalLotes: allLots.length,
+      totalLotesFiltrados: lots.length,
+      lotesMerma,
+      lotesExceso,
       totalPiezasBloqueadas,
       piezasDanadas,
       piezasExceso,
