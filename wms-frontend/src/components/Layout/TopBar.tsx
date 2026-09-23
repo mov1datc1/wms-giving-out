@@ -292,25 +292,25 @@ export function TopBar() {
               right: 0,
               width: 380,
               maxWidth: '92vw',
-              background: '#0f172a',
-              border: '1px solid rgba(255,255,255,0.14)',
+              background: '#FFFFFF',
+              border: '1px solid #E2E8F0',
               borderRadius: 10,
-              boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
+              boxShadow: '0 12px 32px rgba(0,0,0,0.12)',
               zIndex: 9999,
               overflow: 'hidden',
               fontSize: 13,
-              color: '#f8fafc'
+              color: '#0F172A'
             }}>
               {isSearching ? (
-                <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                  <Loader2 size={16} className="spin" style={{ color: '#2dd4bf' }} /> Buscando "{searchQuery}"...
+                <div style={{ padding: '20px', textAlign: 'center', color: '#64748B', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  <Loader2 size={16} className="spin" style={{ color: '#0D9488' }} /> Buscando "{searchQuery}"...
                 </div>
               ) : searchResults && (searchResults.clients.length > 0 || searchResults.skus.length > 0 || searchResults.receipts.length > 0) ? (
                 <div style={{ maxHeight: 380, overflowY: 'auto' }}>
                   {/* CLIENTES / DEPOSITANTES */}
                   {searchResults.clients.length > 0 && (
-                    <div style={{ padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#38bdf8', padding: '4px 14px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ padding: '6px 0', borderBottom: '1px solid #F1F5F9' }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#0284C7', padding: '4px 14px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Building2 size={12} /> Depositantes / Clientes
                       </div>
                       {searchResults.clients.map(c => (
@@ -318,14 +318,14 @@ export function TopBar() {
                           key={c.id} 
                           onClick={() => handleSelectResult(`/recepcion?search=${encodeURIComponent(c.nombreComercial)}`)}
                           style={{ padding: '8px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(56,189,248,0.1)'}
+                          onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'}
                           onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, color: '#f8fafc' }}>{c.nombreComercial}</div>
-                            <div style={{ fontSize: 11, color: '#94a3b8' }}>Código: {c.codigo} {c.giro ? `· ${c.giro}` : ''}</div>
+                            <div style={{ fontWeight: 700, color: '#0F172A' }}>{c.nombreComercial}</div>
+                            <div style={{ fontSize: 11, color: '#64748B' }}>Código: {c.codigo} {c.giro ? `· ${c.giro}` : ''}</div>
                           </div>
-                          <span style={{ fontSize: 11, color: '#38bdf8', fontWeight: 600 }}>Ver Recepciones →</span>
+                          <span style={{ fontSize: 11, color: '#0284C7', fontWeight: 600 }}>Ver Recepciones →</span>
                         </div>
                       ))}
                     </div>
@@ -333,8 +333,8 @@ export function TopBar() {
 
                   {/* PREVIOS DE RECEPCIÓN */}
                   {searchResults.receipts.length > 0 && (
-                    <div style={{ padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#2dd4bf', padding: '4px 14px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ padding: '6px 0', borderBottom: '1px solid #F1F5F9' }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#0D9488', padding: '4px 14px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <ClipboardList size={12} /> Previos de Recepción
                       </div>
                       {searchResults.receipts.map(r => (
@@ -342,11 +342,11 @@ export function TopBar() {
                           key={r.id} 
                           onClick={() => handleSelectResult(`/recepcion?search=${encodeURIComponent(r.codigo)}`)}
                           style={{ padding: '8px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(45,212,191,0.1)'}
+                          onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'}
                           onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, color: '#2dd4bf', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ fontWeight: 700, color: '#0D9488', display: 'flex', alignItems: 'center', gap: 6 }}>
                               {r.codigo}
                               {(() => {
                                 const norm = String(r.estado || '').toUpperCase();
@@ -354,8 +354,8 @@ export function TopBar() {
                                 const isConteo = norm === 'EN_PROCESO_CONTEO' || norm === 'EN_PROCESO' || norm === 'COMPLETO';
                                 const isCerrada = norm === 'CERRADA' || norm === 'CERRADO';
                                 const label = isArribo ? 'Pendiente Arribo' : isConteo ? 'En Conteo' : isCerrada ? 'Cerrada' : r.estado;
-                                const color = isArribo ? '#38bdf8' : isConteo ? '#fbbf24' : isCerrada ? '#34d399' : '#cbd5e1';
-                                const bg = isArribo ? 'rgba(56,189,248,0.15)' : isConteo ? 'rgba(251,191,36,0.15)' : isCerrada ? 'rgba(52,211,153,0.15)' : 'rgba(255,255,255,0.1)';
+                                const color = isArribo ? '#0284C7' : isConteo ? '#D97706' : isCerrada ? '#059669' : '#64748B';
+                                const bg = isArribo ? '#E0F2FE' : isConteo ? '#FEF3C7' : isCerrada ? '#D1FAE5' : '#F1F5F9';
                                 return (
                                   <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: bg, color, fontWeight: 700 }}>
                                     {label}
@@ -363,11 +363,11 @@ export function TopBar() {
                                 );
                               })()}
                             </div>
-                            <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                            <div style={{ fontSize: 11, color: '#64748B' }}>
                               {r.cliente?.nombreComercial} {r.facturaRespaldo ? `· Factura: ${r.facturaRespaldo}` : ''}
                             </div>
                           </div>
-                          <span style={{ fontSize: 11, color: '#2dd4bf', fontWeight: 600 }}>Abrir Previo →</span>
+                          <span style={{ fontSize: 11, color: '#0D9488', fontWeight: 600 }}>Abrir Previo →</span>
                         </div>
                       ))}
                     </div>
@@ -376,7 +376,7 @@ export function TopBar() {
                   {/* SKUS */}
                   {searchResults.skus.length > 0 && (
                     <div style={{ padding: '6px 0' }}>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#a78bfa', padding: '4px 14px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#7C3AED', padding: '4px 14px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Package size={12} /> Productos / SKUs
                       </div>
                       {searchResults.skus.map(s => (
@@ -384,14 +384,14 @@ export function TopBar() {
                           key={s.id} 
                           onClick={() => handleSelectResult(`/inventario?search=${encodeURIComponent(s.codigo)}`)}
                           style={{ padding: '8px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(167,139,250,0.1)'}
+                          onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'}
                           onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, color: '#f8fafc' }}>{s.codigo}</div>
-                            <div style={{ fontSize: 11, color: '#94a3b8' }}>{s.descripcion} · {s.cliente?.nombreComercial}</div>
+                            <div style={{ fontWeight: 700, color: '#0F172A' }}>{s.codigo}</div>
+                            <div style={{ fontSize: 11, color: '#64748B' }}>{s.descripcion} · {s.cliente?.nombreComercial}</div>
                           </div>
-                          <span style={{ fontSize: 11, color: '#a78bfa', fontWeight: 600 }}>Inventario →</span>
+                          <span style={{ fontSize: 11, color: '#7C3AED', fontWeight: 600 }}>Inventario →</span>
                         </div>
                       ))}
                     </div>
@@ -399,14 +399,14 @@ export function TopBar() {
 
                   <div 
                     onClick={handleSearchSubmit}
-                    style={{ padding: '10px 14px', background: 'rgba(255,255,255,0.03)', textAlign: 'center', fontSize: 12, fontWeight: 700, color: '#38bdf8', cursor: 'pointer', borderTop: '1px solid rgba(255,255,255,0.06)' }}
+                    style={{ padding: '10px 14px', background: '#F8FAFC', textAlign: 'center', fontSize: 12, fontWeight: 700, color: '#0284C7', cursor: 'pointer', borderTop: '1px solid #E2E8F0' }}
                   >
                     Buscar "{searchQuery}" en Recepción ↵
                   </div>
                 </div>
               ) : searchQuery.length >= 2 ? (
-                <div style={{ padding: '24px 16px', textAlign: 'center', color: '#94a3b8' }}>
-                  <div style={{ fontWeight: 600, color: '#f8fafc', marginBottom: 4 }}>Presiona Enter para filtrar</div>
+                <div style={{ padding: '24px 16px', textAlign: 'center', color: '#64748B' }}>
+                  <div style={{ fontWeight: 600, color: '#0F172A', marginBottom: 4 }}>Presiona Enter para filtrar</div>
                   <div style={{ fontSize: 11 }}>Buscará coincidencias de "{searchQuery}" en recepciones.</div>
                 </div>
               ) : null}

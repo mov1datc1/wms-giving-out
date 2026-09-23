@@ -9,7 +9,8 @@ import {
   Printer, QrCode, Scan, ArrowRight, Tag, Box, CheckSquare, ShieldCheck,
   UserCheck, Layers, Edit3, Trash2, Settings, PlusCircle, ClipboardCheck, RotateCcw,
   Ship, Zap, Lock, Unlock, Eye, EyeOff, Save, CheckCheck, ListChecks,
-  ArrowDownRight, ArrowUpRight, Scale, ShieldAlert, TrendingDown, TrendingUp, Ban
+  ArrowDownRight, ArrowUpRight, Scale, ShieldAlert, TrendingDown, TrendingUp, Ban,
+  ChevronRight, ChevronLeft
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationSelect } from '../components/LocationSelect';
@@ -283,6 +284,14 @@ export function Receiving() {
   const [search, setSearch] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('receiving_sidebar_collapsed') === 'true');
+  const toggleSidebar = () => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('receiving_sidebar_collapsed', String(next));
+      return next;
+    });
+  };
 
   // Sincronizar parámetro de búsqueda de URL (?search=...)
   useEffect(() => {
@@ -1730,26 +1739,26 @@ export function Receiving() {
   };
 
   return (
-    <div className="page-container stitch-page-dark" style={{ background: '#0B0F17', padding: '24px 28px', borderRadius: 16, border: '1px solid rgba(255,255,255,0.06)' }}>
-      <div className="page-header" style={{ marginBottom: 20, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 16 }}>
+    <div className="page-container" style={{ padding: '24px 28px' }}>
+      <div className="page-header" style={{ marginBottom: 20 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 8, background: 'rgba(13,148,136,0.2)', color: '#2DD4BF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: 'rgba(13,148,136,0.12)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <ClipboardCheck size={20} />
             </div>
-            <h1 className="page-title" style={{ fontSize: 24, fontWeight: 800, color: '#F8FAFC', margin: 0, letterSpacing: '-0.02em' }}>
+            <h1 className="page-title" style={{ fontSize: 24, fontWeight: 800, margin: 0, letterSpacing: '-0.02em' }}>
               Recepción
             </h1>
           </div>
-          <p className="page-subtitle" style={{ fontSize: 13, color: '#94A3B8', margin: 0 }}>
+          <p className="page-subtitle" style={{ fontSize: 13, margin: 0 }}>
             Ingesta de ASN/Excel, control de bahía de descarga en tiempo real, validación física dual y alojamiento sugerido a racks
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }} style={{ background: '#0D9488', borderColor: '#0D9488', fontWeight: 600 }}>
+          <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }} style={{ fontWeight: 600 }}>
             <UploadCloud size={16} /> Cargar Previo (ASN)
           </button>
-          <button className="btn btn-secondary" onClick={loadData} style={{ background: '#1E293B', color: '#F8FAFC', borderColor: 'rgba(255,255,255,0.1)' }}>
+          <button className="btn btn-secondary" onClick={loadData}>
             <RefreshCw size={16} /> Actualizar
           </button>
         </div>
@@ -1772,9 +1781,9 @@ export function Receiving() {
 
       {/* --- MODAL EDITAR PREVIO (METADATOS) --- */}
       {editReceiptModal && (
-        <div className="modal-overlay" onClick={() => setEditReceiptModal(null)} style={{ background: 'rgba(2, 6, 23, 0.8)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
-          <div className="modal-content animate-scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 640, background: '#0f172a', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: 16, color: '#f8fafc', boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)' }}>
-            <div className="modal-header" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+        <div className="modal-overlay" onClick={() => setEditReceiptModal(null)}>
+          <div className="modal-content animate-scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+            <div className="modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Settings size={20} />
@@ -1889,41 +1898,39 @@ export function Receiving() {
 
       {/* --- MODAL CONFIRMAR ELIMINAR PREVIO (DISEÑO PROFESIONAL DARK CEDIS) --- */}
       {deleteReceiptConfirm && (
-        <div className="modal-overlay" onClick={() => setDeleteReceiptConfirm(null)} style={{ background: 'rgba(2, 6, 23, 0.8)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
+        <div className="modal-overlay" onClick={() => setDeleteReceiptConfirm(null)}>
           <div 
             className="modal-content animate-scale-in" 
             onClick={e => e.stopPropagation()} 
             style={{ 
               maxWidth: 480, 
-              background: '#0f172a', 
-              border: '1px solid rgba(255, 255, 255, 0.12)', 
+              background: '#FFFFFF', 
+              border: '1px solid #E2E8F0', 
               borderRadius: 16, 
-              boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.15)',
               padding: 0,
               overflow: 'hidden'
             }}
           >
             {/* Header */}
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 42, height: 42, borderRadius: 10, background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.25)', color: '#f87171', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 42, height: 42, borderRadius: 10, background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', color: '#EF4444', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Trash2 size={22} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#f8fafc', letterSpacing: '-0.01em' }}>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0F172A', letterSpacing: '-0.01em' }}>
                     Eliminar Previo de Recibo
                   </h2>
-                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#94a3b8' }}>
-                    Folio: <strong style={{ color: '#38bdf8' }}>{deleteReceiptConfirm.codigo}</strong>
+                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#64748B' }}>
+                    Folio: <strong style={{ color: '#0284C7' }}>{deleteReceiptConfirm.codigo}</strong>
                   </p>
                 </div>
               </div>
               <button 
                 type="button" 
                 onClick={() => setDeleteReceiptConfirm(null)}
-                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'color 0.15s' }}
-                onMouseEnter={e => (e.currentTarget.style.color = '#f8fafc')}
-                onMouseLeave={e => (e.currentTarget.style.color = '#94a3b8')}
+                style={{ background: 'transparent', border: 'none', color: '#94A3B8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <X size={18} />
               </button>
@@ -1931,15 +1938,15 @@ export function Receiving() {
 
             {/* Body */}
             <div style={{ padding: '24px' }}>
-              <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.22)', borderRadius: 12, padding: '16px', marginBottom: 24 }}>
+              <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 12, padding: '16px', marginBottom: 24 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                  <AlertTriangle size={20} style={{ color: '#f87171', flexShrink: 0, marginTop: 1 }} />
+                  <AlertTriangle size={20} style={{ color: '#EF4444', flexShrink: 0, marginTop: 1 }} />
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#fca5a5', marginBottom: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#B91C1C', marginBottom: 4 }}>
                       Acción destructiva e irreversible
                     </div>
-                    <div style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.5 }}>
-                      Se eliminará el previo <strong style={{ color: '#f8fafc' }}>{deleteReceiptConfirm.codigo}</strong> y todas sus <strong style={{ color: '#f8fafc' }}>{deleteReceiptConfirm.lineas?.length || 0} líneas esperadas</strong> registradas en el sistema.
+                    <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+                      Se eliminará el previo <strong style={{ color: '#0F172A' }}>{deleteReceiptConfirm.codigo}</strong> y todas sus <strong style={{ color: '#0F172A' }}>{deleteReceiptConfirm.lineas?.length || 0} líneas esperadas</strong> registradas en el sistema.
                     </div>
                   </div>
                 </div>
@@ -1949,20 +1956,8 @@ export function Receiving() {
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
                 <button 
                   type="button" 
+                  className="btn btn-secondary"
                   onClick={() => setDeleteReceiptConfirm(null)}
-                  style={{ 
-                    padding: '10px 18px', 
-                    borderRadius: 8, 
-                    fontSize: 13, 
-                    fontWeight: 600, 
-                    background: '#1e293b', 
-                    border: '1px solid rgba(255, 255, 255, 0.1)', 
-                    color: '#e2e8f0', 
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.background = '#334155')}
-                  onMouseLeave={e => (e.currentTarget.style.background = '#1e293b')}
                 >
                   Cancelar
                 </button>
@@ -1989,45 +1984,42 @@ export function Receiving() {
                   onMouseEnter={e => !submitting && (e.currentTarget.style.background = '#b91c1c')}
                   onMouseLeave={e => !submitting && (e.currentTarget.style.background = '#dc2626')}
                 >
-                  <Trash2 size={16} />
-                  {submitting ? 'Eliminando...' : 'Eliminar Previo'}
+                  <Trash2 size={16} /> {submitting ? 'Eliminando...' : 'Eliminar Definitivamente'}
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
-
-      {/* --- MODAL EDITAR LÍNEA (CANTIDAD ESPERADA) --- */}
       {editingLine && (
-        <div className="modal-overlay" onClick={() => setEditingLine(null)} style={{ background: 'rgba(2, 6, 23, 0.8)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
+        <div className="modal-overlay" onClick={() => setEditingLine(null)}>
           <div 
             className="modal-content animate-scale-in" 
             onClick={e => e.stopPropagation()} 
             style={{ 
               maxWidth: 500, 
-              background: '#0f172a', 
-              border: '1px solid rgba(255, 255, 255, 0.12)', 
+              background: '#FFFFFF', 
+              border: '1px solid #E2E8F0', 
               borderRadius: 16, 
-              boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.15)',
               padding: 0,
               overflow: 'hidden'
             }}
           >
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(13, 148, 136, 0.12)', border: '1px solid rgba(13, 148, 136, 0.3)', color: '#2dd4bf', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(13, 148, 136, 0.1)', border: '1px solid rgba(13, 148, 136, 0.25)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Edit3 size={20} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#f8fafc' }}>Editar Cantidad Esperada</h2>
-                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#94a3b8' }}>{editingLine.codigo} — {editingLine.descripcion}</p>
+                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#0F172A' }}>Editar Cantidad Esperada</h2>
+                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#64748B' }}>{editingLine.codigo} — {editingLine.descripcion}</p>
                 </div>
               </div>
               <button 
                 type="button" 
                 onClick={() => setEditingLine(null)}
-                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex' }}
+                style={{ background: 'transparent', border: 'none', color: '#94A3B8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex' }}
               >
                 <X size={18} />
               </button>
@@ -2035,7 +2027,7 @@ export function Receiving() {
 
             <form onSubmit={handleUpdateLine} style={{ padding: '24px' }}>
               <div className="form-group" style={{ marginBottom: 16 }}>
-                <label className="form-label" style={{ color: '#cbd5e1' }}>Cantidad Esperada <span className="required">*</span></label>
+                <label className="form-label" style={{ color: '#334155' }}>Cantidad Esperada <span className="required">*</span></label>
                 <input 
                   type="number" 
                   className="form-input" 
@@ -2053,34 +2045,35 @@ export function Receiving() {
                     if (!editingLine.cantidadEsperada || Number(editingLine.cantidadEsperada) <= 0) {
                       setEditingLine({ ...editingLine, cantidadEsperada: 1 });
                     }
-                  }}
+                  }} 
                   required 
-                  style={{ background: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
+                  style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#1E293B' }}
                 />
               </div>
 
               <div className="form-group" style={{ marginBottom: 24 }}>
-                <label className="form-label" style={{ color: '#cbd5e1' }}>Notas u Observaciones de la línea</label>
+                <label className="form-label" style={{ color: '#334155' }}>Notas u Observaciones de la línea</label>
                 <input 
                   className="form-input" 
                   value={editingLine.notas || ''} 
                   onChange={e => setEditingLine({ ...editingLine, notas: e.target.value })} 
-                  style={{ background: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
+                  style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#1E293B' }}
                 />
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
                 <button 
                   type="button" 
+                  className="btn btn-secondary"
                   onClick={() => setEditingLine(null)}
-                  style={{ padding: '9px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', cursor: 'pointer' }}
                 >
                   Cancelar
                 </button>
                 <button 
                   type="submit" 
+                  className="btn btn-primary"
                   disabled={submitting}
-                  style={{ padding: '9px 20px', borderRadius: 8, fontSize: 13, fontWeight: 700, background: '#0d9488', border: '1px solid #14b8a6', color: '#ffffff', cursor: submitting ? 'not-allowed' : 'pointer' }}
+                  style={{ fontWeight: 700 }}
                 >
                   {submitting ? 'Guardando...' : 'Actualizar Línea'}
                 </button>
@@ -2090,41 +2083,41 @@ export function Receiving() {
         </div>
       )}
 
-      {/* --- MODAL CONFIRMAR ELIMINAR LÍNEA (DISEÑO PROFESIONAL DARK CEDIS) --- */}
+      {/* --- MODAL CONFIRMAR ELIMINAR LÍNEA (DISEÑO PROFESIONAL) --- */}
       {deleteLineConfirm && (
-        <div className="modal-overlay" onClick={() => setDeleteLineConfirm(null)} style={{ background: 'rgba(2, 6, 23, 0.8)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
+        <div className="modal-overlay" onClick={() => setDeleteLineConfirm(null)}>
           <div 
             className="modal-content animate-scale-in" 
             onClick={e => e.stopPropagation()} 
             style={{ 
               maxWidth: 460, 
-              background: '#0f172a', 
-              border: '1px solid rgba(255, 255, 255, 0.12)', 
+              background: '#FFFFFF', 
+              border: '1px solid #E2E8F0', 
               borderRadius: 16, 
-              boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.15)',
               padding: 0,
               overflow: 'hidden'
             }}
           >
             {/* Header */}
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 42, height: 42, borderRadius: 10, background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.25)', color: '#f87171', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 42, height: 42, borderRadius: 10, background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', color: '#EF4444', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Trash2 size={22} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#f8fafc', letterSpacing: '-0.01em' }}>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0F172A', letterSpacing: '-0.01em' }}>
                     Remover Producto de Recepción
                   </h2>
-                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#94a3b8' }}>
-                    SKU: <strong style={{ color: '#38bdf8' }}>{deleteLineConfirm.codigo}</strong>
+                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#64748B' }}>
+                    SKU: <strong style={{ color: '#0284C7' }}>{deleteLineConfirm.codigo}</strong>
                   </p>
                 </div>
               </div>
               <button 
                 type="button" 
                 onClick={() => setDeleteLineConfirm(null)}
-                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                style={{ background: 'transparent', border: 'none', color: '#94A3B8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <X size={18} />
               </button>
@@ -2132,15 +2125,15 @@ export function Receiving() {
 
             {/* Body */}
             <div style={{ padding: '24px' }}>
-              <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.22)', borderRadius: 12, padding: '16px', marginBottom: 24 }}>
+              <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 12, padding: '16px', marginBottom: 24 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                  <AlertTriangle size={20} style={{ color: '#f87171', flexShrink: 0, marginTop: 1 }} />
+                  <AlertTriangle size={20} style={{ color: '#EF4444', flexShrink: 0, marginTop: 1 }} />
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#fca5a5', marginBottom: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#B91C1C', marginBottom: 4 }}>
                       Quitar partida esperada
                     </div>
-                    <div style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.5 }}>
-                      Esta acción removerá el producto <strong style={{ color: '#f8fafc' }}>{deleteLineConfirm.codigo}</strong> de la lista esperada de este previo.
+                    <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+                      Esta acción removerá el producto <strong style={{ color: '#0F172A' }}>{deleteLineConfirm.codigo}</strong> de la lista esperada de este previo.
                     </div>
                   </div>
                 </div>
@@ -2150,19 +2143,8 @@ export function Receiving() {
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
                 <button 
                   type="button" 
+                  className="btn btn-secondary"
                   onClick={() => setDeleteLineConfirm(null)}
-                  style={{ 
-                    padding: '10px 18px', 
-                    borderRadius: 8, 
-                    fontSize: 13, 
-                    fontWeight: 600, 
-                    background: '#1e293b', 
-                    border: '1px solid rgba(255, 255, 255, 0.1)', 
-                    color: '#e2e8f0', 
-                    cursor: 'pointer'
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.background = '#334155')}
-                  onMouseLeave={e => (e.currentTarget.style.background = '#1e293b')}
                 >
                   Cancelar
                 </button>
@@ -2184,8 +2166,6 @@ export function Receiving() {
                     gap: 8,
                     boxShadow: '0 4px 14px rgba(220, 38, 38, 0.4)'
                   }}
-                  onMouseEnter={e => !submitting && (e.currentTarget.style.background = '#b91c1c')}
-                  onMouseLeave={e => !submitting && (e.currentTarget.style.background = '#dc2626')}
                 >
                   <Trash2 size={16} />
                   {submitting ? 'Removiendo...' : 'Quitar Producto'}
@@ -2198,9 +2178,9 @@ export function Receiving() {
 
       {/* --- MODAL AGREGAR PRODUCTO MANUAL AL PREVIO --- */}
       {showAddLineModal && (
-        <div className="modal-overlay" onClick={() => setShowAddLineModal(null)} style={{ background: 'rgba(2, 6, 23, 0.8)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
-          <div className="modal-content animate-scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 540, background: '#0f172a', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: 16, color: '#f8fafc', boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)' }}>
-            <div className="modal-header" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+        <div className="modal-overlay" onClick={() => setShowAddLineModal(null)}>
+          <div className="modal-content animate-scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+            <div className="modal-header" style={{ borderBottom: '1px solid #E2E8F0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <PlusCircle size={20} />
@@ -2274,42 +2254,42 @@ export function Receiving() {
         </div>
       )}
 
-      {/* --- MODAL CONFIRMAR BLOQUEO DE PREVIO (TAREA 3 - DARK CEDIS DESIGN) --- */}
+      {/* --- MODAL CONFIRMAR BLOQUEO DE PREVIO (MINIMALIST WHITE DESIGN) --- */}
       {confirmLockModal && (
-        <div className="modal-overlay" onClick={() => setConfirmLockModal(null)} style={{ background: 'rgba(2, 6, 23, 0.85)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
+        <div className="modal-overlay" onClick={() => setConfirmLockModal(null)} style={{ background: 'rgba(15, 23, 42, 0.5)', backdropFilter: 'blur(4px)', zIndex: 1100 }}>
           <div 
             className="modal-content animate-scale-in" 
             onClick={e => e.stopPropagation()} 
             style={{ 
               maxWidth: 520, 
-              background: '#0f172a', 
-              border: '1px solid rgba(255, 255, 255, 0.14)', 
+              background: '#FFFFFF', 
+              border: '1px solid #E2E8F0', 
               borderRadius: 16, 
-              color: '#f8fafc', 
-              boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)',
+              color: '#0F172A', 
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
               padding: 0,
               overflow: 'hidden'
             }}
           >
             {/* Header */}
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 42, height: 42, borderRadius: 10, background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.35)', color: '#fbbf24', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 42, height: 42, borderRadius: 10, background: '#FEF3C7', border: '1px solid #FDE68A', color: '#D97706', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Lock size={22} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#f8fafc' }}>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0F172A' }}>
                     Confirmar Previo (Bloquear Edición)
                   </h2>
-                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#94a3b8' }}>
-                    Folio: <strong style={{ color: '#38bdf8' }}>{confirmLockModal.codigo}</strong> · {confirmLockModal.cliente?.nombreComercial}
+                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#64748B' }}>
+                    Folio: <strong style={{ color: '#0284C7' }}>{confirmLockModal.codigo}</strong> · {confirmLockModal.cliente?.nombreComercial}
                   </p>
                 </div>
               </div>
               <button 
                 type="button" 
                 onClick={() => setConfirmLockModal(null)}
-                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                style={{ background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <X size={18} />
               </button>
@@ -2318,21 +2298,21 @@ export function Receiving() {
             {/* Body */}
             <div style={{ padding: '24px' }}>
               {modalActionError && (
-                <div style={{ background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)', color: '#f87171', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', color: '#DC2626', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
                   <AlertTriangle size={18} style={{ flexShrink: 0 }} />
                   <div>{modalActionError}</div>
                 </div>
               )}
 
               {/* Alert / Warning */}
-              <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', borderRadius: 12, padding: '16px', marginBottom: 20 }}>
+              <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 12, padding: '16px', marginBottom: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                  <AlertTriangle size={20} style={{ color: '#fbbf24', flexShrink: 0, marginTop: 2 }} />
+                  <AlertTriangle size={20} style={{ color: '#D97706', flexShrink: 0, marginTop: 2 }} />
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#fef3c7', marginBottom: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#92400E', marginBottom: 4 }}>
                       Protección contra Modificaciones Operativas
                     </div>
-                    <div style={{ fontSize: 13, color: '#e2e8f0', lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 13, color: '#78350F', lineHeight: 1.5 }}>
                       Al confirmar el previo, se bloqueará la edición de la <strong>factura de respaldo</strong>, <strong>líneas de producto</strong> y <strong>cantidades esperadas</strong> para garantizar la integridad del conteo físico en andén.
                     </div>
                   </div>
@@ -2340,45 +2320,45 @@ export function Receiving() {
               </div>
 
               {/* Summary Stats */}
-              <div style={{ background: '#1e293b', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+              <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
                   Resumen de la Recepción a Proteger
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, fontSize: 13 }}>
                   <div>
-                    <span style={{ color: '#94a3b8', fontSize: 12 }}>Factura / OC:</span>
-                    <div style={{ fontWeight: 600, color: '#f8fafc', marginTop: 2 }}>
+                    <span style={{ color: '#64748B', fontSize: 12 }}>Factura / OC:</span>
+                    <div style={{ fontWeight: 600, color: '#0F172A', marginTop: 2 }}>
                       {confirmLockModal.facturaRespaldo || confirmLockModal.ocReferencia || 'Sin factura'}
                     </div>
                   </div>
                   <div>
-                    <span style={{ color: '#94a3b8', fontSize: 12 }}>Régimen / Origen:</span>
-                    <div style={{ fontWeight: 600, color: '#38bdf8', marginTop: 2 }}>
+                    <span style={{ color: '#64748B', fontSize: 12 }}>Régimen / Origen:</span>
+                    <div style={{ fontWeight: 600, color: '#0284C7', marginTop: 2 }}>
                       {confirmLockModal.origen || 'NACIONAL'} {confirmLockModal.tipoImportacion && confirmLockModal.tipoImportacion !== 'NO_APLICA' ? `· ${confirmLockModal.tipoImportacion}` : ''}
                     </div>
                   </div>
                   <div>
-                    <span style={{ color: '#94a3b8', fontSize: 12 }}>Partidas Esperadas:</span>
-                    <div style={{ fontWeight: 700, color: '#f8fafc', marginTop: 2 }}>
+                    <span style={{ color: '#64748B', fontSize: 12 }}>Partidas Esperadas:</span>
+                    <div style={{ fontWeight: 700, color: '#0F172A', marginTop: 2 }}>
                       {confirmLockModal.lineas?.length || 0} productos
                     </div>
                   </div>
                   <div>
-                    <span style={{ color: '#94a3b8', fontSize: 12 }}>Unidades Totales:</span>
-                    <div style={{ fontWeight: 700, color: '#34d399', marginTop: 2 }}>
+                    <span style={{ color: '#64748B', fontSize: 12 }}>Unidades Totales:</span>
+                    <div style={{ fontWeight: 700, color: '#059669', marginTop: 2 }}>
                       {confirmLockModal.lineas?.reduce((acc: number, l: any) => acc + (l.cantidadEsperada || 0), 0) || 0} piezas
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div style={{ fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <ShieldCheck size={14} style={{ color: '#34d399' }} /> Si requieres corregir algún dato posteriormente, un supervisor podrá desbloquearlo con registro en bitácora.
+              <div style={{ fontSize: 12, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ShieldCheck size={14} style={{ color: '#059669' }} /> Si requieres corregir algún dato posteriormente, un supervisor podrá desbloquearlo con registro en bitácora.
               </div>
             </div>
 
             {/* Footer */}
-            <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', background: '#0b0f17', display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+            <div style={{ padding: '16px 24px', borderTop: '1px solid #E2E8F0', background: '#F8FAFC', display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
               <button 
                 type="button" 
                 onClick={() => setConfirmLockModal(null)}
@@ -2387,9 +2367,9 @@ export function Receiving() {
                   borderRadius: 8, 
                   fontSize: 13, 
                   fontWeight: 600, 
-                  background: '#1e293b', 
-                  border: '1px solid rgba(255, 255, 255, 0.1)', 
-                  color: '#e2e8f0', 
+                  background: '#FFFFFF', 
+                  border: '1px solid #CBD5E1', 
+                  color: '#475569', 
                   cursor: 'pointer' 
                 }}
               >
@@ -2404,14 +2384,14 @@ export function Receiving() {
                   borderRadius: 8, 
                   fontSize: 13, 
                   fontWeight: 700, 
-                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', 
-                  border: '1px solid #f59e0b', 
+                  background: '#D97706', 
+                  border: '1px solid #D97706', 
                   color: '#ffffff', 
                   cursor: isLocking ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
-                  boxShadow: '0 4px 14px rgba(245, 158, 11, 0.35)',
+                  boxShadow: '0 2px 8px rgba(217, 119, 6, 0.25)',
                   opacity: isLocking ? 0.7 : 1
                 }}
               >
@@ -2423,42 +2403,42 @@ export function Receiving() {
         </div>
       )}
 
-      {/* --- MODAL DESBLOQUEAR PREVIO PARA SUPERVISOR (TAREA 3 - DARK CEDIS DESIGN) --- */}
+      {/* --- MODAL DESBLOQUEAR PREVIO PARA SUPERVISOR (MINIMALIST WHITE DESIGN) --- */}
       {confirmUnlockModal && (
-        <div className="modal-overlay" onClick={() => setConfirmUnlockModal(null)} style={{ background: 'rgba(2, 6, 23, 0.85)', backdropFilter: 'blur(8px)', zIndex: 1100 }}>
+        <div className="modal-overlay" onClick={() => setConfirmUnlockModal(null)} style={{ background: 'rgba(15, 23, 42, 0.5)', backdropFilter: 'blur(4px)', zIndex: 1100 }}>
           <div 
             className="modal-content animate-scale-in" 
             onClick={e => e.stopPropagation()} 
             style={{ 
               maxWidth: 500, 
-              background: '#0f172a', 
-              border: '1px solid rgba(255, 255, 255, 0.14)', 
+              background: '#FFFFFF', 
+              border: '1px solid #E2E8F0', 
               borderRadius: 16, 
-              color: '#f8fafc', 
-              boxShadow: '0 25px 60px -12px rgba(0, 0, 0, 0.85)',
+              color: '#0F172A', 
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
               padding: 0,
               overflow: 'hidden'
             }}
           >
             {/* Header */}
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 42, height: 42, borderRadius: 10, background: 'rgba(56, 189, 248, 0.15)', border: '1px solid rgba(56, 189, 248, 0.35)', color: '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 42, height: 42, borderRadius: 10, background: '#E0F2FE', border: '1px solid #BAE6FD', color: '#0284C7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Unlock size={22} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#f8fafc' }}>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0F172A' }}>
                     Desbloquear Previo para Corrección
                   </h2>
-                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#94a3b8' }}>
-                    Folio: <strong style={{ color: '#38bdf8' }}>{confirmUnlockModal.codigo}</strong>
+                  <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#64748B' }}>
+                    Folio: <strong style={{ color: '#0284C7' }}>{confirmUnlockModal.codigo}</strong>
                   </p>
                 </div>
               </div>
               <button 
                 type="button" 
                 onClick={() => setConfirmUnlockModal(null)}
-                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                style={{ background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer', padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <X size={18} />
               </button>
@@ -2467,31 +2447,31 @@ export function Receiving() {
             {/* Body */}
             <form onSubmit={(e) => { e.preventDefault(); handleUnlockReceiptSubmit(confirmUnlockModal.id); }} style={{ padding: '24px' }}>
               {modalActionError && (
-                <div style={{ background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)', color: '#f87171', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', color: '#DC2626', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
                   <AlertTriangle size={18} style={{ flexShrink: 0 }} />
                   <div>{modalActionError}</div>
                 </div>
               )}
 
-              <div style={{ background: 'rgba(56, 189, 248, 0.08)', border: '1px solid rgba(56, 189, 248, 0.25)', borderRadius: 12, padding: '14px 16px', marginBottom: 20 }}>
+              <div style={{ background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: 12, padding: '14px 16px', marginBottom: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <ShieldCheck size={18} style={{ color: '#38bdf8', flexShrink: 0, marginTop: 1 }} />
-                  <div style={{ fontSize: 13, color: '#e2e8f0', lineHeight: 1.5 }}>
-                    Esta acción habilitará nuevamente la edición de facturas, adición de partidas y ajuste de cantidades. Se guardará un registro de auditoría con tu usuario (<strong style={{ color: '#38bdf8' }}>{user?.email || 'Supervisor'}</strong>).
+                  <ShieldCheck size={18} style={{ color: '#0284C7', flexShrink: 0, marginTop: 1 }} />
+                  <div style={{ fontSize: 13, color: '#0369A1', lineHeight: 1.5 }}>
+                    Esta acción habilitará nuevamente la edición de facturas, adición de partidas y ajuste de cantidades. Se guardará un registro de auditoría con tu usuario (<strong style={{ color: '#0284C7' }}>{user?.email || 'Supervisor'}</strong>).
                   </div>
                 </div>
               </div>
 
               <div className="form-group" style={{ marginBottom: 20 }}>
-                <label className="form-label" style={{ color: '#f8fafc', fontWeight: 600 }}>
-                  Motivo de la Corrección <span style={{ color: '#94a3b8', fontWeight: 400 }}>(Opcional para Bitácora)</span>
+                <label className="form-label" style={{ color: '#0F172A', fontWeight: 600 }}>
+                  Motivo de la Corrección <span style={{ color: '#64748B', fontWeight: 400 }}>(Opcional para Bitácora)</span>
                 </label>
                 <input 
                   className="form-input" 
                   placeholder="Ej. Corrección por discrepancia en factura de proveedor o rectificación de bultos" 
                   value={unlockMotivo} 
                   onChange={e => setUnlockMotivo(e.target.value)} 
-                  style={{ background: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
+                  style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
                 />
               </div>
 
@@ -2504,9 +2484,9 @@ export function Receiving() {
                     borderRadius: 8, 
                     fontSize: 13, 
                     fontWeight: 600, 
-                    background: '#1e293b', 
-                    border: '1px solid rgba(255, 255, 255, 0.1)', 
-                    color: '#e2e8f0', 
+                    background: '#FFFFFF', 
+                    border: '1px solid #CBD5E1', 
+                    color: '#475569', 
                     cursor: 'pointer' 
                   }}
                 >
@@ -2521,13 +2501,13 @@ export function Receiving() {
                     fontSize: 13, 
                     fontWeight: 700, 
                     background: '#0284c7', 
-                    border: '1px solid #38bdf8', 
+                    border: '1px solid #0284c7', 
                     color: '#ffffff', 
                     cursor: isLocking ? 'not-allowed' : 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 8,
-                    boxShadow: '0 4px 14px rgba(2, 132, 199, 0.35)',
+                    boxShadow: '0 2px 8px rgba(2, 132, 199, 0.25)',
                     opacity: isLocking ? 0.7 : 1
                   }}
                 >
@@ -2543,46 +2523,46 @@ export function Receiving() {
       {/* --- STITCH DRAWER DE ALOJAMIENTO / PUTAWAY DE ANDÉN A RACKS --- */}
       {putawayModalReceipt && (
         <div className="stitch-drawer-overlay" onClick={() => setPutawayModalReceipt(null)}>
-          <div className="stitch-drawer-content" onClick={e => e.stopPropagation()}>
-            <div className="modal-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '20px 24px' }}>
+          <div className="stitch-drawer-content" onClick={e => e.stopPropagation()} style={{ background: '#FFFFFF', color: '#0F172A' }}>
+            <div className="modal-header" style={{ borderBottom: '1px solid #E2E8F0', padding: '20px 24px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(13,148,136,0.15)', color: '#2DD4BF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: '#F0FDFA', color: '#0D9488', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Box size={22} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#F8FAFC' }}>Alojamiento a Racks (Putaway)</h2>
-                  <p style={{ margin: 0, fontSize: 12, color: '#94A3B8' }}>Previo {putawayModalReceipt.codigo} · Traslado de Andén REC-01 a Racks</p>
+                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0F172A' }}>Alojamiento a Racks (Putaway)</h2>
+                  <p style={{ margin: 0, fontSize: 12, color: '#64748B' }}>Previo {putawayModalReceipt.codigo} · Traslado de Andén REC-01 a Racks</p>
                 </div>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#94A3B8' }}><X size={20} /></button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#64748B' }}><X size={20} /></button>
             </div>
 
             <form onSubmit={handleExecutePutaway} style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 24, overflowY: 'auto' }}>
-              <div style={{ padding: '12px 16px', background: 'rgba(13,148,136,0.08)', borderRadius: 8, border: '1px solid rgba(13,148,136,0.2)', marginBottom: 20 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#2DD4BF', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ padding: '12px 16px', background: '#F0FDFA', borderRadius: 8, border: '1px solid #CCFBF1', marginBottom: 20 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#0D9488', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Sparkles size={15} /> Sugerencias de Ubicación por Algoritmo Putaway (3PL Rules)
                 </div>
-                <div style={{ fontSize: 12, color: '#CBD5E1', marginTop: 4 }}>
+                <div style={{ fontSize: 12, color: '#0F766E', marginTop: 4 }}>
                   El motor asignó los racks óptimos según la zona asignada al depositante (Textil / Alimentos) y rotación FIFO/FEFO.
                 </div>
               </div>
 
               <div style={{ flex: 1 }}>
                 {putawayMoves.map((m, idx) => (
-                  <div key={idx} style={{ background: 'rgba(30, 41, 59, 0.6)', borderRadius: 10, padding: 16, border: '1px solid rgba(255, 255, 255, 0.08)', marginBottom: 14 }}>
+                  <div key={idx} style={{ background: '#F8FAFC', borderRadius: 10, padding: 16, border: '1px solid #E2E8F0', marginBottom: 14 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
                       <div>
-                        <div style={{ fontWeight: 700, color: '#2DD4BF', fontSize: 14 }}>{m.codigo}</div>
-                        <div style={{ fontSize: 12, color: '#94A3B8' }}>{m.descripcion}</div>
+                        <div style={{ fontWeight: 700, color: '#0D9488', fontSize: 14 }}>{m.codigo}</div>
+                        <div style={{ fontSize: 12, color: '#64748B' }}>{m.descripcion}</div>
                       </div>
-                      <span className="stitch-ean-badge">{m.cantidad} PZA</span>
+                      <span className="stitch-ean-badge" style={{ background: '#E0F2FE', color: '#0369A1', borderColor: '#BAE6FD' }}>{m.cantidad} PZA</span>
                     </div>
 
                     <div className="form-group" style={{ marginBottom: 0 }}>
-                      <label className="form-label" style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ubicación Rack Destino</label>
+                      <label className="form-label" style={{ fontSize: 11, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ubicación Rack Destino</label>
                       <select 
                         className="form-select form-select-full" 
-                        style={{ fontSize: 13, background: '#0F172A', color: '#F8FAFC', borderColor: 'rgba(255,255,255,0.15)' }}
+                        style={{ fontSize: 13, background: '#FFFFFF', color: '#0F172A', borderColor: '#CBD5E1' }}
                         value={m.ubicacionDestinoId} 
                         onChange={e => {
                           const updated = [...putawayMoves];
@@ -2601,8 +2581,8 @@ export function Receiving() {
                 ))}
               </div>
 
-              <div className="modal-footer" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 16, marginTop: 20, display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
-                <button type="button" className="btn btn-ghost" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#94A3B8' }}>Cancelar</button>
+              <div className="modal-footer" style={{ borderTop: '1px solid #E2E8F0', paddingTop: 16, marginTop: 20, display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-ghost" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#64748B' }}>Cancelar</button>
                 <button type="submit" className="btn btn-primary" disabled={submitting} style={{ background: '#0D9488', borderColor: '#0D9488', padding: '10px 20px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <Box size={16} /> {submitting ? 'Ejecutando Alojamiento...' : 'Confirmar Alojamiento a Racks'}
                 </button>
@@ -2720,9 +2700,9 @@ export function Receiving() {
                         fontSize: '13px',
                         fontWeight: 700,
                         cursor: 'pointer',
-                        border: newPrevio.tipoRecepcion !== 'DEVOLUCION' ? '1.5px solid #0d9488' : '1px solid rgba(255,255,255,0.1)',
-                        backgroundColor: newPrevio.tipoRecepcion !== 'DEVOLUCION' ? 'rgba(13,148,136,0.15)' : '#0f172a',
-                        color: newPrevio.tipoRecepcion !== 'DEVOLUCION' ? '#2dd4bf' : '#94a3b8',
+                        border: newPrevio.tipoRecepcion !== 'DEVOLUCION' ? '1.5px solid #0d9488' : '1px solid #CBD5E1',
+                        backgroundColor: newPrevio.tipoRecepcion !== 'DEVOLUCION' ? '#F0FDFA' : '#FFFFFF',
+                        color: newPrevio.tipoRecepcion !== 'DEVOLUCION' ? '#0F766E' : '#64748B',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -2741,9 +2721,9 @@ export function Receiving() {
                         fontSize: '13px',
                         fontWeight: 700,
                         cursor: 'pointer',
-                        border: newPrevio.tipoRecepcion === 'DEVOLUCION' ? '1.5px solid #ef4444' : '1px solid rgba(255,255,255,0.1)',
-                        backgroundColor: newPrevio.tipoRecepcion === 'DEVOLUCION' ? 'rgba(239,68,68,0.15)' : '#0f172a',
-                        color: newPrevio.tipoRecepcion === 'DEVOLUCION' ? '#f87171' : '#94a3b8',
+                        border: newPrevio.tipoRecepcion === 'DEVOLUCION' ? '1.5px solid #ef4444' : '1px solid #CBD5E1',
+                        backgroundColor: newPrevio.tipoRecepcion === 'DEVOLUCION' ? '#FEF2F2' : '#FFFFFF',
+                        color: newPrevio.tipoRecepcion === 'DEVOLUCION' ? '#DC2626' : '#64748B',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -3244,42 +3224,42 @@ export function Receiving() {
                 maxHeight: '90vh',
                 display: 'flex',
                 flexDirection: 'column',
-                background: '#0F172A', 
-                color: '#F8FAFC', 
-                border: hasDiscrepancies && !allDiscrepanciesResolved ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid rgba(45, 212, 191, 0.3)', 
+                background: '#FFFFFF', 
+                color: '#0F172A', 
+                border: hasDiscrepancies && !allDiscrepanciesResolved ? '1px solid #FECACA' : '1px solid #E2E8F0', 
                 borderRadius: '16px',
-                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8)',
+                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
                 overflow: 'hidden',
                 transition: 'all 0.3s ease'
               }}
             >
-              {/* CABECERA ALTO CONTRASTE */}
+              {/* CABECERA MINIMALISTA */}
               <div style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 padding: '18px 24px',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                borderBottom: '1px solid #E2E8F0',
                 flexShrink: 0,
                 background: hasDiscrepancies && !allDiscrepanciesResolved
-                  ? 'linear-gradient(135deg, #0F172A 0%, rgba(239, 68, 68, 0.15) 100%)'
-                  : 'linear-gradient(135deg, #0F172A 0%, rgba(13,148,136,0.12) 100%)'
+                  ? '#FEF2F2'
+                  : '#F0FDFA'
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ 
                     width: 42, height: 42, borderRadius: 10, 
-                    background: hasDiscrepancies && !allDiscrepanciesResolved ? 'rgba(239, 68, 68, 0.15)' : 'rgba(52, 211, 153, 0.15)', 
-                    color: hasDiscrepancies && !allDiscrepanciesResolved ? '#F87171' : '#34D399', 
+                    background: hasDiscrepancies && !allDiscrepanciesResolved ? '#FEE2E2' : '#DCFCE7', 
+                    color: hasDiscrepancies && !allDiscrepanciesResolved ? '#DC2626' : '#16A34A', 
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    border: hasDiscrepancies && !allDiscrepanciesResolved ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(52, 211, 153, 0.3)'
+                    border: hasDiscrepancies && !allDiscrepanciesResolved ? '1px solid #FCA5A5' : '1px solid #86EFAC'
                   }}>
                     {hasDiscrepancies && !allDiscrepanciesResolved ? <ShieldAlert size={22} /> : <CheckSquare size={22} />}
                   </div>
                   <div>
-                    <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#F8FAFC', letterSpacing: '-0.01em' }}>
+                    <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.01em' }}>
                       Finalizar y Cerrar Recepción ({closingReceipt.codigo})
                     </h2>
-                    <p style={{ margin: '2px 0 0', fontSize: 13, color: '#94A3B8' }}>
+                    <p style={{ margin: '2px 0 0', fontSize: 13, color: '#64748B' }}>
                       {hasDiscrepancies 
                         ? 'Auditoría de conciliación física y resolución legal de no conformidades'
                         : 'Se generará la Hoja Oficial de Cierre ASN con auditoría de firmas'}
@@ -3290,7 +3270,7 @@ export function Receiving() {
                   type="button" 
                   className="btn btn-ghost btn-sm" 
                   onClick={() => setClosingReceipt(null)}
-                  style={{ color: '#94A3B8', padding: '6px 8px', borderRadius: 6 }}
+                  style={{ color: '#64748B', padding: '6px 8px', borderRadius: 6 }}
                 >
                   <X size={20} />
                 </button>
@@ -3298,68 +3278,68 @@ export function Receiving() {
 
               <form onSubmit={handleCloseReceiptSubmit} style={{ padding: '20px 24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column' }}>
                 
-                {/* TARJETA METADATOS RESUMEN ALTO CONTRASTE */}
+                {/* TARJETA METADATOS RESUMEN */}
                 <div style={{ 
                   padding: '16px 20px', 
-                  background: '#1E293B', 
+                  background: '#F8FAFC', 
                   borderRadius: 12, 
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  border: '1px solid #E2E8F0',
                   marginBottom: 20,
                   fontSize: 13
                 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#2DD4BF', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#0D9488', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <ShieldCheck size={15} /> Resumen Auditoría de Cierre
                   </div>
                   
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px', marginBottom: 14 }}>
                     <div>
-                      <span style={{ fontSize: 11, color: '#94A3B8', display: 'block' }}>Depositante</span>
-                      <strong style={{ fontSize: 14, color: '#F8FAFC', fontWeight: 700 }}>{closingReceipt.cliente?.nombreComercial || 'Fashion Forward'}</strong>
+                      <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Depositante</span>
+                      <strong style={{ fontSize: 14, color: '#0F172A', fontWeight: 700 }}>{closingReceipt.cliente?.nombreComercial || 'Fashion Forward'}</strong>
                     </div>
                     <div>
-                      <span style={{ fontSize: 11, color: '#94A3B8', display: 'block' }}>Factura / Orden de Compra</span>
-                      <strong style={{ fontSize: 14, color: '#2DD4BF', fontFamily: 'monospace', fontWeight: 700 }}>{closingReceipt.ocReferencia || 'FAC-2026-TEST-001'}</strong>
+                      <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Factura / Orden de Compra</span>
+                      <strong style={{ fontSize: 14, color: '#0D9488', fontFamily: 'monospace', fontWeight: 700 }}>{closingReceipt.ocReferencia || 'FAC-2026-TEST-001'}</strong>
                     </div>
                     <div>
-                      <span style={{ fontSize: 11, color: '#94A3B8', display: 'block' }}>Líneas de SKU Registradas</span>
-                      <strong style={{ fontSize: 14, color: '#34D399', fontWeight: 700 }}>{activeLines.length} líneas de producto</strong>
+                      <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Líneas de SKU Registradas</span>
+                      <strong style={{ fontSize: 14, color: '#059669', fontWeight: 700 }}>{activeLines.length} líneas de producto</strong>
                     </div>
                     <div>
-                      <span style={{ fontSize: 11, color: '#94A3B8', display: 'block' }}>Línea de Transporte / Chofer</span>
-                      <strong style={{ fontSize: 13, color: '#CBD5E1', fontWeight: 600 }}>{closingReceipt.lineaTransporte || 'Tres Guerras'} {closingReceipt.nombreChofer ? `(${closingReceipt.nombreChofer})` : ''}</strong>
+                      <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Línea de Transporte / Chofer</span>
+                      <strong style={{ fontSize: 13, color: '#334155', fontWeight: 600 }}>{closingReceipt.lineaTransporte || 'Tres Guerras'} {closingReceipt.nombreChofer ? `(${closingReceipt.nombreChofer})` : ''}</strong>
                     </div>
                   </div>
 
                   {/* MINI KPIS DE BALANCE ANTES DE CERRAR */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, paddingTop: 12, borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
-                    <div style={{ background: '#0B0F17', padding: '8px 10px', borderRadius: 8, textAlign: 'center' }}>
-                      <div style={{ fontSize: 10, color: '#94A3B8', textTransform: 'uppercase', fontWeight: 700 }}>Esperadas</div>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: '#F8FAFC', marginTop: 2 }}>{totalEsperado.toLocaleString()}</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, paddingTop: 12, borderTop: '1px solid #E2E8F0' }}>
+                    <div style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', padding: '8px 10px', borderRadius: 8, textAlign: 'center' }}>
+                      <div style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', fontWeight: 700 }}>Esperadas</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>{totalEsperado.toLocaleString()}</div>
                     </div>
-                    <div style={{ background: 'rgba(52, 211, 153, 0.1)', padding: '8px 10px', borderRadius: 8, textAlign: 'center', border: '1px solid rgba(52, 211, 153, 0.25)' }}>
-                      <div style={{ fontSize: 10, color: '#34D399', textTransform: 'uppercase', fontWeight: 700 }}>Conformes</div>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: '#34D399', marginTop: 2 }}>{totalConforme.toLocaleString()}</div>
+                    <div style={{ background: '#ECFDF5', border: '1px solid #A7F3D0', padding: '8px 10px', borderRadius: 8, textAlign: 'center' }}>
+                      <div style={{ fontSize: 10, color: '#059669', textTransform: 'uppercase', fontWeight: 700 }}>Conformes</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: '#059669', marginTop: 2 }}>{totalConforme.toLocaleString()}</div>
                     </div>
-                    <div style={{ background: totalDanada > 0 ? 'rgba(245, 158, 11, 0.12)' : '#0B0F17', padding: '8px 10px', borderRadius: 8, textAlign: 'center', border: totalDanada > 0 ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ fontSize: 10, color: totalDanada > 0 ? '#FBBF24' : '#94A3B8', textTransform: 'uppercase', fontWeight: 700 }}>Merma / Daño</div>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: totalDanada > 0 ? '#FBBF24' : '#94A3B8', marginTop: 2 }}>{totalDanada.toLocaleString()}</div>
+                    <div style={{ background: totalDanada > 0 ? '#FFFBEB' : '#FFFFFF', padding: '8px 10px', borderRadius: 8, textAlign: 'center', border: totalDanada > 0 ? '1px solid #FDE68A' : '1px solid #E2E8F0' }}>
+                      <div style={{ fontSize: 10, color: totalDanada > 0 ? '#D97706' : '#64748B', textTransform: 'uppercase', fontWeight: 700 }}>Merma / Daño</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: totalDanada > 0 ? '#D97706' : '#64748B', marginTop: 2 }}>{totalDanada.toLocaleString()}</div>
                     </div>
-                    <div style={{ background: variacion !== 0 ? 'rgba(56, 189, 248, 0.12)' : '#0B0F17', padding: '8px 10px', borderRadius: 8, textAlign: 'center', border: variacion !== 0 ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ fontSize: 10, color: '#38BDF8', textTransform: 'uppercase', fontWeight: 700 }}>Variación</div>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: variacion > 0 ? '#38BDF8' : variacion < 0 ? '#F87171' : '#34D399', marginTop: 2 }}>
+                    <div style={{ background: variacion !== 0 ? '#F0F9FF' : '#FFFFFF', padding: '8px 10px', borderRadius: 8, textAlign: 'center', border: variacion !== 0 ? '1px solid #BAE6FD' : '1px solid #E2E8F0' }}>
+                      <div style={{ fontSize: 10, color: '#0284C7', textTransform: 'uppercase', fontWeight: 700 }}>Variación</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: variacion > 0 ? '#0284C7' : variacion < 0 ? '#DC2626' : '#059669', marginTop: 2 }}>
                         {variacion > 0 ? `+${variacion}` : variacion}
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* --- SECCIÓN CONDICIONAL: 100% CUADRADO VS DISCREPANCIAS (TAREA 5) --- */}
+                {/* --- SECCIÓN CONDICIONAL: 100% CUADRADO VS DISCREPANCIAS --- */}
                 {!hasDiscrepancies ? (
                   <div style={{
                     padding: '14px 18px',
                     borderRadius: 10,
-                    background: 'rgba(52, 211, 153, 0.1)',
-                    border: '1px solid rgba(52, 211, 153, 0.3)',
+                    background: '#ECFDF5',
+                    border: '1px solid #A7F3D0',
                     marginBottom: 20,
                     display: 'flex',
                     alignItems: 'center',
@@ -3367,18 +3347,18 @@ export function Receiving() {
                   }}>
                     <div style={{
                       width: 36, height: 36, borderRadius: '50%',
-                      background: 'rgba(52, 211, 153, 0.2)',
-                      color: '#34D399',
+                      background: '#D1FAE5',
+                      color: '#059669',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       flexShrink: 0
                     }}>
                       <CheckCircle2 size={20} />
                     </div>
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: '#34D399' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#065F46' }}>
                         ✓ Conciliación Física 100% Conforme
                       </div>
-                      <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>
+                      <div style={{ fontSize: 12, color: '#047857', marginTop: 2 }}>
                         Todas las cantidades físicas coinciden exactamente con la factura ({totalConforme} unidades conformes, 0 merma). Listo para cierre oficial.
                       </div>
                     </div>
@@ -3389,8 +3369,8 @@ export function Receiving() {
                     <div style={{
                       padding: '14px 18px',
                       borderRadius: 10,
-                      background: 'rgba(239, 68, 68, 0.12)',
-                      border: '1px solid rgba(239, 68, 68, 0.35)',
+                      background: '#FEF2F2',
+                      border: '1px solid #FECACA',
                       marginBottom: 16,
                       display: 'flex',
                       alignItems: 'flex-start',
@@ -3398,19 +3378,19 @@ export function Receiving() {
                     }}>
                       <div style={{
                         width: 36, height: 36, borderRadius: '50%',
-                        background: 'rgba(239, 68, 68, 0.2)',
-                        color: '#F87171',
+                        background: '#FEE2E2',
+                        color: '#DC2626',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         flexShrink: 0, marginTop: 2
                       }}>
                         <ShieldAlert size={20} />
                       </div>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, color: '#F87171', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 800, color: '#B91C1C', display: 'flex', alignItems: 'center', gap: 6 }}>
                           <span>CANDADO DE CONTROL ACTIVO — {discrepantLines.length} {discrepantLines.length === 1 ? 'DISCREPANCIA DETECTADA' : 'DISCREPANCIAS DETECTADAS'}</span>
                         </div>
-                        <p style={{ fontSize: 12, color: '#CBD5E1', margin: '4px 0 0', lineHeight: 1.45 }}>
-                          Por estricta política operativa 3PL y responsabilidad legal, el sistema <strong style={{ color: '#FCA5A5' }}>bloquea el cierre definitivo</strong> mientras existan diferencias físicas sin justificación formal o sin clasificación de estatus.
+                        <p style={{ fontSize: 12, color: '#7F1D1D', margin: '4px 0 0', lineHeight: 1.45 }}>
+                          Por estricta política operativa 3PL y responsabilidad legal, el sistema <strong style={{ color: '#991B1B' }}>bloquea el cierre definitivo</strong> mientras existan diferencias físicas sin justificación formal o sin clasificación de estatus.
                         </p>
                       </div>
                     </div>
@@ -3418,13 +3398,13 @@ export function Receiving() {
                     {/* BARRA DE HOMOLOGACIÓN RÁPIDA (ACCIÓN MASIVA) */}
                     <div style={{
                       padding: '12px 14px',
-                      background: 'rgba(30, 41, 59, 0.7)',
+                      background: '#F8FAFC',
                       borderRadius: 8,
-                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      border: '1px solid #E2E8F0',
                       marginBottom: 14,
                       fontSize: 12
                     }}>
-                      <div style={{ fontWeight: 700, color: '#38BDF8', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ fontWeight: 700, color: '#0284C7', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Zap size={14} /> Homologación Rápida (Aplicar a todas las discrepancias):
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr auto', gap: 8, alignItems: 'center' }}>
@@ -3447,7 +3427,6 @@ export function Receiving() {
                               setClosingGlobalClasif(val);
                               if (val) {
                                 const defaultText = DEFAULT_DISCREPANCY_JUSTIFICATIONS[val] || '';
-                                // Si está vacío o tenía un default anterior, auto-completar motivo
                                 if (!closingGlobalJustif.trim() || Object.values(DEFAULT_DISCREPANCY_JUSTIFICATIONS).includes(closingGlobalJustif.trim())) {
                                   setClosingGlobalJustif(defaultText);
                                 }
@@ -3456,14 +3435,14 @@ export function Receiving() {
                             }}
                             style={{
                               width: '100%',
-                              background: '#0B0F17',
-                              color: closingGlobalClasif ? '#F8FAFC' : '#94A3B8',
+                              background: '#FFFFFF',
+                              color: '#0F172A',
                               fontSize: 12,
                               height: 34,
                               paddingLeft: 32,
                               paddingRight: 8,
                               borderRadius: 6,
-                              border: closingErrorBanner && !closingGlobalClasif ? '1px solid #EF4444' : '1px solid rgba(255,255,255,0.15)'
+                              border: closingErrorBanner && !closingGlobalClasif ? '1px solid #EF4444' : '1px solid #CBD5E1'
                             }}
                           >
                             <option value="">-- Seleccionar Estatus Común --</option>
@@ -3482,13 +3461,13 @@ export function Receiving() {
                             if (closingErrorBanner) setClosingErrorBanner(null);
                           }}
                           style={{
-                            background: '#0B0F17',
-                            color: '#F8FAFC',
+                            background: '#FFFFFF',
+                            color: '#0F172A',
                             fontSize: 12,
                             height: 34,
                             padding: '4px 10px',
                             borderRadius: 6,
-                            border: closingErrorBanner && !closingGlobalJustif.trim() ? '1px solid #EF4444' : '1px solid rgba(255,255,255,0.15)'
+                            border: closingErrorBanner && !closingGlobalJustif.trim() ? '1px solid #EF4444' : '1px solid #CBD5E1'
                           }}
                         />
                         <button
@@ -3500,7 +3479,6 @@ export function Receiving() {
                               setClosingSuccessBanner(null);
                               return;
                             }
-                            // Si no escribió motivo formal manual, asignar automáticamente la justificación técnica por defecto
                             const finalJustif = closingGlobalJustif.trim() || DEFAULT_DISCREPANCY_JUSTIFICATIONS[closingGlobalClasif] || 'Diferencia física justificada y validada en andén';
                             setClosingGlobalJustif(finalJustif);
                             setClosingErrorBanner(null);
@@ -3533,22 +3511,21 @@ export function Receiving() {
                         </button>
                       </div>
 
-                      {/* MENSAJES DE FEEDBACK DE ALTO CONTRASTE (SIN ALERTS NATIVOS) */}
                       {closingErrorBanner && (
                         <div style={{
                           marginTop: 10,
                           padding: '8px 12px',
                           borderRadius: 8,
-                          background: 'rgba(239, 68, 68, 0.15)',
-                          border: '1px solid rgba(239, 68, 68, 0.45)',
-                          color: '#FCA5A5',
+                          background: '#FEF2F2',
+                          border: '1px solid #FECACA',
+                          color: '#B91C1C',
                           fontSize: 12,
                           fontWeight: 600,
                           display: 'flex',
                           alignItems: 'center',
                           gap: 8
                         }}>
-                          <AlertCircle size={16} style={{ color: '#F87171', flexShrink: 0 }} />
+                          <AlertCircle size={16} style={{ color: '#DC2626', flexShrink: 0 }} />
                           <span>{closingErrorBanner}</span>
                         </div>
                       )}
@@ -3558,16 +3535,16 @@ export function Receiving() {
                           marginTop: 10,
                           padding: '8px 12px',
                           borderRadius: 8,
-                          background: 'rgba(52, 211, 153, 0.15)',
-                          border: '1px solid rgba(52, 211, 153, 0.4)',
-                          color: '#6EE7B7',
+                          background: '#ECFDF5',
+                          border: '1px solid #A7F3D0',
+                          color: '#065F46',
                           fontSize: 12,
                           fontWeight: 600,
                           display: 'flex',
                           alignItems: 'center',
                           gap: 8
                         }}>
-                          <CheckCircle2 size={16} style={{ color: '#34D399', flexShrink: 0 }} />
+                          <CheckCircle2 size={16} style={{ color: '#059669', flexShrink: 0 }} />
                           <span>{closingSuccessBanner}</span>
                         </div>
                       )}
@@ -3576,15 +3553,15 @@ export function Receiving() {
                     {/* TABLA DE PARTIDAS CON DISCREPANCIA */}
                     <div style={{
                       borderRadius: 8,
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      background: '#0B0F17',
+                      border: '1px solid #E2E8F0',
+                      background: '#FFFFFF',
                       overflow: 'hidden',
                       maxHeight: 220,
                       overflowY: 'auto'
                     }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                         <thead>
-                          <tr style={{ background: '#1E293B', borderBottom: '1px solid rgba(255,255,255,0.08)', color: '#94A3B8', textAlign: 'left' }}>
+                          <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569', textAlign: 'left' }}>
                             <th style={{ padding: '8px 12px', fontWeight: 700 }}>SKU / Producto</th>
                             <th style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700 }}>Esperado</th>
                             <th style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700 }}>Físico</th>
@@ -3608,21 +3585,21 @@ export function Receiving() {
 
                             return (
                               <tr key={l.id} style={{
-                                borderBottom: '1px solid rgba(255,255,255,0.05)',
-                                background: isResolved ? 'rgba(52, 211, 153, 0.04)' : 'rgba(239, 68, 68, 0.06)'
+                                borderBottom: '1px solid #F1F5F9',
+                                background: isResolved ? '#F0FDF4' : '#FEF2F2'
                               }}>
                                 <td style={{ padding: '10px 12px' }}>
-                                  <div style={{ fontWeight: 700, color: '#F8FAFC', fontFamily: 'monospace' }}>{l.sku?.codigo || 'SKU'}</div>
-                                  <div style={{ fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: 160 }}>
+                                  <div style={{ fontWeight: 700, color: '#0F172A', fontFamily: 'monospace' }}>{l.sku?.codigo || 'SKU'}</div>
+                                  <div style={{ fontSize: 11, color: '#64748B', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: 160 }}>
                                     {l.sku?.descripcion || 'Sin descripción'}
                                   </div>
                                 </td>
-                                <td style={{ padding: '10px 10px', textAlign: 'center', color: '#94A3B8', fontWeight: 700 }}>
+                                <td style={{ padding: '10px 10px', textAlign: 'center', color: '#475569', fontWeight: 700 }}>
                                   {esp}
                                 </td>
                                 <td style={{ padding: '10px 10px', textAlign: 'center' }}>
-                                  <span style={{ color: '#34D399', fontWeight: 700 }}>{rec}</span>
-                                  {dan > 0 && <span style={{ color: '#F87171', fontSize: 11, display: 'block' }}>+{dan} merma</span>}
+                                  <span style={{ color: '#059669', fontWeight: 700 }}>{rec}</span>
+                                  {dan > 0 && <span style={{ color: '#DC2626', fontSize: 11, display: 'block' }}>+{dan} merma</span>}
                                 </td>
                                 <td style={{ padding: '10px 10px', textAlign: 'center' }}>
                                   <span style={{
@@ -3631,8 +3608,8 @@ export function Receiving() {
                                     borderRadius: 4,
                                     fontSize: 11,
                                     fontWeight: 800,
-                                    background: dif < 0 ? 'rgba(245, 158, 11, 0.2)' : dif > 0 ? 'rgba(56, 189, 248, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                                    color: dif < 0 ? '#FBBF24' : dif > 0 ? '#38BDF8' : '#F87171'
+                                    background: dif < 0 ? '#FEF3C7' : dif > 0 ? '#E0F2FE' : '#FEE2E2',
+                                    color: dif < 0 ? '#D97706' : dif > 0 ? '#0284C7' : '#DC2626'
                                   }}>
                                     {dif > 0 ? `+${dif}` : dif < 0 ? `${dif}` : `${dan} daño`}
                                   </span>
@@ -3665,14 +3642,14 @@ export function Receiving() {
                                       }}
                                       style={{
                                         width: '100%',
-                                        background: '#1E293B',
-                                        color: curResolution.clasificacion ? '#F8FAFC' : '#94A3B8',
+                                        background: '#FFFFFF',
+                                        color: curResolution.clasificacion ? '#0F172A' : '#64748B',
                                         fontSize: 11,
                                         height: 32,
                                         paddingLeft: 28,
                                         paddingRight: 6,
                                         borderRadius: 6,
-                                        border: !effectiveClasif ? '1px solid #EF4444' : '1px solid rgba(52, 211, 153, 0.4)'
+                                        border: !effectiveClasif ? '1px solid #EF4444' : '1px solid #CBD5E1'
                                       }}
                                     >
                                       <option value="">-- Seleccionar Estatus --</option>
@@ -3699,13 +3676,13 @@ export function Receiving() {
                                     }}
                                     style={{
                                       width: '100%',
-                                      background: '#1E293B',
-                                      color: '#F8FAFC',
+                                      background: '#FFFFFF',
+                                      color: '#0F172A',
                                       fontSize: 11,
                                       height: 32,
                                       padding: '2px 8px',
                                       borderRadius: 6,
-                                      border: !effectiveJustif.trim() ? '1px solid #EF4444' : '1px solid rgba(52, 211, 153, 0.4)'
+                                      border: !effectiveJustif.trim() ? '1px solid #EF4444' : '1px solid #CBD5E1'
                                     }}
                                   />
                                 </td>
@@ -3720,8 +3697,8 @@ export function Receiving() {
 
                 {/* CAMPO NOTAS U OBSERVACIONES */}
                 <div className="form-group" style={{ marginBottom: 24 }}>
-                  <label className="form-label" style={{ fontSize: 12, fontWeight: 700, color: '#F8FAFC', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Edit3 size={14} style={{ color: '#2DD4BF' }} /> Notas u Observaciones de Cierre (Opcional)
+                  <label className="form-label" style={{ fontSize: 12, fontWeight: 700, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Edit3 size={14} style={{ color: '#0D9488' }} /> Notas u Observaciones de Cierre (Opcional)
                   </label>
                   <textarea 
                     className="form-input" 
@@ -3730,9 +3707,9 @@ export function Receiving() {
                     value={closingNotes} 
                     onChange={e => setClosingNotes(e.target.value)} 
                     style={{ 
-                      background: '#0B0F17', 
-                      color: '#F8FAFC', 
-                      borderColor: 'rgba(255, 255, 255, 0.15)',
+                      background: '#FFFFFF', 
+                      color: '#0F172A', 
+                      borderColor: '#CBD5E1',
                       fontSize: 13,
                       borderRadius: 8,
                       padding: '12px 14px'
@@ -3745,16 +3722,16 @@ export function Receiving() {
                   display: 'flex', 
                   justifyContent: 'space-between', 
                   alignItems: 'center', 
-                  borderTop: '1px solid rgba(255, 255, 255, 0.1)', 
+                  borderTop: '1px solid #E2E8F0', 
                   paddingTop: 16,
                   paddingBottom: 4,
                   marginTop: 16,
                   position: 'sticky',
                   bottom: 0,
-                  background: '#0F172A',
+                  background: '#FFFFFF',
                   zIndex: 10
                 }}>
-                  <div style={{ fontSize: 12, color: hasDiscrepancies && !allDiscrepanciesResolved ? '#F87171' : '#94A3B8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ fontSize: 12, color: hasDiscrepancies && !allDiscrepanciesResolved ? '#DC2626' : '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
                     {hasDiscrepancies && !allDiscrepanciesResolved ? (
                       <>
                         <Lock size={14} />
@@ -3762,7 +3739,7 @@ export function Receiving() {
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 size={14} style={{ color: '#34D399' }} />
+                        <CheckCircle2 size={14} style={{ color: '#059669' }} />
                         <span>Todo listo para sellado oficial</span>
                       </>
                     )}
@@ -3772,7 +3749,7 @@ export function Receiving() {
                       type="button" 
                       className="btn btn-ghost" 
                       onClick={() => setClosingReceipt(null)}
-                      style={{ background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)', padding: '10px 18px', fontSize: 13 }}
+                      style={{ background: '#FFFFFF', color: '#475569', borderColor: '#CBD5E1', padding: '10px 18px', fontSize: 13 }}
                     >
                       Cancelar
                     </button>
@@ -3781,15 +3758,15 @@ export function Receiving() {
                       className="btn btn-primary"
                       disabled={submitting || !allDiscrepanciesResolved}
                       style={{
-                        background: allDiscrepanciesResolved ? '#10b981' : '#334155',
-                        borderColor: allDiscrepanciesResolved ? '#10b981' : '#475569',
-                        color: allDiscrepanciesResolved ? '#FFFFFF' : '#94A3B8',
+                        background: allDiscrepanciesResolved ? '#059669' : '#94A3B8',
+                        borderColor: allDiscrepanciesResolved ? '#059669' : '#94A3B8',
+                        color: '#FFFFFF',
                         cursor: allDiscrepanciesResolved ? 'pointer' : 'not-allowed',
                         fontWeight: 800,
                         padding: '10px 22px',
                         fontSize: 13,
                         borderRadius: 8,
-                        boxShadow: allDiscrepanciesResolved ? '0 4px 14px rgba(16, 185, 129, 0.3)' : 'none',
+                        boxShadow: allDiscrepanciesResolved ? '0 2px 8px rgba(5, 150, 105, 0.25)' : 'none',
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 6
@@ -3800,7 +3777,7 @@ export function Receiving() {
                       ) : allDiscrepanciesResolved ? (
                         <><CheckSquare size={16} /> Confirmar y Generar Reporte de Cierre</>
                       ) : (
-                        <><Lock size={16} style={{ color: '#F87171' }} /> Cierre Bloqueado ({unresolvedCount} pendiente{unresolvedCount > 1 ? 's' : ''})</>
+                        <><Lock size={16} style={{ color: '#FEF2F2' }} /> Cierre Bloqueado ({unresolvedCount} pendiente{unresolvedCount > 1 ? 's' : ''})</>
                       )}
                     </button>
                   </div>
@@ -3883,81 +3860,81 @@ export function Receiving() {
             {/* LEFT WORKSPACE: KPIs, DOCK REC-01 CARD AND TABLE */}
             <div className="stitch-split-main">
               
-              {/* 3 STITCH KPI CARDS MATCHING MOCKUP 1:1 */}
+              {/* 3 STITCH KPI CARDS MATCHING MOCKUP 1:1 (MINIMALIST WHITE) */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 20 }}>
                 {/* CARD 1: CONFORME (RECIBIDO) */}
-                <div className="stitch-kpi-card" style={{ borderColor: 'rgba(16, 185, 129, 0.3)', background: 'linear-gradient(135deg, #0F172A 0%, rgba(16,185,129,0.05) 100%)' }}>
+                <div className="stitch-kpi-card" style={{ borderColor: '#A7F3D0', background: '#FFFFFF' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#34D399', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#059669', display: 'flex', alignItems: 'center', gap: 6 }}>
                       <CheckCircle2 size={15} /> CONFORME (RECIBIDO)
                     </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(16, 185, 129, 0.2)', color: '#34D399' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#ECFDF5', color: '#059669' }}>
                       +12% hoy
                     </span>
                   </div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#34D399', marginTop: 8 }}>
-                    {globalConforme.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>PZA</span>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#059669', marginTop: 8 }}>
+                    {globalConforme.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B' }}>PZA</span>
                   </div>
                 </div>
 
                 {/* CARD 2: CUARENTENA (REVISIÓN) */}
-                <div className="stitch-kpi-card" style={{ borderColor: 'rgba(245, 158, 11, 0.3)', background: 'linear-gradient(135deg, #0F172A 0%, rgba(245,158,11,0.05) 100%)' }}>
+                <div className="stitch-kpi-card" style={{ borderColor: '#FDE68A', background: '#FFFFFF' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#FBBF24', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#D97706', display: 'flex', alignItems: 'center', gap: 6 }}>
                       <AlertTriangle size={15} /> CUARENTENA (REVISIÓN)
                     </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.2)', color: '#FBBF24' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#FFFBEB', color: '#D97706' }}>
                       Pendiente QA
                     </span>
                   </div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#FBBF24', marginTop: 8 }}>
-                    {globalCuarentena.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>PZA</span>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#D97706', marginTop: 8 }}>
+                    {globalCuarentena.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B' }}>PZA</span>
                   </div>
                 </div>
 
                 {/* CARD 3: STOCK LIBRE (PUTAWAY) */}
-                <div className="stitch-kpi-card" style={{ borderColor: 'rgba(56, 189, 248, 0.3)', background: 'linear-gradient(135deg, #0F172A 0%, rgba(56,189,248,0.05) 100%)' }}>
+                <div className="stitch-kpi-card" style={{ borderColor: '#BAE6FD', background: '#FFFFFF' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#38BDF8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#0284C7', display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Box size={15} /> STOCK LIBRE (PUTAWAY)
                     </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(56, 189, 248, 0.2)', color: '#38BDF8' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#F0F9FF', color: '#0284C7' }}>
                       Listo p/ Alojamiento
                     </span>
                   </div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#38BDF8', marginTop: 8 }}>
-                    {globalPendiente.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>Uds de {globalEsperado.toLocaleString()}</span>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#0284C7', marginTop: 8 }}>
+                    {globalPendiente.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B' }}>Uds de {globalEsperado.toLocaleString()}</span>
                   </div>
                 </div>
               </div>
 
-              {/* DOCK REC-01 ACTIVO WIDGET 1:1 MATCH */}
+              {/* DOCK REC-01 ACTIVO WIDGET 1:1 MATCH (LIGHT THEME) */}
               {activeReceipt && (
                 <div className="stitch-dock-card" style={{ marginBottom: 20 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#34D399', boxShadow: '0 0 8px #34D399' }} />
-                      <span style={{ fontWeight: 800, fontSize: 15, color: '#F8FAFC' }}>Dock REC-01 Activo</span>
+                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#059669', boxShadow: '0 0 8px rgba(5, 150, 105, 0.4)' }} />
+                      <span style={{ fontWeight: 800, fontSize: 15, color: '#0F172A' }}>Dock REC-01 Activo</span>
                     </div>
-                    <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#2DD4BF', background: 'rgba(13,148,136,0.15)', border: '1px solid rgba(45,212,191,0.3)', padding: '2px 10px', borderRadius: 4, fontWeight: 700 }}>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#0D9488', background: '#F0FDFA', border: '1px solid #CCFBF1', padding: '2px 10px', borderRadius: 4, fontWeight: 700 }}>
                       {activeReceipt.codigo}
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
                     <div>
-                      <div style={{ fontSize: 12, color: '#94A3B8' }}>Progreso de Descarga</div>
-                      <div style={{ fontSize: 22, fontWeight: 800, color: '#F8FAFC', marginTop: 2 }}>
-                        {activeProgress}% Completado <span style={{ fontSize: 13, fontWeight: 500, color: '#94A3B8' }}>({activeRecCount} / {activeEspCount} Bultos)</span>
+                      <div style={{ fontSize: 12, color: '#64748B' }}>Progreso de Descarga</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>
+                        {activeProgress}% Completado <span style={{ fontSize: 13, fontWeight: 500, color: '#64748B' }}>({activeRecCount} / {activeEspCount} Bultos)</span>
                       </div>
                     </div>
                     <div style={{ textAlign: 'right', fontSize: 12 }}>
-                      <div style={{ color: '#94A3B8', fontSize: 10, letterSpacing: '0.05em' }}>OPERADOR A CARGO</div>
-                      <div style={{ fontWeight: 700, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end', marginTop: 2 }}>
-                        <UserCheck size={14} style={{ color: '#2DD4BF' }} /> {activeReceipt.nombreChofer || 'Miguel Rodríguez'}
+                      <div style={{ color: '#64748B', fontSize: 10, letterSpacing: '0.05em' }}>OPERADOR A CARGO</div>
+                      <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end', marginTop: 2 }}>
+                        <UserCheck size={14} style={{ color: '#0D9488' }} /> {activeReceipt.nombreChofer || 'Miguel Rodríguez'}
                       </div>
-                      <div style={{ color: '#94A3B8', fontSize: 10, letterSpacing: '0.05em', marginTop: 4 }}>ETA FIN DE DESCARGA</div>
-                      <div style={{ fontWeight: 600, color: '#CBD5E1', marginTop: 1 }}>14:30 hrs (-0 min)</div>
+                      <div style={{ color: '#64748B', fontSize: 10, letterSpacing: '0.05em', marginTop: 4 }}>ETA FIN DE DESCARGA</div>
+                      <div style={{ fontWeight: 600, color: '#334155', marginTop: 1 }}>14:30 hrs (-0 min)</div>
                     </div>
                   </div>
 
@@ -3970,11 +3947,11 @@ export function Receiving() {
               {/* STAGING LINES TABLE CONTAINER */}
               <div className="card" style={{ padding: 20 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#F8FAFC' }}>Líneas de Recepción (Staging)</h3>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#0F172A' }}>Líneas de Recepción (Staging)</h3>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     {/* BUSCADOR EN VIVO DE LA TABLA */}
-                    <div style={{ position: 'relative', minWidth: 260 }}>
-                      <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
+                    <div style={{ position: 'relative', minWidth: 240 }}>
+                      <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#64748B' }} />
                       <input 
                         type="text"
                         className="form-input"
@@ -3989,13 +3966,13 @@ export function Receiving() {
                             setSearchParams({});
                           }
                         }}
-                        style={{ paddingLeft: 32, paddingRight: search ? 28 : 10, height: 34, fontSize: 12, background: '#1e293b', borderColor: '#334155', color: '#f8fafc', borderRadius: 6 }}
+                        style={{ paddingLeft: 32, paddingRight: search ? 28 : 10, height: 34, fontSize: 12, background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', borderRadius: 6 }}
                       />
                       {search && (
                         <button 
                           type="button" 
                           onClick={() => { setSearch(''); setSearchParams({}); }}
-                          style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 2, display: 'flex' }}
+                          style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer', padding: 2, display: 'flex' }}
                           title="Limpiar búsqueda"
                         >
                           <X size={14} />
@@ -4003,18 +3980,39 @@ export function Receiving() {
                       )}
                     </div>
 
-                    {/* FILTRO DE ESTADO ESTANDARIZADO (TAREA 5) */}
+                    {/* FILTRO DE ESTADO ESTANDARIZADO */}
                     <select
                       className="form-select"
                       value={filterEstado}
                       onChange={e => setFilterEstado(e.target.value)}
-                      style={{ height: 34, fontSize: 12, background: '#1e293b', borderColor: '#334155', color: '#f8fafc', borderRadius: 6, padding: '4px 10px' }}
+                      style={{ height: 34, fontSize: 12, background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', borderRadius: 6, padding: '4px 10px' }}
                     >
                       <option value="">Todos los Estados ({receipts.length})</option>
                       <option value="PENDIENTE_ARRIBO">Pendiente de Arribo ({receipts.filter(r => ['PENDIENTE_ARRIBO', 'PENDIENTE'].includes(r.estado)).length})</option>
                       <option value="EN_PROCESO_CONTEO">En Proceso de Conteo ({receipts.filter(r => ['EN_PROCESO_CONTEO', 'EN_PROCESO', 'COMPLETO'].includes(r.estado)).length})</option>
                       <option value="CERRADA">Cerrada ({receipts.filter(r => ['CERRADA', 'CERRADO'].includes(r.estado)).length})</option>
                     </select>
+
+                    {/* BOTÓN COLAPSAR / EXPANDIR PANEL DE SUGERENCIAS PUTAWAY */}
+                    <button
+                      type="button"
+                      onClick={toggleSidebar}
+                      className="btn btn-sm"
+                      style={{
+                        background: sidebarCollapsed ? '#F0FDFA' : '#F8FAFC',
+                        borderColor: sidebarCollapsed ? '#2DD4BF' : '#CBD5E1',
+                        color: sidebarCollapsed ? '#0D9488' : '#475569',
+                        fontWeight: 600,
+                        height: 34,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                      title={sidebarCollapsed ? "Mostrar panel lateral de sugerencias Putaway" : "Ocultar panel lateral de sugerencias"}
+                    >
+                      <Sparkles size={14} style={{ color: '#0D9488' }} />
+                      {sidebarCollapsed ? 'Ver Sugerencias AI' : 'Ocultar Sugerencias'}
+                    </button>
 
                     <button 
                       type="button" 
@@ -4035,8 +4033,8 @@ export function Receiving() {
                   </div>
                 </div>
 
-                {/* BARRA DE BANDERAS DE ESTATUS OPERATIVO RÁPIDO (TAREA 5) */}
-                <div style={{ display: 'flex', gap: 8, padding: '0 16px 12px 16px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {/* BARRA DE BANDERAS DE ESTATUS OPERATIVO RÁPIDO */}
+                <div style={{ display: 'flex', gap: 8, padding: '0 0 14px 0', flexWrap: 'wrap', alignItems: 'center' }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                     Filtrar por Bandera:
                   </span>
@@ -4048,9 +4046,9 @@ export function Receiving() {
                     style={{
                       padding: '4px 11px',
                       borderRadius: 20,
-                      border: !filterEstado ? '1.5px solid #2DD4BF' : '1px solid rgba(255,255,255,0.1)',
-                      background: !filterEstado ? 'rgba(45, 212, 191, 0.15)' : 'rgba(255,255,255,0.03)',
-                      color: !filterEstado ? '#2DD4BF' : '#94A3B8',
+                      border: !filterEstado ? '1.5px solid #0D9488' : '1px solid #E2E8F0',
+                      background: !filterEstado ? '#F0FDFA' : '#FFFFFF',
+                      color: !filterEstado ? '#0D9488' : '#64748B',
                       fontSize: 11,
                       fontWeight: 700,
                       cursor: 'pointer',
@@ -4070,9 +4068,9 @@ export function Receiving() {
                     style={{
                       padding: '4px 11px',
                       borderRadius: 20,
-                      border: filterEstado === 'PENDIENTE_ARRIBO' ? '1.5px solid #0284C7' : '1px solid rgba(2, 132, 199, 0.3)',
-                      background: filterEstado === 'PENDIENTE_ARRIBO' ? 'rgba(2, 132, 199, 0.25)' : 'rgba(2, 132, 199, 0.08)',
-                      color: '#38BDF8',
+                      border: filterEstado === 'PENDIENTE_ARRIBO' ? '1.5px solid #0284C7' : '1px solid #E2E8F0',
+                      background: filterEstado === 'PENDIENTE_ARRIBO' ? '#E0F2FE' : '#FFFFFF',
+                      color: filterEstado === 'PENDIENTE_ARRIBO' ? '#0369A1' : '#64748B',
                       fontSize: 11,
                       fontWeight: 700,
                       cursor: 'pointer',
@@ -4093,9 +4091,9 @@ export function Receiving() {
                     style={{
                       padding: '4px 11px',
                       borderRadius: 20,
-                      border: filterEstado === 'EN_PROCESO_CONTEO' ? '1.5px solid #D97706' : '1px solid rgba(217, 119, 6, 0.3)',
-                      background: filterEstado === 'EN_PROCESO_CONTEO' ? 'rgba(217, 119, 6, 0.25)' : 'rgba(217, 119, 6, 0.08)',
-                      color: '#FBBF24',
+                      border: filterEstado === 'EN_PROCESO_CONTEO' ? '1.5px solid #D97706' : '1px solid #E2E8F0',
+                      background: filterEstado === 'EN_PROCESO_CONTEO' ? '#FEF3C7' : '#FFFFFF',
+                      color: filterEstado === 'EN_PROCESO_CONTEO' ? '#B45309' : '#64748B',
                       fontSize: 11,
                       fontWeight: 700,
                       cursor: 'pointer',
@@ -4116,9 +4114,9 @@ export function Receiving() {
                     style={{
                       padding: '4px 11px',
                       borderRadius: 20,
-                      border: filterEstado === 'CERRADA' ? '1.5px solid #059669' : '1px solid rgba(5, 150, 105, 0.3)',
-                      background: filterEstado === 'CERRADA' ? 'rgba(5, 150, 105, 0.25)' : 'rgba(5, 150, 105, 0.08)',
-                      color: '#34D399',
+                      border: filterEstado === 'CERRADA' ? '1.5px solid #059669' : '1px solid #E2E8F0',
+                      background: filterEstado === 'CERRADA' ? '#D1FAE5' : '#FFFFFF',
+                      color: filterEstado === 'CERRADA' ? '#047857' : '#64748B',
                       fontSize: 11,
                       fontWeight: 700,
                       cursor: 'pointer',
@@ -4557,8 +4555,8 @@ export function Receiving() {
                                             <div style={{
                                               padding: '12px 14px',
                                               borderRadius: 10,
-                                              background: isCurrent ? step.bgActive : isCompleted ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.02)',
-                                              border: isCurrent ? `1.5px solid ${step.borderActive}` : isCompleted ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255, 255, 255, 0.06)',
+                                              background: isCurrent ? '#F0FDFA' : isCompleted ? '#ECFDF5' : '#F8FAFC',
+                                              border: isCurrent ? '1.5px solid #2DD4BF' : isCompleted ? '1px solid #A7F3D0' : '1px solid #E2E8F0',
                                               transition: 'all 0.2s',
                                               display: 'flex',
                                               alignItems: 'center',
@@ -4571,33 +4569,33 @@ export function Receiving() {
                                                 display: 'flex',
                                                 alignItems: 'center',
                                                 justifyContent: 'center',
-                                                background: isCompleted ? '#059669' : isCurrent ? step.color : 'rgba(255, 255, 255, 0.08)',
-                                                color: isCompleted || isCurrent ? '#0B0F17' : '#64748B',
+                                                background: isCompleted ? '#059669' : isCurrent ? step.color : '#E2E8F0',
+                                                color: isCompleted || isCurrent ? '#FFFFFF' : '#64748B',
                                                 flexShrink: 0,
                                                 fontWeight: 800,
                                                 boxShadow: isCurrent ? `0 0 12px ${step.color}50` : 'none'
                                               }}>
-                                                {isCompleted ? <CheckCircle2 size={16} color="#FFFFFF" /> : <StepIcon size={16} color={isCurrent ? '#0B0F17' : '#64748B'} />}
+                                                {isCompleted ? <CheckCircle2 size={16} color="#FFFFFF" /> : <StepIcon size={16} color={isCurrent ? '#FFFFFF' : '#64748B'} />}
                                               </div>
                                               <div style={{ minWidth: 0, flex: 1 }}>
                                                 <div style={{
                                                   fontSize: 12,
                                                   fontWeight: isCurrent ? 800 : 700,
-                                                  color: isCurrent ? '#F8FAFC' : isCompleted ? '#34D399' : '#64748B',
+                                                  color: isCurrent ? '#0F172A' : isCompleted ? '#059669' : '#64748B',
                                                   whiteSpace: 'nowrap',
                                                   overflow: 'hidden',
                                                   textOverflow: 'ellipsis'
                                                 }}>
                                                   {step.label}
                                                 </div>
-                                                <div style={{ fontSize: 10, color: isCurrent ? '#CBD5E1' : '#64748B', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                <div style={{ fontSize: 10, color: isCurrent ? '#0D9488' : '#94A3B8', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                                   {isCompleted ? 'Completado' : isCurrent ? 'Fase Activa' : step.shortDesc}
                                                 </div>
                                               </div>
                                             </div>
 
                                             {idx < steps.length - 1 && (
-                                              <div style={{ color: isCompleted ? '#10B981' : 'rgba(255, 255, 255, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                              <div style={{ color: isCompleted ? '#059669' : '#CBD5E1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                                 <ArrowRight size={16} />
                                               </div>
                                             )}
@@ -4638,10 +4636,10 @@ export function Receiving() {
                                       <Lock size={18} />
                                     </div>
                                     <div>
-                                      <div style={{ fontSize: 13, fontWeight: 800, color: isClosed ? '#cbd5e1' : '#fef3c7', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <div style={{ fontSize: 13, fontWeight: 800, color: isClosed ? '#334155' : '#92400E', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>
                                         {isClosed ? 'RECEPCIÓN CERRADA — BLOQUEO DEFINITIVO DE AUDITORÍA' : 'PREVIO CONFIRMADO Y BLOQUEADO CONTRA EDICIÓN'}
                                       </div>
-                                      <div style={{ fontSize: 11, color: isClosed ? '#94a3b8' : '#fde68a', marginTop: 2 }}>
+                                      <div style={{ fontSize: 11, color: isClosed ? '#64748B' : '#78350F', marginTop: 2 }}>
                                         {isClosed
                                           ? 'Esta recepción ha sido CERRADA y finiquitada. El inventario ya fue ingresado al almacén; por normativa WMS ni el administrador puede alterar ni desbloquear sus partidas históricas.'
                                           : `Confirmado el ${r.fechaBloqueo ? new Date(r.fechaBloqueo).toLocaleString('es-MX') : 'recientemente'} por ${r.bloqueadoPor || 'Operaciones WMS'}. La factura, SKUs y cantidades esperadas están protegidas.`
@@ -4712,15 +4710,15 @@ export function Receiving() {
                                       background: 'rgba(13, 148, 136, 0.2)',
                                       color: '#2dd4bf',
                                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                      border: '1px solid rgba(13, 148, 136, 0.4)'
+                                      border: '1px solid #99F6E4'
                                     }}>
                                       <Unlock size={18} />
                                     </div>
                                     <div>
-                                      <div style={{ fontSize: 13, fontWeight: 800, color: '#ccfbf1', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <div style={{ fontSize: 13, fontWeight: 800, color: '#0F766E', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>
                                         MODO CAPTURA Y EDICIÓN LIBRE (PREVIO ABIERTO)
                                       </div>
-                                      <div style={{ fontSize: 11, color: '#99f6e4', marginTop: 2 }}>
+                                      <div style={{ fontSize: 11, color: '#115E59', marginTop: 2 }}>
                                         Puedes ajustar partidas, agregar productos o modificar factura. Confirma el previo una vez que la unidad arribe a andén para bloquearlo.
                                       </div>
                                     </div>
@@ -4759,7 +4757,7 @@ export function Receiving() {
                                     {r.tipoImportacion && r.tipoImportacion !== 'NO_APLICA' && (
                                       <span style={{ color: '#38bdf8', fontWeight: 600 }}> ({r.tipoImportacion})</span>
                                     )}
-                                    <span>· Factura de Respaldo: <strong style={{ color: '#f8fafc' }}>{r.facturaRespaldo || r.ocReferencia || 'N/A'}</strong></span>
+                                    <span>· Factura de Respaldo: <strong style={{ color: '#0F172A' }}>{r.facturaRespaldo || r.ocReferencia || 'N/A'}</strong></span>
                                     {clientObj?.giro && (
                                       <span style={{
                                         fontSize: 10,
@@ -4788,7 +4786,7 @@ export function Receiving() {
                                       className="btn btn-secondary btn-sm"
                                       disabled
                                       title="Edición bloqueada: Previo confirmado. Desbloquea como supervisor para editar."
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px', borderRadius: '6px', background: '#1e293b', borderColor: 'rgba(255,255,255,0.1)', color: '#64748b', fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px', borderRadius: '6px', background: '#F1F5F9', borderColor: '#E2E8F0', color: '#94A3B8', fontWeight: 600, cursor: 'not-allowed', opacity: 0.7 }}
                                     >
                                       <Lock size={13} style={{ color: '#64748b' }} /> Previo Bloqueado
                                     </button>
@@ -4797,7 +4795,7 @@ export function Receiving() {
                                       type="button"
                                       className="btn btn-secondary btn-sm"
                                       onClick={() => setEditReceiptModal(r)}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px', borderRadius: '6px', background: '#1e293b', borderColor: 'rgba(255,255,255,0.15)', color: '#f8fafc', fontWeight: 600 }}
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px', borderRadius: '6px', background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', fontWeight: 600 }}
                                     >
                                       <Settings size={14} style={{ color: '#2dd4bf' }} /> Editar Previo (Factura / Importación)
                                     </button>
@@ -4808,7 +4806,7 @@ export function Receiving() {
                                     type="button"
                                     className="btn btn-sm"
                                     onClick={() => handleOpenPutawayModal(r)}
-                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#0f172a', color: '#38bdf8', border: '1px solid #0284c7', fontWeight: 600, padding: '6px 12px', borderRadius: '6px' }}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#F0F9FF', color: '#0284C7', border: '1px solid #BAE6FD', fontWeight: 600, padding: '6px 12px', borderRadius: '6px' }}
                                   >
                                     <Box size={14} /> Alojamiento / Putaway a Racks
                                   </button>
@@ -4819,7 +4817,7 @@ export function Receiving() {
                                       type="button"
                                       className="btn btn-sm"
                                       onClick={() => setShowAddLineModal({ receiptId: r.id, clienteId: r.clienteId })}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#1e293b', color: '#f8fafc', border: '1px solid #475569', fontWeight: 600, padding: '6px 12px', borderRadius: '6px' }}
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#FFFFFF', color: '#0F172A', border: '1px solid #CBD5E1', fontWeight: 600, padding: '6px 12px', borderRadius: '6px' }}
                                     >
                                       <PlusCircle size={14} /> Agregar Producto Manual
                                     </button>
@@ -5427,7 +5425,7 @@ export function Receiving() {
                                           }
                                         }));
                                       }}
-                                      style={{ height: 28, fontSize: 11, padding: '2px 8px', minWidth: 110, background: '#0F172A', color: '#34D399', borderColor: 'rgba(52, 211, 153, 0.3)' }}
+                                      style={{ height: 28, fontSize: 11, padding: '2px 8px', minWidth: 110, background: '#FFFFFF', color: '#059669', borderColor: '#CBD5E1' }}
                                     >
                                       {locations.map((loc: any) => (
                                         <option key={loc.id} value={loc.id}>{loc.codigo} ({loc.tipoUbicacion})</option>
@@ -5452,7 +5450,7 @@ export function Receiving() {
                                           }
                                         }));
                                       }}
-                                      style={{ height: 28, fontSize: 11, padding: '2px 8px', minWidth: 110, background: '#0F172A', color: '#F87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                                      style={{ height: 28, fontSize: 11, padding: '2px 8px', minWidth: 110, background: '#FFFFFF', color: '#DC2626', borderColor: '#CBD5E1' }}
                                     >
                                       {locations.map((loc: any) => (
                                         <option key={loc.id} value={loc.id}>{loc.codigo} ({loc.tipoUbicacion})</option>
@@ -5596,8 +5594,8 @@ export function Receiving() {
                                                             width: 100,
                                                             height: 25,
                                                             fontSize: 11,
-                                                            background: '#0F172A',
-                                                            color: '#F8FAFC',
+                                                            background: '#FFFFFF',
+                                                            color: '#0F172A',
                                                             border: !draft.lote?.trim() ? '1.5px solid #F59E0B' : '1.5px solid #10B981',
                                                             borderRadius: 5,
                                                             padding: '2px 7px',
@@ -5620,8 +5618,8 @@ export function Receiving() {
                                                           style={{
                                                             height: 25,
                                                             fontSize: 11,
-                                                            background: '#0F172A',
-                                                            color: isExpired ? '#EF4444' : '#F8FAFC',
+                                                            background: '#FFFFFF',
+                                                            color: isExpired ? '#DC2626' : '#0F172A',
                                                             border: isExpired ? '1.5px solid #EF4444' : (!draft.fechaVencimiento ? '1.5px solid #F59E0B' : '1.5px solid #10B981'),
                                                             borderRadius: 5,
                                                             padding: '2px 5px',
@@ -5670,7 +5668,7 @@ export function Receiving() {
                                                 </div>
                                               ) : (
                                                 <div>
-                                                  <div style={{ color: '#F8FAFC', fontSize: 13, fontWeight: 700 }}>
+                                                  <div style={{ color: '#0F172A', fontSize: 13, fontWeight: 700 }}>
                                                     {totalRecibido} / {esperada}
                                                   </div>
                                                   <div className="stitch-mini-progress" style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, margin: '4px 0 2px 0', overflow: 'hidden' }}>
@@ -5704,7 +5702,7 @@ export function Receiving() {
                                                     const cur = typeof draft.cantidadConforme === 'number' ? draft.cantidadConforme : 0;
                                                     handleMatrixChange(r.id, l.id, 'cantidadConforme', Math.max(0, cur - 1));
                                                   }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#1E293B', border: '1px solid #334155', color: '#94A3B8', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
+                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
                                                 >
                                                   -
                                                 </button>
@@ -5722,8 +5720,8 @@ export function Receiving() {
                                                     textAlign: 'center',
                                                     fontWeight: 700,
                                                     fontSize: 13,
-                                                    background: '#0F172A',
-                                                    color: '#34D399',
+                                                    background: '#FFFFFF',
+                                                    color: '#059669',
                                                     border: draftConf > 0 ? '1.5px solid #10B981' : '1px solid rgba(52, 211, 153, 0.3)',
                                                     borderRadius: 5,
                                                     boxShadow: draftConf > 0 ? '0 0 6px rgba(16, 185, 129, 0.25)' : 'none'
@@ -5736,7 +5734,7 @@ export function Receiving() {
                                                     const cur = typeof draft.cantidadConforme === 'number' ? draft.cantidadConforme : 0;
                                                     handleMatrixChange(r.id, l.id, 'cantidadConforme', cur + 1);
                                                   }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#1E293B', border: '1px solid #334155', color: '#94A3B8', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
+                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
                                                 >
                                                   +
                                                 </button>
@@ -5756,7 +5754,7 @@ export function Receiving() {
                                                     const cur = typeof draft.cantidadNoConforme === 'number' ? draft.cantidadNoConforme : 0;
                                                     handleMatrixChange(r.id, l.id, 'cantidadNoConforme', Math.max(0, cur - 1));
                                                   }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#1E293B', border: '1px solid #334155', color: '#94A3B8', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
+                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
                                                 >
                                                   -
                                                 </button>
@@ -5774,8 +5772,8 @@ export function Receiving() {
                                                     textAlign: 'center',
                                                     fontWeight: 700,
                                                     fontSize: 13,
-                                                    background: '#0F172A',
-                                                    color: draftNC > 0 ? '#F87171' : '#94A3B8',
+                                                    background: '#FFFFFF',
+                                                    color: draftNC > 0 ? '#DC2626' : '#94A3B8',
                                                     border: draftNC > 0 ? '1.5px solid #EF4444' : '1px solid rgba(148, 163, 184, 0.25)',
                                                     borderRadius: 5,
                                                     boxShadow: draftNC > 0 ? '0 0 6px rgba(239, 68, 68, 0.25)' : 'none'
@@ -5788,7 +5786,7 @@ export function Receiving() {
                                                     const cur = typeof draft.cantidadNoConforme === 'number' ? draft.cantidadNoConforme : 0;
                                                     handleMatrixChange(r.id, l.id, 'cantidadNoConforme', cur + 1);
                                                   }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#1E293B', border: '1px solid #334155', color: '#94A3B8', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
+                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
                                                 >
                                                   +
                                                 </button>
@@ -6326,11 +6324,11 @@ export function Receiving() {
                                         </div>
                                         <div>
                                           <span style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Conforme Tecleado:</span>{' '}
-                                          <strong style={{ fontSize: 14, color: '#34D399', fontWeight: 800 }}>+{sumConforme} pzas</strong>
+                                          <strong style={{ fontSize: 14, color: '#059669', fontWeight: 800 }}>+{sumConforme} pzas</strong>
                                         </div>
                                         <div>
                                           <span style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Merma / Dañado:</span>{' '}
-                                          <strong style={{ fontSize: 14, color: sumNoConforme > 0 ? '#F87171' : '#94A3B8', fontWeight: 800 }}>+{sumNoConforme} pzas</strong>
+                                          <strong style={{ fontSize: 14, color: sumNoConforme > 0 ? '#DC2626' : '#64748B', fontWeight: 800 }}>+{sumNoConforme} pzas</strong>
                                         </div>
                                         {!isBlind && (
                                           <div>
@@ -6352,9 +6350,9 @@ export function Receiving() {
                                           disabled={savingMatrix[r.id] || activeCount === 0}
                                           onClick={() => handleSaveMatrixReception(r)}
                                           style={{
-                                            background: activeCount > 0 ? 'linear-gradient(135deg, #059669 0%, #047857 100%)' : '#1E293B',
-                                            border: activeCount > 0 ? '1.5px solid #10B981' : '1px solid #475569',
-                                            color: activeCount > 0 ? '#FFFFFF' : '#64748B',
+                                            background: activeCount > 0 ? '#059669' : '#F1F5F9',
+                                            border: activeCount > 0 ? '1.5px solid #059669' : '1px solid #CBD5E1',
+                                            color: activeCount > 0 ? '#FFFFFF' : '#94A3B8',
                                             fontWeight: 800,
                                             fontSize: 13,
                                             padding: '8px 22px',
@@ -6394,93 +6392,149 @@ export function Receiving() {
     </div>
 
     {/* RIGHT PERSISTENT SIDEBAR PANEL (SUGERENCIA PUTAWAY 1:1 MATCH WITH STITCH MOCKUP) */}
-    <div className="stitch-split-sidebar">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Sparkles size={18} style={{ color: '#2DD4BF' }} /> Sugerencias
+    {!sidebarCollapsed ? (
+      <div className="stitch-split-sidebar" style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid #E2E8F0', paddingBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Sparkles size={18} style={{ color: '#0D9488' }} /> Sugerencias
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 11, background: '#F0FDFA', color: '#0D9488', border: '1px solid #CCFBF1', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+              3PL AI Rules
+            </span>
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              title="Ocultar panel lateral de sugerencias"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#64748B',
+                cursor: 'pointer',
+                padding: '4px 6px',
+                borderRadius: 4,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 2,
+                fontSize: 12
+              }}
+            >
+              <ChevronRight size={16} /> Ocultar
+            </button>
+          </div>
         </div>
-        <span style={{ fontSize: 11, background: 'rgba(13,148,136,0.15)', color: '#2DD4BF', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
-          3PL AI Rules
-        </span>
-      </div>
 
-      <div style={{ background: 'rgba(30, 41, 59, 0.5)', padding: 14, borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)', marginBottom: 16 }}>
-        <div style={{ fontSize: 10, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>ITEM A REUBICAR</div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#F8FAFC', marginTop: 3 }}>
-          {receipts[0]?.lineas?.[0]?.sku?.descripcion || 'Motor Eléctrico Trifásico 5HP'}
+        <div style={{ background: '#F8FAFC', padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', marginBottom: 16 }}>
+          <div style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>ITEM A REUBICAR</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginTop: 3 }}>
+            {receipts[0]?.lineas?.[0]?.sku?.descripcion || 'Motor Eléctrico Trifásico 5HP'}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+            <span style={{ fontSize: 11, color: '#0D9488', fontFamily: 'monospace', fontWeight: 600 }}>
+              {receipts[0]?.lineas?.[0]?.sku?.codigo || 'MOT-3P-5HP-001'}
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#0F172A' }}>
+              Cant: {receipts[0]?.lineas?.[0]?.cantidadEsperada || 120}
+            </span>
+          </div>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-          <span style={{ fontSize: 11, color: '#2DD4BF', fontFamily: 'monospace', fontWeight: 600 }}>
-            {receipts[0]?.lineas?.[0]?.sku?.codigo || 'MOT-3P-5HP-001'}
-          </span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#F8FAFC' }}>
-            Cant: {receipts[0]?.lineas?.[0]?.cantidadEsperada || 120}
-          </span>
-        </div>
-      </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: '#2DD4BF', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <MapPin size={14} /> Ubicaciones Óptimas (Regla FIFO)
-      </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#0D9488', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <MapPin size={14} /> Ubicaciones Óptimas (Regla FIFO)
+        </div>
 
-      {/* RACK LOCATION 1 */}
-      <div style={{ background: '#0B0F17', padding: 14, borderRadius: 10, border: '1px solid rgba(13,148,136,0.3)', marginBottom: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontWeight: 800, fontSize: 14, color: '#F8FAFC' }}>A02-R01-N1</div>
-          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: 'rgba(16, 185, 129, 0.2)', color: '#34D399' }}>83% Match</span>
+        {/* RACK LOCATION 1 */}
+        <div style={{ background: '#FFFFFF', padding: 14, borderRadius: 10, border: '1px solid #CCFBF1', marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A' }}>A02-R01-N1</div>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#ECFDF5', color: '#059669' }}>83% Match</span>
+          </div>
+          <div style={{ fontSize: 11, color: '#64748B', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <MapPin size={11} style={{ color: '#0284C7' }} /> Pasillo Motores · Nivel Suelo (Libre: 80 u.)
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input className="form-input" defaultValue="80" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#FFFFFF', color: '#0F172A', borderColor: '#CBD5E1' }} />
+            <button 
+              type="button"
+              className="btn btn-secondary btn-sm" 
+              onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
+              style={{ flex: 1, fontSize: 11, background: '#F8FAFC', color: '#334155', borderColor: '#CBD5E1' }}
+            >
+              Mover a esta ubicación
+            </button>
+          </div>
         </div>
-        <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
-          <MapPin size={11} style={{ color: '#38BDF8' }} /> Pasillo Motores · Nivel Suelo (Libre: 80 u.)
-        </div>
-        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <input className="form-input" defaultValue="80" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#0F172A', color: '#F8FAFC' }} />
-          <button 
-            type="button"
-            className="btn btn-secondary btn-sm" 
-            onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
-            style={{ flex: 1, fontSize: 11, background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)' }}
-          >
-            Mover a esta ubicación
-          </button>
-        </div>
-      </div>
 
-      {/* RACK LOCATION 2 */}
-      <div style={{ background: '#0B0F17', padding: 14, borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', marginBottom: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontWeight: 800, fontSize: 14, color: '#F8FAFC' }}>B05-R02-N3</div>
-          <span style={{ fontSize: 11, color: '#94A3B8' }}>Libre: 40 u.</span>
+        {/* RACK LOCATION 2 */}
+        <div style={{ background: '#FFFFFF', padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A' }}>B05-R02-N3</div>
+            <span style={{ fontSize: 11, color: '#64748B' }}>Libre: 40 u.</span>
+          </div>
+          <div style={{ fontSize: 11, color: '#64748B', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <MapPin size={11} style={{ color: '#0284C7' }} /> Pasillo Motores · Nivel Alto
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input className="form-input" defaultValue="40" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#FFFFFF', color: '#0F172A', borderColor: '#CBD5E1' }} />
+            <button 
+              type="button"
+              className="btn btn-secondary btn-sm" 
+              onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
+              style={{ flex: 1, fontSize: 11, background: '#F8FAFC', color: '#334155', borderColor: '#CBD5E1' }}
+            >
+              Mover a esta ubicación
+            </button>
+          </div>
         </div>
-        <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
-          <MapPin size={11} style={{ color: '#38BDF8' }} /> Pasillo Motores · Nivel Alto
-        </div>
-        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <input className="form-input" defaultValue="40" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#0F172A', color: '#F8FAFC' }} />
-          <button 
-            type="button"
-            className="btn btn-secondary btn-sm" 
-            onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
-            style={{ flex: 1, fontSize: 11, background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)' }}
-          >
-            Mover a esta ubicación
-          </button>
-        </div>
-      </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, fontSize: 13, fontWeight: 700, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12 }}>
-        <span style={{ color: '#94A3B8' }}>Total a transferir:</span>
-        <span style={{ color: '#F8FAFC' }}>120 / 120 PZA</span>
-      </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, fontSize: 13, fontWeight: 700, borderTop: '1px solid #E2E8F0', paddingTop: 12 }}>
+          <span style={{ color: '#64748B' }}>Total a transferir:</span>
+          <span style={{ color: '#0F172A' }}>120 / 120 PZA</span>
+        </div>
 
-      <button 
+        <button 
+          type="button"
+          className="btn btn-primary btn-block" 
+          onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
+          style={{ background: '#0D9488', borderColor: '#0D9488', width: '100%', padding: '12px', fontSize: 13, fontWeight: 700, borderRadius: 8 }}
+        >
+          <Check size={16} style={{ marginRight: 6 }} /> Confirmar Transferencia
+        </button>
+      </div>
+    ) : (
+      <button
         type="button"
-        className="btn btn-primary btn-block" 
-        onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
-        style={{ background: '#0D9488', borderColor: '#0D9488', width: '100%', padding: '12px', fontSize: 13, fontWeight: 700, borderRadius: 8 }}
+        onClick={toggleSidebar}
+        style={{
+          position: 'fixed',
+          right: 0,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          zIndex: 999,
+          background: '#FFFFFF',
+          border: '1px solid #CBD5E1',
+          borderRight: 'none',
+          borderTopLeftRadius: 8,
+          borderBottomLeftRadius: 8,
+          padding: '12px 6px',
+          boxShadow: '-2px 4px 12px rgba(0,0,0,0.08)',
+          cursor: 'pointer',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 6,
+          color: '#0D9488',
+          fontSize: 11,
+          fontWeight: 700,
+          writingMode: 'vertical-rl',
+          letterSpacing: '0.05em'
+        }}
+        title="Mostrar Sugerencias Putaway 3PL AI"
       >
-        <Check size={16} style={{ marginRight: 6 }} /> Confirmar Transferencia
+        <ChevronLeft size={16} style={{ writingMode: 'horizontal-tb' }} />
+        <span>SUGERENCIAS AI</span>
       </button>
-    </div>
+    )}
   </div>
         );
       })()}

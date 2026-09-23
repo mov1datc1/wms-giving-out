@@ -34,7 +34,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return (
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        minHeight: '100vh', background: '#0f172a', color: 'white',
+        minHeight: '100vh', background: '#F8FAFC', color: '#0F172A',
         fontFamily: 'var(--font-family)',
       }}>
         <div style={{ textAlign: 'center' }}>

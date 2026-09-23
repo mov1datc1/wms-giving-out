@@ -654,68 +654,68 @@ export function DivertToVirtualModal({
   // VISTA 2: RESULTADO DE ÉXITO POST-EJECUCIÓN
   if (divertResult) {
     return (
-      <div className="modal-overlay" style={{ zIndex: 9999 }}>
+      <div className="modal-overlay" style={{ zIndex: 9999, background: 'rgba(15, 23, 42, 0.5)', backdropFilter: 'blur(4px)' }}>
         <div style={{
-          background: '#0F172A',
-          border: '1px solid rgba(16, 185, 129, 0.3)',
+          background: '#FFFFFF',
+          border: '1px solid #E2E8F0',
           borderRadius: 12,
           padding: 28,
           width: '640px',
           maxWidth: '92vw',
-          color: '#F8FAFC',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)'
+          color: '#0F172A',
+          boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
         }}>
           <div style={{ textAlign: 'center', marginBottom: 20 }}>
             <div style={{
               width: 56,
               height: 56,
               borderRadius: '50%',
-              background: 'rgba(16, 185, 129, 0.15)',
+              background: '#D1FAE5',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
               marginBottom: 12,
-              border: '1px solid rgba(16, 185, 129, 0.3)'
+              border: '1px solid #A7F3D0'
             }}>
-              <CheckCircle2 size={32} color="#34D399" />
+              <CheckCircle2 size={32} color="#059669" />
             </div>
-            <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0, color: '#F8FAFC' }}>
+            <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0, color: '#0F172A' }}>
               Desvío a Almacén Virtual Realizado
             </h2>
-            <p style={{ fontSize: 13, color: '#94A3B8', marginTop: 4 }}>
+            <p style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>
               Las mercancías han sido segregadas físicamente y bloqueadas en el WMS.
             </p>
           </div>
 
-          <div style={{ background: '#1E293B', borderRadius: 8, padding: 16, marginBottom: 20, border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ background: '#F8FAFC', borderRadius: 8, padding: 16, marginBottom: 20, border: '1px solid #E2E8F0' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
-                <div style={{ fontSize: 11, color: '#94A3B8' }}>FOLIO ACTA DE NO CONFORMIDAD</div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: '#38BDF8', fontFamily: 'monospace', marginTop: 2 }}>
+                <div style={{ fontSize: 11, color: '#64748B' }}>FOLIO ACTA DE NO CONFORMIDAD</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: '#0284C7', fontFamily: 'monospace', marginTop: 2 }}>
                   {divertResult.folioActa}
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: '#94A3B8' }}>UBICACIÓN DESTINO VIRTUAL</div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: '#FBBF24', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <div style={{ fontSize: 11, color: '#64748B' }}>UBICACIÓN DESTINO VIRTUAL</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: '#D97706', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
                   <MapPin size={14} /> {divertResult.ubicacionDestino}
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: '#94A3B8' }}>TOTAL PIEZAS SEGREGADAS</div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: '#F87171', marginTop: 2 }}>
+                <div style={{ fontSize: 11, color: '#64748B' }}>TOTAL PIEZAS SEGREGADAS</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#DC2626', marginTop: 2 }}>
                   {divertResult.totalPiezas} piezas
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: '#94A3B8' }}>HANDLING UNIT GENERADA</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#A78BFA', fontFamily: 'monospace', marginTop: 2 }}>
+                <div style={{ fontSize: 11, color: '#64748B' }}>HANDLING UNIT GENERADA</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#7C3AED', fontFamily: 'monospace', marginTop: 2 }}>
                   {divertResult.handlingUnits?.[0]?.codigo || 'N/A'}
                 </div>
               </div>
             </div>
 
-            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#34D399' }}>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#059669' }}>
               <Lock size={14} />
               <span>
                 <strong>Aislamiento Seguro Activo:</strong> Cantidad disponible = 0 pzas (100% blindado contra picking).
@@ -728,7 +728,7 @@ export function DivertToVirtualModal({
               type="button"
               className="btn btn-secondary"
               onClick={onClose}
-              style={{ background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)' }}
+              style={{ background: '#FFFFFF', color: '#475569', borderColor: '#CBD5E1' }}
             >
               Cerrar
             </button>
@@ -756,36 +756,36 @@ export function DivertToVirtualModal({
 
   // VISTA 3: FORMULARIO PRINCIPAL DE CAPTURA Y SEGREGACIÓN
   return (
-    <div className="modal-overlay" style={{ zIndex: 9999 }}>
+    <div className="modal-overlay" style={{ zIndex: 9999, background: 'rgba(15, 23, 42, 0.5)', backdropFilter: 'blur(4px)' }}>
       <div style={{
-        background: '#0F172A',
-        border: '1px solid rgba(255, 255, 255, 0.12)',
+        background: '#FFFFFF',
+        border: '1px solid #E2E8F0',
         borderRadius: 12,
         padding: 24,
         width: '840px',
         maxWidth: '95vw',
         maxHeight: '90vh',
         overflowY: 'auto',
-        color: '#F8FAFC',
-        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8)'
+        color: '#0F172A',
+        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
       }}>
         {/* Encabezado */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18, borderBottom: '1px solid #E2E8F0', paddingBottom: 14 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <ShieldAlert size={22} color={tipoDesvio === 'MERMA' ? '#EF4444' : '#38BDF8'} />
-              <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0, color: '#F8FAFC' }}>
+              <ShieldAlert size={22} color={tipoDesvio === 'MERMA' ? '#DC2626' : '#0284C7'} />
+              <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0, color: '#0F172A' }}>
                 Subflujo: Desviar a Almacén Virtual de No Conforme / Merma
               </h2>
             </div>
-            <p style={{ fontSize: 12, color: '#94A3B8', margin: '4px 0 0 30px' }}>
+            <p style={{ fontSize: 12, color: '#64748B', margin: '4px 0 0 30px' }}>
               Recepción: <strong>{receipt?.codigo || 'En Andén'}</strong> · Cliente: <strong>{receipt?.cliente?.nombreComercial || 'Asignado'}</strong>
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            style={{ background: 'transparent', border: 'none', color: '#94A3B8', cursor: 'pointer', padding: 4 }}
+            style={{ background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer', padding: 4 }}
           >
             <X size={20} />
           </button>
@@ -812,7 +812,7 @@ export function DivertToVirtualModal({
         <form onSubmit={handleExecuteDivert}>
           {/* Conmutador de Tipo de Desvío */}
           <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, color: '#CBD5E1', display: 'block', marginBottom: 6 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: '#334155', display: 'block', marginBottom: 6 }}>
               1. Naturaleza de la Mercancía No Conforme:
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -825,8 +825,8 @@ export function DivertToVirtualModal({
                 style={{
                   padding: 12,
                   borderRadius: 8,
-                  border: tipoDesvio === 'MERMA' ? '2px solid #EF4444' : '1px solid rgba(255,255,255,0.1)',
-                  background: tipoDesvio === 'MERMA' ? 'rgba(239, 68, 68, 0.1)' : '#1E293B',
+                  border: tipoDesvio === 'MERMA' ? '2px solid #EF4444' : '1px solid #CBD5E1',
+                  background: tipoDesvio === 'MERMA' ? '#FEF2F2' : '#FFFFFF',
                   textAlign: 'left',
                   cursor: 'pointer',
                   display: 'flex',
@@ -834,12 +834,12 @@ export function DivertToVirtualModal({
                   gap: 10
                 }}
               >
-                <AlertTriangle size={20} color="#EF4444" style={{ flexShrink: 0, marginTop: 2 }} />
+                <AlertTriangle size={20} color="#DC2626" style={{ flexShrink: 0, marginTop: 2 }} />
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: tipoDesvio === 'MERMA' ? '#F87171' : '#E2E8F0' }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: tipoDesvio === 'MERMA' ? '#DC2626' : '#0F172A' }}>
                     Mercancía Dañada / Merma Física
                   </div>
-                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
+                  <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
                     Avería, derrame, rotura de empaque o caducidad menor a política. Destino: <strong>DEV-01</strong>.
                   </div>
                 </div>
@@ -854,8 +854,8 @@ export function DivertToVirtualModal({
                 style={{
                   padding: 12,
                   borderRadius: 8,
-                  border: tipoDesvio === 'EXCESO' ? '2px solid #38BDF8' : '1px solid rgba(255,255,255,0.1)',
-                  background: tipoDesvio === 'EXCESO' ? 'rgba(56, 189, 248, 0.1)' : '#1E293B',
+                  border: tipoDesvio === 'EXCESO' ? '2px solid #0284C7' : '1px solid #CBD5E1',
+                  background: tipoDesvio === 'EXCESO' ? '#F0F9FF' : '#FFFFFF',
                   textAlign: 'left',
                   cursor: 'pointer',
                   display: 'flex',
@@ -863,12 +863,12 @@ export function DivertToVirtualModal({
                   gap: 10
                 }}
               >
-                <Boxes size={20} color="#38BDF8" style={{ flexShrink: 0, marginTop: 2 }} />
+                <Boxes size={20} color="#0284C7" style={{ flexShrink: 0, marginTop: 2 }} />
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: tipoDesvio === 'EXCESO' ? '#38BDF8' : '#E2E8F0' }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: tipoDesvio === 'EXCESO' ? '#0284C7' : '#0F172A' }}>
                     Producto en Exceso / Sobrante
                   </div>
-                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
+                  <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
                     Excedente físico no amparado en factura u orden de compra. Destino: <strong>NC-EXCESO-01</strong>.
                   </div>
                 </div>
@@ -879,14 +879,14 @@ export function DivertToVirtualModal({
           {/* Motivo y Justificación Técnica */}
           <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 12, marginBottom: 16 }}>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 700, color: '#CBD5E1', display: 'block', marginBottom: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155', display: 'block', marginBottom: 4 }}>
                 2. Causa Raíz / Motivo de Segregación:
               </label>
               <select
                 className="form-select"
                 value={motivoGeneral}
                 onChange={e => setMotivoGeneral(e.target.value)}
-                style={{ background: '#0B0F17', color: '#F8FAFC', fontSize: 12, width: '100%', borderRadius: 6, borderColor: 'rgba(255,255,255,0.15)' }}
+                style={{ background: '#FFFFFF', color: '#0F172A', fontSize: 12, width: '100%', borderRadius: 6, borderColor: '#CBD5E1' }}
               >
                 {(tipoDesvio === 'MERMA' ? MOTIVOS_MERMA : MOTIVOS_EXCESO).map((mot, i) => (
                   <option key={i} value={mot}>{mot}</option>
@@ -894,7 +894,7 @@ export function DivertToVirtualModal({
               </select>
             </div>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 700, color: '#CBD5E1', display: 'block', marginBottom: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155', display: 'block', marginBottom: 4 }}>
                 Notas Operativas / Bitácora de Andén:
               </label>
               <input
@@ -903,7 +903,7 @@ export function DivertToVirtualModal({
                 placeholder="Ej. Evidencia fotográfica tomada en rampa 4..."
                 value={notas}
                 onChange={e => setNotas(e.target.value)}
-                style={{ background: '#0B0F17', color: '#F8FAFC', fontSize: 12, width: '100%', borderRadius: 6, borderColor: 'rgba(255,255,255,0.15)' }}
+                style={{ background: '#FFFFFF', color: '#0F172A', fontSize: 12, width: '100%', borderRadius: 6, borderColor: '#CBD5E1' }}
               />
             </div>
           </div>
@@ -911,37 +911,37 @@ export function DivertToVirtualModal({
           {/* Tabla de Partidas */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ fontSize: 12, fontWeight: 700, color: '#CBD5E1' }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>
                 3. Partidas y Cantidades a Desviar:
               </label>
-              <span style={{ fontSize: 11, color: '#94A3B8' }}>
-                Destino asignado: <strong style={{ color: '#FBBF24' }}>{targetLocation}</strong>
+              <span style={{ fontSize: 11, color: '#64748B' }}>
+                Destino asignado: <strong style={{ color: '#D97706' }}>{targetLocation}</strong>
               </span>
             </div>
 
             <div style={{
-              background: '#0B0F17',
+              background: '#FFFFFF',
               borderRadius: 8,
-              border: '1px solid rgba(255,255,255,0.1)',
+              border: '1px solid #E2E8F0',
               overflow: 'hidden'
             }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
-                  <tr style={{ background: '#1E293B', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                    <th style={{ padding: '8px 10px', textAlign: 'left', color: '#94A3B8' }}>SKU / Producto</th>
-                    <th style={{ padding: '8px 10px', textAlign: 'center', width: 90, color: '#F87171' }}>Cant. Desviar</th>
-                    <th style={{ padding: '8px 10px', textAlign: 'center', width: 110, color: '#94A3B8' }}>Lote</th>
-                    <th style={{ padding: '8px 10px', textAlign: 'center', width: 115, color: '#94A3B8' }}>Caducidad</th>
-                    <th style={{ padding: '8px 10px', textAlign: 'left', color: '#94A3B8' }}>Motivo Específico</th>
+                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                    <th style={{ padding: '8px 10px', textAlign: 'left', color: '#64748B' }}>SKU / Producto</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', width: 90, color: '#DC2626' }}>Cant. Desviar</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', width: 110, color: '#64748B' }}>Lote</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'center', width: 115, color: '#64748B' }}>Caducidad</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'left', color: '#64748B' }}>Motivo Específico</th>
                     <th style={{ padding: '8px 10px', width: 35 }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((it, idx) => (
-                    <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                    <tr key={idx} style={{ borderBottom: '1px solid #F1F5F9' }}>
                       <td style={{ padding: '8px 10px' }}>
-                        <div style={{ fontWeight: 700, color: '#38BDF8', fontFamily: 'monospace' }}>{it.skuCodigo}</div>
-                        <div style={{ fontSize: 11, color: '#CBD5E1', maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontWeight: 700, color: '#0284C7', fontFamily: 'monospace' }}>{it.skuCodigo}</div>
+                        <div style={{ fontSize: 11, color: '#64748B', maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {it.skuDescripcion}
                         </div>
                       </td>
@@ -954,9 +954,9 @@ export function DivertToVirtualModal({
                           style={{
                             width: 70,
                             textAlign: 'center',
-                            background: '#1E293B',
-                            color: '#F87171',
-                            border: '1px solid #EF4444',
+                            background: '#FEF2F2',
+                            color: '#DC2626',
+                            border: '1px solid #FECACA',
                             borderRadius: 4,
                             padding: '4px 6px',
                             fontWeight: 800,
@@ -972,9 +972,9 @@ export function DivertToVirtualModal({
                           onChange={e => handleItemChange(idx, 'lote', e.target.value)}
                           style={{
                             width: 95,
-                            background: '#1E293B',
-                            color: '#F8FAFC',
-                            border: '1px solid rgba(255,255,255,0.15)',
+                            background: '#FFFFFF',
+                            color: '#0F172A',
+                            border: '1px solid #CBD5E1',
                             borderRadius: 4,
                             padding: '4px 6px',
                             fontSize: 11,
@@ -989,9 +989,9 @@ export function DivertToVirtualModal({
                           onChange={e => handleItemChange(idx, 'fechaVencimiento', e.target.value)}
                           style={{
                             width: 110,
-                            background: '#1E293B',
-                            color: '#F8FAFC',
-                            border: '1px solid rgba(255,255,255,0.15)',
+                            background: '#FFFFFF',
+                            color: '#0F172A',
+                            border: '1px solid #CBD5E1',
                             borderRadius: 4,
                             padding: '4px 4px',
                             fontSize: 11
@@ -1006,9 +1006,9 @@ export function DivertToVirtualModal({
                           onChange={e => handleItemChange(idx, 'motivoEspecifico', e.target.value)}
                           style={{
                             width: '100%',
-                            background: '#1E293B',
-                            color: '#F8FAFC',
-                            border: '1px solid rgba(255,255,255,0.15)',
+                            background: '#FFFFFF',
+                            color: '#0F172A',
+                            border: '1px solid #CBD5E1',
                             borderRadius: 4,
                             padding: '4px 8px',
                             fontSize: 11
@@ -1036,8 +1036,8 @@ export function DivertToVirtualModal({
 
           {/* Banner de Garantía de Aislamiento */}
           <div style={{
-            background: 'rgba(16, 185, 129, 0.08)',
-            border: '1px solid rgba(16, 185, 129, 0.25)',
+            background: '#ECFDF5',
+            border: '1px solid #A7F3D0',
             borderRadius: 6,
             padding: '10px 14px',
             marginBottom: 20,
@@ -1045,18 +1045,18 @@ export function DivertToVirtualModal({
             alignItems: 'center',
             gap: 10,
             fontSize: 11,
-            color: '#A7F3D0'
+            color: '#065F46'
           }}>
-            <Lock size={16} color="#34D399" style={{ flexShrink: 0 }} />
+            <Lock size={16} color="#059669" style={{ flexShrink: 0 }} />
             <div>
               <strong>Garantía de Aislamiento Inmediato:</strong> Este subflujo creará el lote con estado <code>CUARENTENA</code>, <code>cantidadBloqueada = {totalPiezas}</code> y <code>cantidadDisponible = 0</code>. No podrá ser seleccionado en picking ni asignado a órdenes comerciales.
             </div>
           </div>
 
           {/* Acciones de Cierre */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 16 }}>
-            <div style={{ fontSize: 12, color: '#94A3B8' }}>
-              Total a segregar: <strong style={{ color: '#F87171', fontSize: 14 }}>{totalPiezas} pzas</strong> en {items.length} partida(s)
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #E2E8F0', paddingTop: 16 }}>
+            <div style={{ fontSize: 12, color: '#64748B' }}>
+              Total a segregar: <strong style={{ color: '#DC2626', fontSize: 14 }}>{totalPiezas} pzas</strong> en {items.length} partida(s)
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
@@ -1064,7 +1064,7 @@ export function DivertToVirtualModal({
                 className="btn btn-secondary"
                 onClick={onClose}
                 disabled={submitting}
-                style={{ background: '#1E293B', color: '#CBD5E1', borderColor: 'rgba(255,255,255,0.1)' }}
+                style={{ background: '#FFFFFF', color: '#475569', borderColor: '#CBD5E1' }}
               >
                 Cancelar
               </button>
