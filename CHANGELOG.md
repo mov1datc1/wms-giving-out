@@ -4,6 +4,48 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.7.0] — 2026-09-23
+
+### 🎨 Unificación Estética Minimalista, Panel IA Colapsable y Hoja de Ruta Operativa 3PL
+
+#### ⚪ Unificación Visual Blanco y Gris (Estilo Inventario)
+- **TopBar (`TopBar.tsx`):**
+  - Fondo blanco `#FFFFFF`, borde inferior `#E2E8F0`, tipografía `#0F172A`, badges de estatus del sistema y contador numérico interactivo refinados en alto contraste.
+- **Módulo de Recepción (`Receiving.tsx`):**
+  - Erradicación de fondos oscuros (`#0B0F17`, `#0F172A`, `#1E293B`) y transición completa al diseño unificado: tarjetas `#FFFFFF`, fondo de página `#F8FAFC`, bordes suaves `#E2E8F0`, y acentos esmeralda/teal (`#059669` / `#0D9488`).
+  - Tabla de partidas y conteo a ciegas con filas alternadas, inputs de captura claros y badges de variación legibles.
+- **Depositantes / Clientes (`Clients.tsx`):**
+  - Métricas KPI, tabla ejecutiva de depositantes, selector de giros comerciales y modales de alta/edición adaptados a la paleta unificada.
+- **Modal de Desvío a Almacén Virtual (`DivertToVirtualModal.tsx`):**
+  - Estilizado en blanco y gris con insignias específicas para Merma (ámbar) y Excedentes (violeta).
+- **Estilos Globales (`index.css` & `main.tsx`):**
+  - Limpieza de selectores oscuros forzados y armonización del viewport general en `#F8FAFC`.
+
+#### 🤖 Panel Lateral de Sugerencias IA Colapsable (`Receiving.tsx`)
+- **Control Interactivo de Visualización:**
+  - Incorporado botón de minimizado/expandido en la cabecera del panel de Sugerencias de Ubicación (Putaway).
+  - Persistencia del estado colapsado en `localStorage` (`receiving_sidebar_collapsed`) para respetar la preferencia del usuario entre sesiones.
+
+#### 🌐 Red, Caché y Portabilidad (`vite.config.ts` & `index.html`)
+- **Soporte Host Multi-Interfaz:**
+  - Configurado Vite para enlazar en `0.0.0.0` y puerto estricto `5173`, permitiendo acceso transparente tanto vía `localhost` como `127.0.0.1`.
+- **Desregistro Automático de Service Workers:**
+  - Inyección de script de saneamiento en `index.html` para purgar service workers y cachés residuales de proyectos locales anteriores en el mismo puerto.
+
+#### 📑 Transcripción Oficial de Reunión Ejecutiva y Especificación 3PL
+- **Procesamiento de Audio con IA (Whisper):**
+  - Transcripción íntegra de la sesión oficial de Google Meet (51 minutos 39 segundos) entre Alejandra (cliente) y Jonathan (dirección técnica).
+  - Generación de documento PDF ejecutivo de 14 páginas guardado en `C:\Users\Mariana\Downloads\Transcripcion_Reunion_Giving_Out.pdf`.
+- **Estructuración de los 6 Pilares Operativos Giving Out:**
+  - *Pilar 1:* Recepción en rampa y descarga con acta de chofer exprés.
+  - *Pilar 2:* Inspección interna y módulo de reacondicionamiento/maquila/rescate hacia previo original.
+  - *Pilar 3:* Doble etiquetado (Pallet Master con QR vs Cajas individuales sin ubicación quemada).
+  - *Pilar 4:* Putaway con confirmación por escaneo y transición de stock a "Disponible".
+  - *Pilar 5:* Ciclo de pedido con reserva inmediata (disponible vs físico) y panel supervisor.
+  - *Pilar 6:* Surtido/picking en terminal móvil con doble validación de escaneo.
+
+---
+
 ## [1.6.1] — 2026-09-19
 
 ### 🎯 Estabilización E2E, Plantillas Inteligentes y Corrección de Filtros en Almacén Virtual
