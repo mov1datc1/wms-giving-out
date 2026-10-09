@@ -1,7 +1,10 @@
-import { Controller, Get, Post, Put, Param, Query, Body } from '@nestjs/common';
+import { Controller, Get, Post, Put, Param, Query, Body, Headers, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 import { EmailService } from '../../email.service';
+import * as jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 
 @ApiTags('Master Data')
 @Controller('api')
@@ -15,9 +18,25 @@ export class MasterDataController {
     @Query('clienteId') clienteId?: string,
     @Query('categoria') categoria?: string,
     @Query('buscar') buscar?: string,
+    @Headers('authorization') authHeader?: string,
   ) {
     const where: any = {};
-    if (clienteId) where.clienteId = clienteId;
+    let activeClienteId = clienteId;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.split(' ')[1];
+        const decoded: any = jwt.verify(token, JWT_SECRET);
+        if (decoded?.clienteId) {
+          activeClienteId = decoded.clienteId;
+        } else if (decoded?.userId) {
+          const user = await this.prisma.user.findUnique({ where: { id: decoded.userId } });
+          if (user?.clienteId) activeClienteId = user.clienteId;
+        }
+      } catch {}
+    }
+
+    if (activeClienteId) where.clienteId = activeClienteId;
     if (categoria) where.categoria = categoria;
     if (buscar) {
       where.OR = [
@@ -105,7 +124,7 @@ export class MasterDataController {
 
   // ============ LOCATIONS ============
   @Get('locations')
-  @ApiOperation({ summary: 'Listar ubicaciones' })
+  @ApiOperation({ summary: 'Listar ubicaciones con contenido y estado' })
   async getLocations(@Query('almacenId') almacenId?: string, @Query('zonaId') zonaId?: string, @Query('estado') estado?: string) {
     const where: any = {};
     if (almacenId) where.almacenId = almacenId;
@@ -117,10 +136,55 @@ export class MasterDataController {
       include: {
         zona: { select: { codigo: true, nombre: true } },
         almacen: { select: { codigo: true, nombre: true } },
-        lotes: { where: { cantidadDisponible: { gt: 0 } }, select: { id: true, skuId: true, cantidadDisponible: true } },
+        lotes: {
+          where: { cantidadDisponible: { gt: 0 } },
+          include: {
+            sku: { select: { codigo: true, descripcion: true, uomBase: true } },
+            cliente: { select: { id: true, nombreComercial: true } },
+          },
+        },
       },
       orderBy: { codigo: 'asc' },
     });
+  }
+
+  @Get('locations/:id')
+  @ApiOperation({ summary: 'Consultar contenido y stock detallado de una ubicación' })
+  async getLocationById(@Param('id') id: string) {
+    const loc = await this.prisma.location.findFirst({
+      where: { OR: [{ id }, { codigo: id }] },
+      include: {
+        zona: true,
+        almacen: true,
+        lotes: {
+          where: { cantidadDisponible: { gt: 0 } },
+          include: {
+            sku: true,
+            cliente: true,
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!loc) throw new HttpException('Ubicación no encontrada', HttpStatus.NOT_FOUND);
+
+    const hus = await this.prisma.handlingUnit.findMany({
+      where: { ubicacionActual: loc.codigo, estadoHu: 'ACTIVO' },
+      include: { lote: { include: { sku: true } }, cliente: true },
+      orderBy: { codigo: 'asc' },
+    });
+
+    const totalFisico = loc.lotes.reduce((sum, l) => sum + (l.cantidadDisponible || 0), 0);
+    const totalReservado = loc.lotes.reduce((sum, l) => sum + (l.cantidadReservada || 0), 0);
+    const totalDisponible = Math.max(0, totalFisico - totalReservado);
+
+    return {
+      ...loc,
+      totalFisico,
+      totalReservado,
+      totalDisponible,
+      handlingUnits: hus,
+    };
   }
 
   @Post('locations')

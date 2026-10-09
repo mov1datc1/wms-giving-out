@@ -4,9 +4,10 @@ import { API } from '../../config/api';
 import {
   ShoppingCart, RefreshCw, Clock, CheckCircle, Send, ThumbsDown, ThumbsUp,
   Package, Store, MapPin, ChevronDown, ChevronUp, Truck, UserCheck, ScanLine,
-  Calendar, Lock, Building2, Plus
+  Calendar, Lock, Building2, Plus, FileText
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatCalendarDate } from '../../utils/dateUtils';
 
 export function PortalOrders() {
   const { token, user } = useAuth();
@@ -52,6 +53,7 @@ export function PortalOrders() {
   });
 
   const activeCount = orders.filter(o => ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO', 'DESPACHADO'].includes(o.estado)).length;
+  const reservedCount = orders.filter(o => ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado)).length;
   const deliveredCount = orders.filter(o => o.estado === 'ENTREGADO').length;
   const transitCount = orders.filter(o => o.estado === 'DESPACHADO').length;
 
@@ -60,7 +62,7 @@ export function PortalOrders() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Mis Pedidos de Salida</h1>
-          <p className="page-subtitle">{orders.length} pedidos registrados · {activeCount} activos con stock reservado</p>
+          <p className="page-subtitle">{orders.length} pedidos registrados · {activeCount} activos ({reservedCount} con stock reservado)</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={() => navigate('/portal/nuevo-pedido')}>
@@ -107,7 +109,8 @@ export function PortalOrders() {
         <div style={{ display: 'grid', gap: 14 }}>
           {filtered.map((o, i) => {
             const info = estadoInfo(o.estado);
-            const isLocked = ['APROBADO', 'EN_PICKING', 'CONSOLIDADO', 'DESPACHADO'].includes(o.estado);
+            const isDispatched = o.estado === 'DESPACHADO' || o.estado === 'ENTREGADO';
+            const hasReservedStock = ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado);
 
             return (
               <div key={o.id} className="card animate-fade-in" style={{ animationDelay: `${i * 0.03}s` }}>
@@ -118,9 +121,14 @@ export function PortalOrders() {
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 700, fontSize: 16 }}>{o.codigo}</span>
                         <span className={`badge badge-${info.cls}`}>{info.icon} {info.label}</span>
-                        {isLocked && (
+                        {hasReservedStock && (
                           <span className="badge badge-default" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                             <Lock size={11} /> Stock Reservado
+                          </span>
+                        )}
+                        {isDispatched && (
+                          <span className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <CheckCircle size={11} /> Salida Concluida (0 reservadas)
                           </span>
                         )}
                       </div>
@@ -132,7 +140,7 @@ export function PortalOrders() {
                         <span><Package size={12} /> {o.lineas?.length || 0} líneas ({o.lineas?.reduce((s: number, l: any) => s + l.cantidadSolicitada, 0)} piezas)</span>
                         {o.fechaCompromiso && (
                           <span style={{ color: 'var(--primary)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            <Calendar size={12} /> Cita: {new Date(o.fechaCompromiso).toLocaleDateString('es-MX')} {o.horaCompromiso ? `(${o.horaCompromiso} hrs)` : ''}
+                            <Calendar size={12} /> Cita: {formatCalendarDate(o.fechaCompromiso)} {o.horaCompromiso ? `(${o.horaCompromiso} hrs)` : ''}
                           </span>
                         )}
                       </div>
@@ -160,21 +168,23 @@ export function PortalOrders() {
                   )}
 
                   {/* Shipping info */}
-                  {(o.estado === 'DESPACHADO' || o.estado === 'ENTREGADO') && (
-                    <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8, border: '1px solid var(--border)' }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                        🚚 Información de Transporte & Despacho
+                  {isDispatched && (
+                    <div style={{ marginTop: 12, padding: '12px 14px', background: 'var(--bg-secondary)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Truck size={14} color="var(--primary)" /> Información de Transporte & Despacho
                       </div>
                       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
-                        {o.paqueteria && <span>Transporte: <strong>{o.paqueteria}</strong></span>}
-                        {o.numeroGuia && <span>Guía / Rastreo: <strong>{o.numeroGuia}</strong></span>}
-                        {o.vehiculoPlaca && <span>Placa: <strong>{o.vehiculoPlaca}</strong></span>}
-                        {o.fechaDespacho && <span>Despachado: <strong>{new Date(o.fechaDespacho).toLocaleDateString('es-MX')}</strong></span>}
+                        <span>Fletera: <strong>{o.fletera || o.paqueteria || 'Transporte Directo'}</strong></span>
+                        {o.choferNombre && <span>Operador: <strong>{o.choferNombre}</strong></span>}
+                        {o.vehiculoPlaca && <span>Placas: <strong style={{ fontFamily: 'monospace' }}>{o.vehiculoPlaca}</strong></span>}
+                        {o.selloSeguridad && <span>Sello: <strong style={{ fontFamily: 'monospace' }}>{o.selloSeguridad}</strong></span>}
+                        {o.numeroGuia && <span>Guía: <strong>{o.numeroGuia}</strong></span>}
+                        {o.fechaDespacho && <span>Despachado: <strong>{formatCalendarDate(o.fechaDespacho)}</strong></span>}
                       </div>
                       {o.estado === 'ENTREGADO' && (
                         <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
-                          {o.nombreReceptor && <span>✍️ Recibió: <strong>{o.nombreReceptor}</strong></span>}
-                          {o.fechaEntrega && <span>Fecha Entrega: <strong>{new Date(o.fechaEntrega).toLocaleDateString('es-MX')}</strong></span>}
+                          {o.nombreReceptor && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><UserCheck size={14} color="var(--emerald)" /> Recibió: <strong>{o.nombreReceptor}</strong></span>}
+                          {o.fechaEntrega && <span>Fecha Entrega: <strong>{formatCalendarDate(o.fechaEntrega)}</strong></span>}
                         </div>
                       )}
                     </div>
@@ -187,7 +197,7 @@ export function PortalOrders() {
                         <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)' }}>
                           Detalle de Productos Solicitados
                         </h4>
-                        {isLocked && (
+                        {hasReservedStock && (
                           <span style={{ fontSize: 11, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
                             <Lock size={11} /> Bloqueado para modificación en piso
                           </span>
@@ -219,8 +229,8 @@ export function PortalOrders() {
                         </table>
                       </div>
                       {o.notas && (
-                        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-tertiary)' }}>
-                          📝 Instrucciones: {o.notas}
+                        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <FileText size={13} /> Instrucciones: {o.notas}
                         </div>
                       )}
                     </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { API } from '../../config/api';
+import { formatCalendarDate } from '../../utils/dateUtils';
 import {
   Package, Search, RefreshCw, MapPin, CheckCircle2, AlertTriangle,
   Clock, ShieldAlert, Building2, Layers, Filter, Eye
@@ -76,7 +77,8 @@ export function PortalInventory() {
     acc[key].totalFisico += (disp + bloq);
     acc[key].totalReservado += res;
     
-    if (lot.estadoCalidad === 'LIBERADO') {
+    const isExpired = lot.fechaVencimiento && new Date(lot.fechaVencimiento) <= new Date();
+    if (lot.estadoCalidad === 'LIBERADO' && !isExpired) {
       acc[key].totalDisponible += Math.max(0, disp - res);
     } else {
       acc[key].totalCuarentena += (bloq > 0 ? bloq : disp);
@@ -271,11 +273,12 @@ export function PortalInventory() {
                       </thead>
                       <tbody>
                         {g.lots.map((lot: any) => {
-                          const lotDisp = Math.max(0, (lot.cantidadDisponible || 0) - (lot.cantidadReservada || 0));
-                          const isQuarantine = lot.estadoCalidad !== 'LIBERADO';
+                          const isExpired = lot.fechaVencimiento && new Date(lot.fechaVencimiento) <= new Date();
+                          const isQuarantine = lot.estadoCalidad !== 'LIBERADO' || isExpired;
+                          const lotDisp = (!isQuarantine && !isExpired) ? Math.max(0, (lot.cantidadDisponible || 0) - (lot.cantidadReservada || 0)) : 0;
 
                           return (
-                            <tr key={lot.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                            <tr key={lot.id} style={{ borderBottom: '1px solid var(--border)', backgroundColor: isExpired ? 'rgba(239, 68, 68, 0.04)' : 'transparent' }}>
                               <td style={{ padding: '8px 8px', fontWeight: 600 }}>{lot.lote || 'Sin Lote'}</td>
                               <td style={{ padding: '8px 8px', color: 'var(--text-secondary)' }}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -285,15 +288,15 @@ export function PortalInventory() {
                                 </span>
                               </td>
                               <td style={{ padding: '8px 8px' }}>
-                                <span className={`badge badge-${isQuarantine ? 'warning' : 'success'}`}>
-                                  {lot.estadoCalidad}
+                                <span className={`badge badge-${isExpired ? 'danger' : (isQuarantine ? 'warning' : 'success')}`}>
+                                  {isExpired ? 'CADUCADO' : lot.estadoCalidad}
                                 </span>
                               </td>
-                              <td style={{ padding: '8px 8px', color: lot.fechaVencimiento ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
-                                {lot.fechaVencimiento ? new Date(lot.fechaVencimiento).toLocaleDateString('es-MX') : 'N/A'}
+                              <td style={{ padding: '8px 8px', color: isExpired ? '#EF4444' : (lot.fechaVencimiento ? 'var(--text-primary)' : 'var(--text-tertiary)'), fontWeight: isExpired ? 700 : 400 }}>
+                                {lot.fechaVencimiento ? formatCalendarDate(lot.fechaVencimiento) : 'N/A'}{isExpired ? ' (Vencido)' : ''}
                               </td>
-                              <td style={{ padding: '8px 8px', textAlign: 'right', fontWeight: 700, color: 'var(--emerald)' }}>
-                                {!isQuarantine ? lotDisp : 0}
+                              <td style={{ padding: '8px 8px', textAlign: 'right', fontWeight: 700, color: isExpired ? 'var(--text-tertiary)' : 'var(--emerald)' }}>
+                                {lotDisp}
                               </td>
                               <td style={{ padding: '8px 8px', textAlign: 'right', color: lot.cantidadReservada > 0 ? 'var(--accent-secondary)' : 'var(--text-tertiary)', fontWeight: 600 }}>
                                 {lot.cantidadReservada || 0}

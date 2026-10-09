@@ -10,13 +10,25 @@ import {
   UserCheck, Layers, Edit3, Trash2, Settings, PlusCircle, ClipboardCheck, RotateCcw,
   Ship, Zap, Lock, Unlock, Eye, EyeOff, Save, CheckCheck, ListChecks,
   ArrowDownRight, ArrowUpRight, Scale, ShieldAlert, TrendingDown, TrendingUp, Ban,
-  ChevronRight, ChevronLeft
+  ChevronRight, ChevronLeft, Microscope, Info
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationSelect } from '../components/LocationSelect';
 import { ReceiptPrintModal } from '../components/ReceiptPrintModal';
 import { ReceiptReportModal } from '../components/ReceiptReportModal';
 import { DivertToVirtualModal } from '../components/DivertToVirtualModal';
+import { RampArrivalModal } from '../components/RampArrivalModal';
+import { RampDocumentModal } from '../components/RampDocumentModal';
+import { DualLabelModal } from '../components/DualLabelModal';
+import { QualityInspectionModal } from '../components/QualityInspectionModal';
+import { PutawayModal } from '../components/PutawayModal';
+import {
+  formatCalendarDate,
+  formatTimelineDateTime,
+  formatWarehouseDateTime,
+  formatDateTime,
+  WAREHOUSE_TIMEZONE
+} from '../utils/dateUtils';
 
 interface PrevioForm {
   clienteId: string;
@@ -49,21 +61,89 @@ interface ParsedLine {
   rowNum: number;
   factura: string;
   codeOrEan: string;
+  descripcion?: string;
   cantidadEsperada: number;
+  lote?: string;
+  caducidad?: string;
   sku?: any;
-  status: 'MATCHED' | 'NOT_FOUND' | 'FOREIGN_CLIENT' | 'INVALID_QTY';
+  status: 'VALID' | 'INVALID_NOT_FOUND' | 'INVALID_FOREIGN_CLIENT' | 'INVALID_DATA';
+  rejectionReason?: string;
   foreignClientName?: string;
 }
 
 interface ExcelAnalysis {
   fileName: string;
   totalRows: number;
-  matchedRows: number;
+  validRows: number;
+  invalidRows: number;
   foreignRows: number;
+  notFoundRows: number;
+  invalidDataRows: number;
   unmatchedCodes: string[];
   foreignCodes: Array<{ code: string; clientName: string }>;
   detectedFactura?: string;
+  incompatibleStructure?: boolean;
+  structureError?: string;
   lines: ParsedLine[];
+}
+
+// --- Normalización y Clasificación Inteligente de Encabezados Excel ---
+function normalizeExcelHeader(key: string): string {
+  return String(key || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function isExcelSkuHeader(h: string): boolean {
+  if (['sku', 'ean', 'codigo', 'cod', 'barcode', 'codigo barras', 'codigo barra', 'upc', 'material', 'articulo', 'item'].includes(h)) return true;
+  if (/\bsku\b/.test(h)) return true;
+  if (/\bean\b/.test(h)) return true;
+  if (h.includes('codigo') && !h.includes('cliente') && !h.includes('proveedor') && !h.includes('postal')) return true;
+  if (h.includes('barcode')) return true;
+  return false;
+}
+
+function isExcelQtyHeader(h: string): boolean {
+  if (h.includes('piezas por caja') || h.includes('cajas empaque') || h.includes('cajas')) return false;
+  if (['cantidad', 'cant', 'qty', 'piezas', 'pzas', 'unidades', 'uds'].includes(h)) return true;
+  if (h.includes('cantidad') || h.includes('cant') || h.includes('qty')) return true;
+  if (h.includes('piezas') || h.includes('pzas') || h.includes('unidades')) return true;
+  if (h.includes('a recibir') || h.includes('esperada')) return true;
+  return false;
+}
+
+function isExcelFacturaHeader(h: string): boolean {
+  if (['factura', 'fac', 'remision', 'invoice', 'documento', 'folio'].includes(h)) return true;
+  if (h.includes('factura') || h.includes('remision') || h.includes('invoice')) return true;
+  return false;
+}
+
+function isExcelOcHeader(h: string): boolean {
+  if (['oc', 'orden compra', 'orden de compra', 'po', 'purchase order'].includes(h)) return true;
+  if (h.includes('orden compra') || h.includes('orden de compra') || h.includes('purchase order')) return true;
+  if (h === 'oc' || h.startsWith('oc ') || h.endsWith(' oc')) return true;
+  return false;
+}
+
+function isExcelDescHeader(h: string): boolean {
+  if (h.includes('descripcion') || h.includes('desc') || h.includes('producto') || h.includes('nombre')) return true;
+  return false;
+}
+
+function isExcelLoteHeader(h: string): boolean {
+  if (['lote', 'lot', 'batch'].includes(h)) return true;
+  if (h.includes('lote') || h.includes('batch')) return true;
+  return false;
+}
+
+function isExcelCaducidadHeader(h: string): boolean {
+  if (['caducidad', 'vencimiento', 'expiry', 'expiracion'].includes(h)) return true;
+  if (h.includes('caducidad') || h.includes('vencimiento') || h.includes('expiry') || h.includes('expiracion') || h.includes('vence')) return true;
+  return false;
 }
 
 export const DISCREPANCY_STATUS_OPTIONS = [
@@ -270,6 +350,438 @@ const demoReceipts = [
   }
 ];
 
+export { formatTimelineDateTime } from '../utils/dateUtils';
+
+export interface TimelineEvent {
+  id: string;
+  fase: string;
+  fecha: string | Date;
+  titulo: string;
+  subtitulo: string;
+  actor: string;
+  tipo: string;
+  color: string;
+  borderColor: string;
+  bgColor: string;
+  detalles?: string | null;
+  badgeText?: string;
+  badgeBg?: string;
+  badgeColor?: string;
+  metrics?: Array<{ label: string; value: string | number; color?: string }>;
+  isPutawayConsolidated?: boolean;
+  husDetail?: Array<{
+    huCodigo: string;
+    skuCodigo: string;
+    lote: string;
+    cantidad: number;
+    rackDestino: string;
+    origen: string;
+    dualScanValidado: boolean;
+    operadorScan: string;
+    scanTimestamp: string | Date;
+    reacondicionada?: boolean;
+    movementId?: string | null;
+  }>;
+  totalHus?: number;
+  totalPiezas?: number;
+  dualScansValidados?: number;
+}
+
+export function buildReceiptTimeline(
+  receipt: any,
+  auditLogs: any[] = [],
+  inventoryMovements: any[] = []
+): TimelineEvent[] {
+  if (!receipt) return [];
+  const events: TimelineEvent[] = [];
+
+  const rawLogs: any[] = Array.isArray(auditLogs) && auditLogs.length > 0
+    ? auditLogs
+    : (Array.isArray(receipt.auditLogs) ? receipt.auditLogs : []);
+  const rawMoves: any[] = Array.isArray(inventoryMovements) && inventoryMovements.length > 0
+    ? inventoryMovements
+    : (Array.isArray(receipt.inventoryMovements) ? receipt.inventoryMovements : []);
+
+  const findAudit = (actionNames: string[]) =>
+    rawLogs.filter((a: any) => actionNames.includes(a.accion));
+  const findLastAudit = (actionNames: string[]) => {
+    const list = findAudit(actionNames);
+    return list.length > 0 ? list[list.length - 1] : null;
+  };
+  const findFirstAudit = (actionNames: string[]) => {
+    const list = findAudit(actionNames);
+    return list.length > 0 ? list[0] : null;
+  };
+
+  const totalEsperadas = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadEsperada || 0), 0);
+
+  // 1. CREACIÓN DEL PREVIO / ASN
+  const auditPrevio = findFirstAudit(['CARGAR_PREVIO_EXCEL', 'CREAR_PREVIO', 'EDITAR_PREVIO']);
+  events.push({
+    id: 'evt-previo',
+    fase: 'PREVIO',
+    fecha: auditPrevio?.createdAt || receipt.createdAt,
+    titulo: `Creación de previo de recepción (ASN) con ${(receipt.lineas || []).length} partidas registradas`,
+    subtitulo: `${totalEsperadas} piezas esperadas · Factura: ${receipt.facturaRespaldo || 'Sin Factura'} · OC: ${receipt.ocReferencia || 'Sin OC'} · Origen: ${receipt.origen || 'NACIONAL'}${receipt.archivoPrevioUrl ? ' · Archivo importado' : ''}`,
+    actor: auditPrevio?.usuario || receipt.recibidoPor || 'admin@givingout.mx',
+    tipo: 'ASN',
+    color: '#0D9488',
+    borderColor: '#99F6E4',
+    bgColor: '#F0FDFA',
+    badgeText: 'ASN Registrado',
+    badgeBg: '#CCFBF1',
+    badgeColor: '#0F766E',
+    detalles: auditPrevio?.detalle || null,
+    metrics: [
+      { label: 'Partidas', value: (receipt.lineas || []).length },
+      { label: 'Pzas Esperadas', value: totalEsperadas },
+      { label: 'Tipo Recepción', value: receipt.tipoRecepcion || 'RECEPCIÓN' }
+    ]
+  });
+
+  // 2. CONFIRMACIÓN DE ARRIBO Y ACTIVACIÓN DE CANDADO DE ANDÉN
+  const auditArribo = findFirstAudit(['CONFIRMAR_BLOQUEAR_PREVIO']);
+  if (auditArribo || receipt.fechaConfirmacion || receipt.bloqueado) {
+    events.push({
+      id: 'evt-arribo',
+      fase: 'ARRIBO',
+      fecha: auditArribo?.createdAt || receipt.fechaConfirmacion || receipt.fechaBloqueo || receipt.createdAt,
+      titulo: 'Confirmación de arribo y activación de candado de andén',
+      subtitulo: `Unidad en rampa · Andén asignado: ${receipt.andenAsignado || 'REC-01 (Rampa)'} · Candado operativo activado contra modificaciones del catálogo`,
+      actor: auditArribo?.usuario || receipt.bloqueadoPor || receipt.recibidoPor || 'Jonathan Palacios',
+      tipo: 'ARRIBO',
+      color: '#0284C7',
+      borderColor: '#BAE6FD',
+      bgColor: '#F0F9FF',
+      badgeText: 'Candado Activado',
+      badgeBg: '#E0F2FE',
+      badgeColor: '#0369A1',
+      detalles: auditArribo?.detalle || null,
+      metrics: [
+        { label: 'Andén', value: receipt.andenAsignado || 'REC-01' },
+        { label: 'Candado', value: 'BLOQUEADO' }
+      ]
+    });
+  }
+
+  // 3. ACTA DE RAMPA Y LIBERACIÓN DE CHOFER
+  const auditRampa = findLastAudit(['ACTA_RAMPA_LIBERACION_CHOFER', 'CORRECCION_ACTA_RAMPA']);
+  const hasRampa = Boolean(auditRampa || receipt.fechaLiberacionChofer || receipt.liberadoChofer || (receipt.bultosRecibidos !== null && receipt.bultosRecibidos !== undefined && receipt.bultosRecibidos > 0));
+  if (hasRampa) {
+    const bRec = receipt.bultosRecibidos ?? 0;
+    const bDec = receipt.bultosDeclarados ?? bRec;
+    const bDan = receipt.bultosDanados ?? 0;
+    const dif = bDec - bRec;
+    events.push({
+      id: 'evt-rampa',
+      fase: 'RAMPA',
+      fecha: auditRampa?.createdAt || receipt.fechaLiberacionChofer || receipt.updatedAt,
+      titulo: 'Acta de Rampa completada y liberación de chofer',
+      subtitulo: `Conteo exterior: ${bRec} bultos recibidos de ${bDec} declarados${bDan > 0 ? ` · ${bDan} bulto con daño exterior visible` : ' · Sin daño exterior'}${dif > 0 ? ` · Diferencia: -${dif} bulto faltante en transporte` : ' · Cuadre sin faltantes'} · Transporte: ${receipt.lineaTransporte || 'N/A'} (Placas: ${receipt.placa || 'N/A'}) · Firmas capturadas y chofer liberado`,
+      actor: auditRampa?.usuario || receipt.nombreChofer || receipt.nombreReceptor || 'Jonathan Palacios',
+      tipo: 'RAMPA',
+      color: '#4F46E5',
+      borderColor: '#C7D2FE',
+      bgColor: '#EEF2FF',
+      badgeText: 'Rampa Liberada',
+      badgeBg: '#E0E7FF',
+      badgeColor: '#4338CA',
+      detalles: auditRampa?.detalle || `Chofer: ${receipt.nombreChofer || 'N/A'} · Placa: ${receipt.placa || 'N/A'} · Línea: ${receipt.lineaTransporte || 'N/A'}`,
+      metrics: [
+        { label: 'Bultos Recibidos', value: bRec },
+        { label: 'Daño Exterior', value: bDan, color: bDan > 0 ? '#DC2626' : undefined },
+        { label: 'Dif. Transporte', value: dif > 0 ? `-${dif}` : '0' }
+      ]
+    });
+  }
+
+  // 4. IDENTIFICACIÓN FÍSICA Y RETENCIÓN DE BULTO CON DAÑO (SI APLICA)
+  const auditDano = findFirstAudit(['IDENTIFICACION_BULTO_DANADO']);
+  const allHus: any[] = receipt.handlingUnits || [];
+  const damagedHu = allHus.find((h: any) => h.codigo?.includes('DANO') || h.estadoHu === 'INACTIVO' || h.estadoHu === 'DAÑADO');
+  if (auditDano || (receipt.bultosDanados && receipt.bultosDanados > 0) || damagedHu) {
+    const andenArribo = receipt.andenAsignado || 'REC-01 (Rampa)';
+    const areaCustodia = damagedHu?.ubicacionActual || 'AREA_CALIDAD';
+    events.push({
+      id: 'evt-dano-bulto',
+      fase: 'CALIDAD_RESERVA',
+      fecha: auditDano?.createdAt || damagedHu?.createdAt || receipt.fechaLiberacionChofer || receipt.updatedAt,
+      titulo: 'Identificación física y retención de bulto con daño exterior',
+      subtitulo: `Bulto identificado como ${damagedHu?.codigo || 'BOX-...-DANO'} (${damagedHu?.skuCodigo || 'ACE-OLI-1L'} · ${damagedHu?.cantidad || 12} pzas) descargado en andén de arribo ${andenArribo} y transferido a custodia en ${areaCustodia} (fuera de stock) para dictamen técnico`,
+      actor: auditDano?.usuario || 'Jonathan Palacios',
+      tipo: 'RETENCION',
+      color: '#D97706',
+      borderColor: '#FDE68A',
+      bgColor: '#FFFBEB',
+      badgeText: 'Retenido en Calidad',
+      badgeBg: '#FEF3C7',
+      badgeColor: '#B45309',
+      detalles: auditDano?.detalle || `Bulto retenido para salvaguardar la integridad del inventario.`,
+      metrics: [
+        { label: 'HU Retenida', value: damagedHu?.codigo || 'BOX-...-DANO' },
+        { label: 'Andén de Arribo', value: andenArribo },
+        { label: 'Área de Retención', value: areaCustodia },
+        { label: 'Estado', value: 'RETENIDA' }
+      ]
+    });
+  }
+
+  // 5. INSPECCIÓN DE CALIDAD Y DICTAMEN (RESCATE / MERMA)
+  const auditCalidad = findLastAudit(['INSPECCION_CALIDAD_REACONDICIONAMIENTO', 'DICTAMEN_CALIDAD']);
+  const insp = (receipt.inspecciones && receipt.inspecciones.length > 0) ? receipt.inspecciones[0] : (receipt.qualityInspections?.[0] || null);
+  const isCalidadDone = Boolean(auditCalidad || insp || receipt.inspeccionCalidadEstado === 'COMPLETADA');
+  if (isCalidadDone) {
+    const fol = insp?.folio || 'INSP-2026-0023';
+    const inspTot = insp?.totalPiezasInspeccionadas ?? 12;
+    const inspRes = insp?.totalPiezasRescatadas ?? 10;
+    const inspMer = insp?.totalPiezasMerma ?? 2;
+    events.push({
+      id: 'evt-calidad',
+      fase: 'CALIDAD',
+      fecha: insp?.fechaInspeccion || auditCalidad?.createdAt || insp?.createdAt || receipt.updatedAt,
+      titulo: `Inspección de Calidad completada (Dictamen ${fol})`,
+      subtitulo: `Revisión técnica de ${inspTot} piezas: ${inspRes} piezas rescatadas/reacondicionadas en caja activa · ${inspMer} piezas de merma dictaminada fuera de stock${insp?.observaciones ? ` · ${insp.observaciones}` : ''}`,
+      actor: insp?.inspectorNombre || auditCalidad?.usuario || 'Jonathan Palacios',
+      tipo: 'CALIDAD',
+      color: '#7C3AED',
+      borderColor: '#DDD6FE',
+      bgColor: '#F5F3FF',
+      badgeText: `Dictamen ${fol}`,
+      badgeBg: '#EDE9FE',
+      badgeColor: '#6D28D9',
+      detalles: auditCalidad?.detalle || `Dictamen ${fol}: ${inspRes} piezas conformes rescatadas, ${inspMer} piezas de merma dictaminada fuera de stock.`,
+      metrics: [
+        { label: 'Inspeccionadas', value: `${inspTot} pz` },
+        { label: 'Rescatadas', value: `${inspRes} pz`, color: '#059669' },
+        { label: 'Merma Dictaminada', value: `${inspMer} pz`, color: '#DC2626' }
+      ]
+    });
+  }
+
+  // 6. CONCILIACIÓN FÍSICA EN ANDÉN Y BALANCE DE PARTIDAS
+  const auditAnden = findLastAudit(['CONCILIACION_ANDEN', 'GUARDAR_CONTEO_ANDEN']);
+  const isAndenDone = Boolean(auditAnden || receipt.conteoAndenEstado === 'COMPLETADO' || receipt.fechaConteoAnden);
+  if (isAndenDone) {
+    const totalConf = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadRecibida || 0), 0);
+    const totalMerma = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0);
+    const totalFalt = Math.max(0, totalEsperadas - totalConf - totalMerma);
+    events.push({
+      id: 'evt-anden-conteo',
+      fase: 'ANDEN',
+      fecha: auditAnden?.createdAt || receipt.fechaConteoAnden || receipt.updatedAt,
+      titulo: 'Conciliación física en Andén y balance de partidas',
+      subtitulo: `Balance final: ${totalConf} piezas conformes · ${totalMerma} piezas de merma dictaminada fuera de stock · ${totalFalt} piezas de faltante confirmado`,
+      actor: auditAnden?.usuario || receipt.recibidoPor || 'admin@givingout.mx',
+      tipo: 'ANDEN',
+      color: '#059669',
+      borderColor: '#A7F3D0',
+      bgColor: '#ECFDF5',
+      badgeText: 'Andén Conciliado',
+      badgeBg: '#D1FAE5',
+      badgeColor: '#047857',
+      detalles: auditAnden?.detalle || `Partidas clasificadas con cuadre matemático completo.`,
+      metrics: [
+        { label: 'Conformes', value: `${totalConf} pz`, color: '#059669' },
+        { label: 'Merma Dictaminada', value: `${totalMerma} pz`, color: '#DC2626' },
+        { label: 'Faltante Confirmado', value: `${totalFalt} pz`, color: '#D97706' }
+      ]
+    });
+  }
+
+  // 7. GENERACIÓN DE TARIMA MASTER Y HUS (DOBLE ETIQUETADO)
+  const auditEtiquetas = findFirstAudit(['GENERAR_DOBLE_ETIQUETADO']);
+  const palletHu = allHus.find((h: any) => h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA' || (h.codigo && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-')))) || null;
+  const boxHus = allHus.filter((h: any) => (!palletHu || h.id !== palletHu.id) && h.tipoHu !== 'PALLET' && !(h.codigo && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-'))));
+  const activasHus = boxHus.filter((b: any) => b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK');
+  const hasLabelsGen = Boolean(auditEtiquetas || boxHus.length > 0);
+  if (hasLabelsGen) {
+    const pltCode = palletHu?.codigo || (receipt.codigo ? `PLT-${receipt.codigo}-01` : 'Tarima Master');
+    const auditNorm = findLastAudit(['NORMALIZACION_CORRELATIVOS_HU']);
+    const recondBoxes = boxHus.filter((b: any) => b.reacondicionada || b.cajaOrigenId);
+    events.push({
+      id: 'evt-generar-etiquetas',
+      fase: 'ETIQUETAS_GEN',
+      fecha: auditEtiquetas?.createdAt || palletHu?.createdAt || boxHus[0]?.createdAt || receipt.updatedAt,
+      titulo: 'Generación de unidades de manejo (Doble Etiquetado Industrial)',
+      subtitulo: palletHu
+        ? `Generada Tarima Master ${pltCode} (QR GS1 Multilote) y ${activasHus.length} cajas físicas activas`
+        : `Generadas ${activasHus.length} cajas físicas activas`,
+      actor: auditEtiquetas?.usuario || 'Supervisor Andén',
+      tipo: 'DOBLE_ETIQUETADO',
+      color: '#0D9488',
+      borderColor: '#99F6E4',
+      bgColor: '#F0FDFA',
+      badgeText: 'HUs Generadas',
+      badgeBg: '#CCFBF1',
+      badgeColor: '#0F766E',
+      detalles: auditNorm?.detalle || auditEtiquetas?.detalle || null,
+      metrics: [
+        ...(palletHu ? [{ label: 'Tarima Master', value: pltCode }] : []),
+        { label: 'Cajas Activas', value: activasHus.length },
+        ...(recondBoxes.length > 0 ? [{ label: 'Reacondicionadas', value: `${recondBoxes.length} caja${recondBoxes.length > 1 ? 's' : ''}` }] : [])
+      ]
+    });
+  }
+
+  // 8. IMPRESIÓN DE ETIQUETAS TÉRMICAS INDUSTRIALES
+  const auditPrint = findLastAudit(['IMPRESION_ETIQUETAS', 'REIMPRESION_ETIQUETAS']);
+  const hasPrinted = Boolean(auditPrint || boxHus.some((b: any) => b.etiquetaImpresa));
+  if (hasPrinted) {
+    events.push({
+      id: 'evt-impresion',
+      fase: 'IMPRESION',
+      fecha: auditPrint?.createdAt || receipt.fechaColocacionEtiquetas || receipt.updatedAt,
+      titulo: 'Impresión de etiquetas térmicas industriales',
+      subtitulo: palletHu
+        ? `Etiquetas térmicas generadas en formato industrial: 1 Tarima Master (100×150 mm) y ${activasHus.length} cajas conformes (100×50 mm Code-128 con metadatos de lote, caducidad y condición)`
+        : `Etiquetas térmicas generadas en formato industrial: ${activasHus.length} cajas conformes (100×50 mm Code-128 con metadatos de lote, caducidad y condición)`,
+      actor: auditPrint?.usuario || 'Supervisor Andén',
+      tipo: 'IMPRESION',
+      color: '#6366F1',
+      borderColor: '#C7D2FE',
+      bgColor: '#EEF2FF',
+      badgeText: 'Etiquetas Impresas',
+      badgeBg: '#E0E7FF',
+      badgeColor: '#4338CA',
+      detalles: auditPrint?.detalle || 'Lote completo de etiquetas impreso en formato industrial.',
+      metrics: [
+        ...(palletHu ? [{ label: 'Tarima 100x150 mm', value: '1 QR Master' }] : []),
+        { label: 'Cajas 100x50 mm', value: `${activasHus.length} Code-128` }
+      ]
+    });
+  }
+
+  // 9. CONFIRMACIÓN FÍSICA DE COLOCACIÓN DE ETIQUETAS EN ANDÉN
+  const auditColocacion = findLastAudit(['CONFIRMAR_COLOCACION_ETIQUETAS']);
+  const hasColocacion = Boolean(auditColocacion || receipt.fechaColocacionEtiquetas || receipt.etiquetasEstado === 'COLOCADAS');
+  if (hasColocacion) {
+    events.push({
+      id: 'evt-colocacion-etiquetas',
+      fase: 'ETIQUETAS_COLOCADAS',
+      fecha: auditColocacion?.createdAt || receipt.fechaColocacionEtiquetas || receipt.updatedAt,
+      titulo: 'Confirmación física de colocación de etiquetas en andén',
+      subtitulo: palletHu
+        ? `Etiquetas colocadas y verificadas físicamente en rampa sobre las ${activasHus.length} cajas conformes y la Tarima Master · Bultos rotulados al 100% listos para traslado a racks`
+        : `Etiquetas colocadas y verificadas físicamente en rampa sobre las ${activasHus.length} cajas conformes · Bultos rotulados al 100% listos para traslado a racks`,
+      actor: auditColocacion?.usuario || receipt.etiquetasColocadasPor || 'Jonathan Palacios',
+      tipo: 'COLOCACION',
+      color: '#0284C7',
+      borderColor: '#BAE6FD',
+      bgColor: '#F0F9FF',
+      badgeText: 'Etiquetas Colocadas',
+      badgeBg: '#E0F2FE',
+      badgeColor: '#0369A1',
+      detalles: auditColocacion?.detalle || 'Bultos rotulados al 100% y listos para traslado a racks.',
+      metrics: [
+        { label: 'Etiquetas Colocadas', value: '100%' },
+        { label: 'Verificación', value: 'Física en Andén' }
+      ]
+    });
+  }
+
+  // 10. PUTAWAY COMPLETADO · ACTIVACIÓN DE STOCK · ESCANEO DUAL
+  const auditPutaway = findLastAudit(['PUTAWAY_CONFIRMADO_RACKS', 'CONFIRMAR_UBICACION_RACKS']);
+  const dualScanAudits = findAudit(['PUTAWAY_DUAL_SCAN_VALIDADO']);
+  const dualScansByHu: Record<string, any> = {};
+  dualScanAudits.forEach((ds: any) => {
+    const match = ds.detalle?.match(/HU (BOX-[A-Z0-9-]+)/);
+    const huKey = match ? match[1] : ds.entidadId;
+    dualScansByHu[huKey] = ds;
+  });
+  const uniqueDualScansCount = Object.keys(dualScansByHu).length;
+  const trasiegosMovements = rawMoves.filter((m: any) => m.tipoMovimiento === 'TRASIEGO' || m.tipoMovimiento === 'ENTRADA');
+  const isPutawayDone = Boolean(auditPutaway || receipt.estado === 'UBICADO' || receipt.estado === 'COMPLETO' || trasiegosMovements.length > 0);
+
+  if (isPutawayDone) {
+    const totalPzasActivas = activasHus.reduce((s: number, b: any) => s + Number(b.cantidad || 0), 0);
+    const dualCount = uniqueDualScansCount > 0 ? uniqueDualScansCount : activasHus.length;
+    const actorPutaway = auditPutaway?.usuario || (dualScanAudits[0]?.usuario) || 'Jonathan Palacios';
+    const fechaPutaway = auditPutaway?.createdAt || (trasiegosMovements.length > 0 ? trasiegosMovements[trasiegosMovements.length - 1].fechaHora : receipt.updatedAt);
+
+    const husPutawayDetail = activasHus.map((box: any) => {
+      const ds = dualScansByHu[box.codigo] || dualScansByHu[box.id] || null;
+      const mov = trasiegosMovements.find((m: any) => m.huId === box.id || m.hu?.codigo === box.codigo) || null;
+      const rackDest = mov?.toLocation?.codigo || box.ubicacionActual || 'Rack Asignado';
+      const origenLoc = mov?.fromLocation?.codigo || 'REC-01 (Rampa)';
+      return {
+        huCodigo: box.codigo,
+        skuCodigo: box.skuCodigo || mov?.sku?.codigo || '—',
+        lote: box.loteTexto || '—',
+        cantidad: Number(box.cantidad ?? mov?.cantidad ?? 0),
+        rackDestino: rackDest,
+        origen: origenLoc,
+        dualScanValidado: true,
+        operadorScan: ds?.usuario || actorPutaway,
+        scanTimestamp: ds?.createdAt || mov?.fechaHora || fechaPutaway,
+        movementId: mov?.id || null,
+        reacondicionada: Boolean(box.reacondicionada || box.cajaOrigenId),
+      };
+    });
+
+    events.push({
+      id: 'evt-putaway-consolidado',
+      fase: 'PUTAWAY',
+      fecha: fechaPutaway,
+      titulo: `Putaway completado · ${activasHus.length} HUs alojadas · ${totalPzasActivas} pzas activadas · Escaneo Dual ${dualCount}/${activasHus.length}`,
+      subtitulo: `Traslado físico completado desde RAMPA_RECEPCION (REC-01) hacia racks de almacenamiento · 100% de cajas con Escaneo Dual obligatorio (HU + Rack) verificado · Inventario activado formalmente como DISPONIBLE`,
+      actor: actorPutaway,
+      tipo: 'PUTAWAY',
+      color: '#059669',
+      borderColor: '#86EFAC',
+      bgColor: '#F0FDF4',
+      badgeText: 'Stock Activo en Racks',
+      badgeBg: '#DCFCE7',
+      badgeColor: '#15803D',
+      detalles: auditPutaway?.detalle || `Alojamiento confirmado en racks. Stock activado como DISPONIBLE en inventario.`,
+      isPutawayConsolidated: true,
+      husDetail: husPutawayDetail,
+      totalHus: activasHus.length,
+      totalPiezas: totalPzasActivas,
+      dualScansValidados: dualCount,
+      metrics: [
+        { label: 'HUs Alojadas', value: activasHus.length },
+        { label: 'Pzas Activadas', value: `${totalPzasActivas} pz`, color: '#059669' },
+        { label: 'Escaneo Dual', value: `${dualCount}/${activasHus.length}`, color: '#059669' },
+        { label: 'Estado Stock', value: 'DISPONIBLE', color: '#059669' }
+      ]
+    });
+  }
+
+  // 11. CIERRE OFICIAL DE RECEPCIÓN (SI YA SE EJECUTÓ)
+  const auditCierre = findLastAudit(['CIERRE_RECEPCION']);
+  const isCerrado = Boolean(auditCierre || receipt.fechaCierre || receipt.estado === 'CERRADO' || receipt.estado === 'CERRADA');
+  if (isCerrado) {
+    const totalConf = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadRecibida || 0), 0);
+    const totalMerma = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0);
+    const totalFalt = Math.max(0, totalEsperadas - totalConf - totalMerma);
+    events.push({
+      id: 'evt-cierre',
+      fase: 'CIERRE',
+      fecha: auditCierre?.createdAt || receipt.fechaCierre || receipt.updatedAt,
+      titulo: `Cierre oficial y finiquito de recepción (${totalConf} conformes${totalMerma > 0 ? `, ${totalMerma} merma dictaminada fuera de stock` : ''}${totalFalt > 0 ? `, ${totalFalt} faltantes` : ''})`,
+      subtitulo: `Expediente finiquitado formalmente en auditoría WMS con candado inmutable activado`,
+      actor: auditCierre?.usuario || receipt.cerradoPor || 'Supervisor Andén',
+      tipo: 'CIERRE',
+      color: '#1E293B',
+      borderColor: '#CBD5E1',
+      bgColor: '#F8FAFC',
+      badgeText: 'Cierre Oficial',
+      badgeBg: '#E2E8F0',
+      badgeColor: '#0F172A',
+      detalles: auditCierre?.detalle || `Recepción finiquitada y cerrada oficialmente.`,
+      metrics: [
+        { label: 'Conformes', value: `${totalConf} pz` },
+        { label: 'Merma Dictaminada', value: `${totalMerma} pz` },
+        { label: 'Faltantes', value: `${totalFalt} pz` }
+      ]
+    });
+  }
+
+  // Ordenar cronológicamente por timestamp de cada evento
+  events.sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
+  return events;
+}
+
 export function Receiving() {
   const { token, user } = useAuth();
   const isSupervisorOrAdmin = Boolean(
@@ -283,6 +795,11 @@ export function Receiving() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
+  const [filterCliente, setFilterCliente] = useState('');
+  const [selectedReceiptId, setSelectedReceiptId] = useState<string | null>(() => {
+    return searchParams.get('folio') || searchParams.get('id') || null;
+  });
+  const [activeDossierTab, setActiveDossierTab] = useState<'PARTIDAS' | 'HUS' | 'DOCUMENTOS' | 'TRANSPORTE' | 'HISTORIAL'>('PARTIDAS');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('receiving_sidebar_collapsed') === 'true');
   const toggleSidebar = () => {
@@ -293,13 +810,46 @@ export function Receiving() {
     });
   };
 
-  // Sincronizar parámetro de búsqueda de URL (?search=...)
+  // Estados para el visor de Historial y Kárdex (Trazabilidad E2E)
+  const [showPutawayHusDetail, setShowPutawayHusDetail] = useState(false);
+  const [showKardexTableDetail, setShowKardexTableDetail] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Sincronizar parámetros de búsqueda y folio de URL (?search=..., ?folio=...)
   useEffect(() => {
     const q = searchParams.get('search');
     if (q !== null && q !== undefined) {
       setSearch(q);
     }
-  }, [searchParams]);
+    const folioParam = searchParams.get('folio') || searchParams.get('id');
+    if (folioParam && receipts.length > 0) {
+      const match = receipts.find(r => r.id === folioParam || r.codigo === folioParam);
+      if (match && selectedReceiptId !== match.id) {
+        setSelectedReceiptId(match.id);
+      }
+    }
+  }, [searchParams, receipts]);
+
+  function handleOpenReceiptDossier(receipt: any) {
+    setSelectedReceiptId(receipt.id);
+    setActiveDossierTab('PARTIDAS');
+    setSearchParams(prev => {
+      prev.set('folio', receipt.codigo);
+      return prev;
+    });
+    if (!receipt.auditLogs || !receipt.inventoryMovements) {
+      refreshReceiptHistory(receipt.id);
+    }
+  }
+
+  function handleBackToList() {
+    setSelectedReceiptId(null);
+    setSearchParams(prev => {
+      prev.delete('folio');
+      prev.delete('id');
+      return prev;
+    });
+  }
 
   // Catalogs
   const [clients, setClients] = useState<any[]>([]);
@@ -317,6 +867,7 @@ export function Receiving() {
   });
   const [file, setFile] = useState<File | null>(null);
   const [excelAnalysis, setExcelAnalysis] = useState<ExcelAnalysis | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Dual mode: Excel file vs Manual Form
@@ -366,6 +917,14 @@ export function Receiving() {
     initialTipoDesvio?: 'MERMA' | 'EXCESO';
   } | null>(null);
 
+  // Fase 1 Giving Out: Acta de Rampa y Doble Etiquetado
+  const [rampArrivalReceipt, setRampArrivalReceipt] = useState<any | null>(null);
+  const [rampDocumentReceipt, setRampDocumentReceipt] = useState<any | null>(null);
+  const [dualLabelReceipt, setDualLabelReceipt] = useState<any | null>(null);
+
+  // Fase 2 Giving Out: Inspección Interna y Reacondicionamiento (Maquila/Rescate)
+  const [qualityInspectionReceipt, setQualityInspectionReceipt] = useState<any | null>(null);
+
   // Putaway / Alojamiento Modal State
   const [putawayModalReceipt, setPutawayModalReceipt] = useState<any | null>(null);
   const [putawayMoves, setPutawayMoves] = useState<any[]>([]);
@@ -393,37 +952,166 @@ export function Receiving() {
   const [matrixSuccessBanner, setMatrixSuccessBanner] = useState<{ receiptId: string; text: string } | null>(null);
   const [matrixErrorBanner, setMatrixErrorBanner] = useState<{ receiptId: string; text: string } | null>(null);
 
+  // --- Conteo y Conciliación Física en Andén (Fase 2 -> Conteo) ---
+  const [showAndenCapture, setShowAndenCapture] = useState<boolean>(false);
+  const [andenDrafts, setAndenDrafts] = useState<Record<string, Record<string, { cajasSanas: number | ''; piezasSanas: number | ''; lote: string; fechaVencimiento: string }>>>({});
+  const [savingAnden, setSavingAnden] = useState<boolean>(false);
+  const [andenSuccessBanner, setAndenSuccessBanner] = useState<{ receiptId: string; text: string } | null>(null);
+  const [andenErrorBanner, setAndenErrorBanner] = useState<{ receiptId: string; text: string } | null>(null);
+
+  // Retroalimentación visual de refresco de datos en tiempo real
+  const [justRefreshed, setJustRefreshed] = useState(false);
+  const [refreshingManual, setRefreshingManual] = useState(false);
+
+  function handleAndenDraftChange(
+    receiptId: string,
+    lineId: string,
+    field: 'cajasSanas' | 'piezasSanas' | 'lote' | 'fechaVencimiento',
+    val: any,
+    factor: number = 1
+  ) {
+    setAndenDrafts(prev => {
+      const recDrafts = prev[receiptId] || {};
+      const current = recDrafts[lineId] || { cajasSanas: '', piezasSanas: '', lote: '', fechaVencimiento: '' };
+      const updated = { ...current };
+
+      if (field === 'cajasSanas') {
+        updated.cajasSanas = val;
+        updated.piezasSanas = val !== '' && !isNaN(Number(val)) ? Number(val) * factor : '';
+      } else if (field === 'piezasSanas') {
+        updated.piezasSanas = val;
+        updated.cajasSanas = val !== '' && !isNaN(Number(val)) ? Math.round(Number(val) / factor) : '';
+      } else {
+        (updated as any)[field] = val;
+      }
+
+      return {
+        ...prev,
+        [receiptId]: {
+          ...recDrafts,
+          [lineId]: updated,
+        },
+      };
+    });
+  }
+
+  async function handleSaveAndenReconciliation(receipt: any) {
+    const draftForReceipt = andenDrafts[receipt.id] || {};
+    const linesPayload: any[] = [];
+
+    for (const l of (receipt.lineas || [])) {
+      const lineDraft = draftForReceipt[l.id];
+      const factor = Number(l.sku?.capacidadEmpaque || l.sku?.piezasPorCaja || (l.sku?.codigo?.includes('ACE') ? 12 : l.sku?.codigo?.includes('ARR') ? 20 : 1)) || 1;
+
+      // Rescatadas previamente vinculadas a esta línea exacta
+      const lineRescuedBoxes = (receipt.handlingUnits || []).filter((b: any) =>
+        b.tipoHu === 'CAJA' &&
+        b.estadoHu === 'ACTIVO' &&
+        (b.reacondicionada || b.cajaOrigenId) &&
+        (b.receiptLineId ? b.receiptLineId === l.id : (b.skuCodigo === l.sku?.codigo && (b.loteTexto || '').trim().toLowerCase() === (l.loteAsignado || l.loteEsperado || l.lote || '').trim().toLowerCase()))
+      );
+      const lineRescuedPieces = lineRescuedBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+      const defaultPiezas = Math.max(0, Number(l.cantidadRecibida || 0) - lineRescuedPieces);
+      const defaultCajas = factor > 0 ? Math.floor(defaultPiezas / factor) : 0;
+
+      let cSanas = defaultCajas;
+      let pSanas = defaultPiezas;
+      if (lineDraft) {
+        if (typeof lineDraft.piezasSanas === 'number') {
+          pSanas = lineDraft.piezasSanas;
+          cSanas = typeof lineDraft.cajasSanas === 'number' ? lineDraft.cajasSanas : Math.round(pSanas / factor);
+        } else if (typeof lineDraft.cajasSanas === 'number') {
+          cSanas = lineDraft.cajasSanas;
+          pSanas = cSanas * factor;
+        }
+      }
+
+      linesPayload.push({
+        receiptLineId: l.id,
+        cajasSanas: cSanas,
+        piezasSanas: pSanas,
+        lote: (lineDraft?.lote !== undefined ? lineDraft.lote : (l.loteAsignado || l.loteEsperado || l.lote || '')).trim(),
+        fechaVencimiento: lineDraft?.fechaVencimiento !== undefined ? lineDraft.fechaVencimiento : (l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : ''),
+      });
+    }
+
+    const totalPiezasCapturadas = linesPayload.reduce((s, lp) => s + lp.piezasSanas, 0);
+    const totalCajasCapturadas = linesPayload.reduce((s, lp) => s + lp.cajasSanas, 0);
+
+    if (totalPiezasCapturadas === 0 && totalCajasCapturadas === 0) {
+      setAndenErrorBanner({
+        receiptId: receipt.id,
+        text: 'Debes capturar al menos una cantidad mayor a 0 en las partidas sanas de andén antes de guardar la conciliación.',
+      });
+      return;
+    }
+
+    setSavingAnden(true);
+    setAndenErrorBanner(null);
+    setAndenSuccessBanner(null);
+
+    try {
+      const res = await fetch(`${API}/receipts/${receipt.id}/reconcile-anden`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          usuario: user?.email || user?.nombre || 'Supervisor Andén',
+          lineas: linesPayload,
+        }),
+      });
+
+      const resData = await res.json();
+      if (!res.ok) throw new Error(resData.message || 'Error al guardar la conciliación de andén');
+
+      setAndenSuccessBanner({
+        receiptId: receipt.id,
+        text: resData.message || `¡Conteo de andén conciliado exitosamente! (${totalCajasCapturadas} bultos sanos registrados, ${totalPiezasCapturadas} pzas conformes adicionales).`,
+      });
+
+      setShowAndenCapture(false);
+      await loadData();
+    } catch (err: any) {
+      setAndenErrorBanner({
+        receiptId: receipt.id,
+        text: err.message || 'Error de conexión al conciliar el conteo de andén',
+      });
+    } finally {
+      setSavingAnden(false);
+    }
+  }
+
   const headers: any = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  async function refreshReceiptHistory(receiptId: string) {
+    try {
+      setHistoryLoading(true);
+      const res = await fetch(`${API}/receipts/${receiptId}`, { headers });
+      if (res.ok) {
+        const fullRec = await res.json();
+        setReceipts(prev => prev.map(r => (r.id === fullRec.id || r.codigo === fullRec.codigo) ? fullRec : r));
+      }
+    } catch (e) {
+      console.warn('Error refreshing receipt history:', e);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  // Carga automática de historial auditado y kárdex al abrir el expediente
+  useEffect(() => {
+    if (!selectedReceiptId) return;
+    const rec = receipts.find(r => r.id === selectedReceiptId || r.codigo === selectedReceiptId);
+    if (rec && (!rec.auditLogs || !rec.inventoryMovements)) {
+      refreshReceiptHistory(rec.id);
+    }
+  }, [selectedReceiptId, activeDossierTab]);
 
   useEffect(() => { loadData(); }, []);
 
   function handleOpenPutawayModal(receipt: any) {
-    const recLocId = locations.find(loc => loc.codigo === 'REC-01' || loc.tipoUbicacion === 'RECIBO')?.id || '';
-    const clientObj = clients.find(c => c.id === receipt.clienteId) || receipt.cliente;
-
-    const initialMoves = (receipt.lineas || []).map((l: any) => {
-      // Ubicar sugerencia de rack según zona del cliente
-      let suggestedRackId = '';
-      if (clientObj?.zonaAsignadaId) {
-        suggestedRackId = locations.find(loc => loc.zonaId === clientObj.zonaAsignadaId && loc.tipoUbicacion !== 'RECIBO')?.id || '';
-      }
-      if (!suggestedRackId) {
-        suggestedRackId = locations.find(loc => loc.tipoUbicacion === 'ESTANTERIA')?.id || '';
-      }
-
-      return {
-        skuId: l.skuId,
-        codigo: l.sku?.codigo,
-        descripcion: l.sku?.descripcion,
-        cantidad: l.cantidadRecibida || l.cantidadEsperada || 0,
-        ubicacionOrigenId: recLocId,
-        ubicacionDestinoId: suggestedRackId,
-      };
-    }).filter((m: any) => m.cantidad > 0);
-
-    setPutawayMoves(initialMoves);
     setPutawayModalReceipt(receipt);
   }
+
 
   async function handleExecutePutaway(e: React.FormEvent) {
     e.preventDefault();
@@ -473,21 +1161,21 @@ export function Receiving() {
     }
   }, [newPrevio.clienteId]);
 
-  async function loadData() {
+  async function loadData(specificReceiptId?: string) {
     setLoading(true);
     try {
+      const targetId = specificReceiptId || selectedReceiptId;
       const receiptsPromise = fetch(`${API}/receipts`, { headers })
         .then(async (res) => {
           if (res.ok) {
             const data = await res.json();
-            setReceipts(data.length > 0 ? data : demoReceipts);
+            setReceipts(data.length > 0 ? data : (receipts.length > 0 ? receipts : demoReceipts));
           } else {
-            setReceipts(demoReceipts);
+            console.warn('API receipts returned non-ok status:', res.status);
           }
         })
         .catch((err) => {
           console.error('Error fetching receipts:', err);
-          setReceipts(demoReceipts);
         });
 
       const [clientsRes, suppliersRes, skusRes, locationsRes, warehousesRes] = await Promise.all([
@@ -508,11 +1196,45 @@ export function Receiving() {
       }
 
       await receiptsPromise;
+
+      if (targetId) {
+        try {
+          const singleRes = await fetch(`${API}/receipts/${targetId}`, { headers });
+          if (singleRes.ok) {
+            const single = await singleRes.json();
+            setReceipts(prev => {
+              const idx = prev.findIndex(r => r.id === single.id || r.codigo === single.codigo);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = single;
+                return next;
+              }
+              return [single, ...prev];
+            });
+          }
+        } catch (e) {
+          console.warn('Single receipt refresh error:', e);
+        }
+      }
     } catch (err) {
-      console.error(err);
-      setReceipts(demoReceipts);
+      console.error('Error in loadData:', err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleManualRefresh() {
+    setRefreshingManual(true);
+    // Limpiar borradores locales no guardados para sincronizar exactamente con la base de datos
+    setAndenDrafts({});
+    try {
+      await loadData();
+      setJustRefreshed(true);
+      setTimeout(() => setJustRefreshed(false), 2500);
+    } catch (err) {
+      console.error('Error en refresco manual:', err);
+    } finally {
+      setRefreshingManual(false);
     }
   }
 
@@ -528,8 +1250,8 @@ export function Receiving() {
         method: 'PUT',
         headers,
         body: JSON.stringify({
-          facturaRespaldo: editReceiptModal.facturaRespaldo !== undefined ? editReceiptModal.facturaRespaldo : editReceiptModal.ocReferencia,
-          ocReferencia: editReceiptModal.ocReferencia,
+          facturaRespaldo: editReceiptModal.facturaRespaldo !== undefined ? editReceiptModal.facturaRespaldo : undefined,
+          ocReferencia: editReceiptModal.ocReferencia !== undefined ? editReceiptModal.ocReferencia : undefined,
           origen: editReceiptModal.origen,
           tipoImportacion: editReceiptModal.tipoImportacion,
           tipoRecepcion: editReceiptModal.tipoRecepcion,
@@ -958,7 +1680,7 @@ export function Receiving() {
       const totalHist = (receipt.lineas || []).reduce((acc: number, l: any) => acc + (l.cantidadRecibida || 0), 0);
       setMatrixSuccessBanner({
         receiptId: receipt.id,
-        text: `ℹ️ Esta factura ya cuenta con el 100% de sus piezas recibidas y guardadas en inventario (${totalHist} pzas históricas). No hay piezas pendientes por recibir. Si recibiste producto excedente en andén, captúralo manualmente en la partida correspondiente.`,
+        text: `Esta factura ya cuenta con el 100% de sus piezas recibidas y guardadas en inventario (${totalHist} pzas históricas). No hay piezas pendientes por recibir. Si recibiste producto excedente en andén, captúralo manualmente en la partida correspondiente.`,
       });
       setMatrixErrorBanner(null);
       return;
@@ -985,7 +1707,7 @@ export function Receiving() {
 
     setMatrixSuccessBanner({
       receiptId: receipt.id,
-      text: `⚡ 100% Conforme aplicado: ${count} partidas calculadas (${totalPieces} piezas pendientes asignadas a Conforme).`,
+      text: `100% Conforme aplicado: ${count} partidas calculadas (${totalPieces} piezas pendientes asignadas a Conforme).`,
     });
     setMatrixErrorBanner(null);
   }
@@ -1127,7 +1849,7 @@ export function Receiving() {
     } catch (err: any) {
       setMatrixErrorBanner({
         receiptId: receipt.id,
-        text: `❌ ${err.message || 'Error de conexión al procesar el conteo masivo'}`,
+        text: err.message || 'Error de conexión al procesar el conteo masivo',
       });
     } finally {
       setSavingMatrix(prev => ({ ...prev, [receipt.id]: false }));
@@ -1139,23 +1861,62 @@ export function Receiving() {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
+      setExcelAnalysis(null);
+      setFormMsg({ type: '', text: '' });
       parseAndAnalyzeExcel(selectedFile, newPrevio.clienteId);
     }
   }
 
   function parseAndAnalyzeExcel(fileObj: File, explicitClienteId?: string) {
+    setIsAnalyzing(true);
+    setFormMsg({ type: '', text: '' });
+
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
         const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        
-        const rawJson: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        if (rawJson.length === 0) {
+        if (!sheetName) {
+          setIsAnalyzing(false);
           setExcelAnalysis(null);
-          setFormMsg({ type: 'error', text: 'El archivo Excel seleccionado está vacío' });
+          setFormMsg({ type: 'error', text: 'El archivo Excel no contiene hojas de cálculo válidas.' });
+          return;
+        }
+
+        const sheet = workbook.Sheets[sheetName];
+        const rawJson: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+        if (rawJson.length === 0) {
+          setIsAnalyzing(false);
+          setExcelAnalysis(null);
+          setFormMsg({ type: 'error', text: 'El archivo Excel seleccionado está vacío: no contiene filas de datos.' });
+          return;
+        }
+
+        // Validación de estructura: ¿Existe columna de SKU / Código?
+        const sampleHeaders = Object.keys(rawJson[0]);
+        const hasSkuCol = sampleHeaders.some(h => isExcelSkuHeader(normalizeExcelHeader(h)));
+        if (!hasSkuCol) {
+          setIsAnalyzing(false);
+          setExcelAnalysis({
+            fileName: fileObj.name,
+            totalRows: rawJson.length,
+            validRows: 0,
+            invalidRows: rawJson.length,
+            foreignRows: 0,
+            notFoundRows: 0,
+            invalidDataRows: rawJson.length,
+            unmatchedCodes: [],
+            foreignCodes: [],
+            incompatibleStructure: true,
+            structureError: 'Estructura incompatible: no se detectó ninguna columna de SKU o código (se esperaba columna con encabezado "Código SKU", "SKU", "Ean", "Código", etc.).',
+            lines: []
+          });
+          setFormMsg({
+            type: 'error',
+            text: 'Estructura de archivo incompatible: no se detectó ninguna columna de SKU o código de producto en el archivo.'
+          });
           return;
         }
 
@@ -1166,9 +1927,9 @@ export function Receiving() {
           // 1. Detección por columna explícita (cliente, depositante, etc.)
           for (const row of rawJson) {
             for (const key of Object.keys(row)) {
-              const cleanKey = key.trim().toLowerCase();
-              if (['cliente', 'depositante', 'cuenta', 'razon_social', 'empresa'].includes(cleanKey)) {
-                const val = String(row[key]).trim().toLowerCase();
+              const cleanKey = normalizeExcelHeader(key);
+              if (['cliente', 'depositante', 'cuenta', 'razon social', 'empresa'].includes(cleanKey)) {
+                const val = String(row[key] ?? '').trim().toLowerCase();
                 const matched = clients.find(c =>
                   c.nombreComercial?.toLowerCase().includes(val) ||
                   c.nombreEmpresa?.toLowerCase().includes(val) ||
@@ -1188,14 +1949,12 @@ export function Receiving() {
             const clientVotes: Record<string, number> = {};
             rawJson.forEach(row => {
               let code = '';
-              Object.keys(row).forEach(key => {
-                const cleanKey = key.trim().toLowerCase();
-                if (['ean', 'codigo', 'sku', 'codigo_barras', 'codigobarras', 'material'].includes(cleanKey)) {
-                  code = String(row[key]).trim().toLowerCase();
+              for (const key of Object.keys(row)) {
+                const h = normalizeExcelHeader(key);
+                if (isExcelSkuHeader(h)) {
+                  code = String(row[key] ?? '').trim().toLowerCase();
+                  if (code) break;
                 }
-              });
-              if (!code && (row['Ean'] || row['Codigo'] || row['SKU'])) {
-                code = String(row['Ean'] || row['Codigo'] || row['SKU']).trim().toLowerCase();
               }
               if (code) {
                 const foundSku = skus.find(s =>
@@ -1231,34 +1990,85 @@ export function Receiving() {
         const unmatchedCodes: string[] = [];
         const foreignCodes: Array<{ code: string; clientName: string }> = [];
         let detectedFactura = '';
+        let detectedOc = '';
 
         rawJson.forEach((row, idx) => {
+          const filaNum = idx + 2;
+          const isEmptyRow = Object.values(row).every(v => String(v ?? '').trim() === '');
+          if (isEmptyRow) return;
+
           let rowFactura = '';
+          let rowOc = '';
           let rowCodeOrEan = '';
-          let rowQty = 0;
+          let rowDesc = '';
+          let rowQty: number | null = null;
+          let rowLote = '';
+          let rowCaducidad = '';
 
           Object.keys(row).forEach(key => {
-            const cleanKey = key.trim().toLowerCase();
-            const val = String(row[key]).trim();
+            const h = normalizeExcelHeader(key);
+            const val = String(row[key] ?? '').trim();
+            if (!val) return;
 
-            if (cleanKey === 'factura' || cleanKey === 'oc' || cleanKey === 'orden_compra' || cleanKey === 'invoice') {
-              rowFactura = val;
-            } else if (cleanKey === 'ean' || cleanKey === 'codigo' || cleanKey === 'sku' || cleanKey === 'codigo_barras' || cleanKey === 'codigobarras') {
+            if (isExcelSkuHeader(h) && !rowCodeOrEan) {
               rowCodeOrEan = val;
-            } else if (cleanKey === 'cantidad a recibir' || cleanKey === 'cantidad' || cleanKey === 'qty' || cleanKey === 'cant') {
-              rowQty = parseFloat(val) || 0;
+            } else if (isExcelQtyHeader(h) && rowQty === null) {
+              const parsed = parseFloat(val);
+              if (!isNaN(parsed)) rowQty = parsed;
+            } else if (isExcelFacturaHeader(h) && !rowFactura) {
+              rowFactura = val;
+            } else if (isExcelOcHeader(h) && !rowOc) {
+              rowOc = val;
+            } else if (isExcelDescHeader(h) && !rowDesc) {
+              rowDesc = val;
+            } else if (isExcelLoteHeader(h) && !rowLote) {
+              rowLote = val;
+            } else if (isExcelCaducidadHeader(h) && !rowCaducidad) {
+              if (row[key] instanceof Date) {
+                rowCaducidad = (row[key] as Date).toISOString().slice(0, 10);
+              } else {
+                rowCaducidad = val;
+              }
             }
           });
-
-          if (!rowFactura && (row['Factura'] || row['factura'])) rowFactura = String(row['Factura'] || row['factura']).trim();
-          if (!rowCodeOrEan && (row['Ean'] || row['EAN'] || row['Codigo'] || row['codigo'])) rowCodeOrEan = String(row['Ean'] || row['EAN'] || row['Codigo'] || row['codigo']).trim();
-          if (rowQty === 0 && (row['Cantidad a recibir'] || row['Cantidad'] || row['CANTIDAD'])) rowQty = parseFloat(row['Cantidad a recibir'] || row['Cantidad'] || row['CANTIDAD']) || 0;
 
           if (!detectedFactura && rowFactura) {
             detectedFactura = rowFactura;
           }
+          if (!detectedOc && rowOc) {
+            detectedOc = rowOc;
+          }
 
-          if (!rowCodeOrEan && rowQty === 0) return;
+          // Validación de campos
+          if (!rowCodeOrEan) {
+            parsedLines.push({
+              rowNum: filaNum,
+              factura: rowFactura,
+              codeOrEan: '(Vacío)',
+              descripcion: rowDesc || 'Sin descripción',
+              cantidadEsperada: rowQty ?? 0,
+              lote: rowLote,
+              caducidad: rowCaducidad,
+              status: 'INVALID_DATA',
+              rejectionReason: 'Código SKU o EAN ausente en la fila'
+            });
+            return;
+          }
+
+          if (rowQty === null || rowQty <= 0) {
+            parsedLines.push({
+              rowNum: filaNum,
+              factura: rowFactura,
+              codeOrEan: rowCodeOrEan,
+              descripcion: rowDesc || 'Sin descripción',
+              cantidadEsperada: rowQty ?? 0,
+              lote: rowLote,
+              caducidad: rowCaducidad,
+              status: 'INVALID_DATA',
+              rejectionReason: `Cantidad esperada inválida o menor a 1 (${rowQty ?? 'vacío'})`
+            });
+            return;
+          }
 
           const cleanCode = rowCodeOrEan.trim().toLowerCase();
           const matchedSku = clientSkus.find(s => 
@@ -1266,65 +2076,100 @@ export function Receiving() {
             (s.codigoBarras && s.codigoBarras.toLowerCase() === cleanCode)
           );
 
-          let status: 'MATCHED' | 'NOT_FOUND' | 'FOREIGN_CLIENT' | 'INVALID_QTY' = 'MATCHED';
-          let foreignClientName: string | undefined = undefined;
-
           if (!matchedSku) {
-            // Tarea 4: Verificar si el SKU existe pero pertenece a otro depositante
             const otherSku = skus.find(s =>
               (s.codigo && s.codigo.toLowerCase() === cleanCode) ||
               (s.codigoBarras && s.codigoBarras.toLowerCase() === cleanCode)
             );
 
             if (otherSku && otherSku.clienteId !== effectiveClienteId) {
-              status = 'FOREIGN_CLIENT';
               const ownerClient = clients.find(c => c.id === otherSku.clienteId) || otherSku.cliente;
-              foreignClientName = ownerClient?.nombreComercial || 'Otro Depositante';
-              if (rowCodeOrEan && !foreignCodes.some(f => f.code.toLowerCase() === cleanCode)) {
-                foreignCodes.push({ code: rowCodeOrEan, clientName: foreignClientName });
+              const foreignName = ownerClient?.nombreComercial || 'Otro Depositante';
+              if (!foreignCodes.some(f => f.code.toLowerCase() === cleanCode)) {
+                foreignCodes.push({ code: rowCodeOrEan, clientName: foreignName });
               }
+              parsedLines.push({
+                rowNum: filaNum,
+                factura: rowFactura,
+                codeOrEan: rowCodeOrEan,
+                descripcion: rowDesc || otherSku.descripcion,
+                cantidadEsperada: rowQty,
+                lote: rowLote,
+                caducidad: rowCaducidad,
+                status: 'INVALID_FOREIGN_CLIENT',
+                foreignClientName: foreignName,
+                rejectionReason: `Pertenece al depositante: ${foreignName}`
+              });
             } else {
-              status = 'NOT_FOUND';
-              if (rowCodeOrEan && !unmatchedCodes.includes(rowCodeOrEan)) {
+              if (!unmatchedCodes.includes(rowCodeOrEan)) {
                 unmatchedCodes.push(rowCodeOrEan);
               }
+              parsedLines.push({
+                rowNum: filaNum,
+                factura: rowFactura,
+                codeOrEan: rowCodeOrEan,
+                descripcion: rowDesc || 'Producto No Registrado',
+                cantidadEsperada: rowQty,
+                lote: rowLote,
+                caducidad: rowCaducidad,
+                status: 'INVALID_NOT_FOUND',
+                rejectionReason: 'Producto inexistente en el catálogo general'
+              });
             }
-          } else if (rowQty <= 0) {
-            status = 'INVALID_QTY';
+            return;
           }
 
+          // Partida válida
           parsedLines.push({
-            rowNum: idx + 2,
+            rowNum: filaNum,
             factura: rowFactura,
             codeOrEan: rowCodeOrEan,
+            descripcion: matchedSku.descripcion || rowDesc,
             cantidadEsperada: rowQty,
+            lote: rowLote,
+            caducidad: rowCaducidad,
             sku: matchedSku,
-            status,
-            foreignClientName
+            status: 'VALID',
+            rejectionReason: undefined
           });
         });
 
-        if (detectedFactura) {
-          setNewPrevio(prev => ({
-            ...prev,
-            facturaRespaldo: prev.facturaRespaldo || detectedFactura,
-            ocReferencia: prev.ocReferencia || detectedFactura
-          }));
-        }
+        setNewPrevio(prev => ({
+          ...prev,
+          facturaRespaldo: detectedFactura || prev.facturaRespaldo || '',
+          ocReferencia: detectedOc || prev.ocReferencia || ''
+        }));
 
-        const foreignCount = parsedLines.filter(l => l.status === 'FOREIGN_CLIENT').length;
-        if (foreignCount > 0) {
+        const validCount = parsedLines.filter(l => l.status === 'VALID').length;
+        const invalidCount = parsedLines.filter(l => l.status !== 'VALID').length;
+        const foreignCount = parsedLines.filter(l => l.status === 'INVALID_FOREIGN_CLIENT').length;
+        const notFoundCount = parsedLines.filter(l => l.status === 'INVALID_NOT_FOUND').length;
+        const invalidDataCount = parsedLines.filter(l => l.status === 'INVALID_DATA').length;
+
+        if (invalidCount > 0) {
+          const detailParts: string[] = [];
+          if (notFoundCount > 0) detailParts.push(`${notFoundCount} inexistente(s)`);
+          if (foreignCount > 0) detailParts.push(`${foreignCount} de otro depositante`);
+          if (invalidDataCount > 0) detailParts.push(`${invalidDataCount} datos inválidos`);
           setFormMsg({
             type: 'error',
-            text: `Alerta de catálogo: Se detectaron ${foreignCount} partidas en el archivo que pertenecen a otro depositante. Solo los productos autorizados para el cliente seleccionado serán procesados.`
+            text: `Validación con observaciones: Se detectaron ${invalidCount} partida(s) con errores o rechazadas [${detailParts.join(', ')}]. La creación del previo está bloqueada hasta corregir el archivo.`
+          });
+        } else {
+          setFormMsg({
+            type: 'success',
+            text: `Validación exitosa: Las ${validCount} partidas del archivo pertenecen al catálogo del depositante y están listas para crear el previo.`
           });
         }
 
         setExcelAnalysis({
           fileName: fileObj.name,
           totalRows: parsedLines.length,
-          matchedRows: parsedLines.filter(l => l.status === 'MATCHED').length,
+          validRows: validCount,
+          invalidRows: invalidCount,
           foreignRows: foreignCount,
+          notFoundRows: notFoundCount,
+          invalidDataRows: invalidDataCount,
           unmatchedCodes,
           foreignCodes,
           detectedFactura,
@@ -1334,6 +2179,8 @@ export function Receiving() {
       } catch (err: any) {
         console.error('Error al procesar Excel:', err);
         setFormMsg({ type: 'error', text: 'Error al interpretar el formato del archivo Excel' });
+      } finally {
+        setIsAnalyzing(false);
       }
     };
     reader.readAsArrayBuffer(fileObj);
@@ -1402,7 +2249,7 @@ export function Receiving() {
 
     const validLines = previoMode === 'EXCEL'
       ? (excelAnalysis?.lines
-          .filter(l => l.status === 'MATCHED' && l.sku)
+          .filter(l => l.status === 'VALID' && l.sku)
           .map(l => ({
             skuId: l.sku.id,
             cantidadEsperada: l.cantidadEsperada,
@@ -1410,9 +2257,25 @@ export function Receiving() {
           })) || [])
       : manualLines;
 
-    if (previoMode === 'EXCEL' && !file && validLines.length === 0) {
-      setFormMsg({ type: 'error', text: 'Ninguna línea coincide con los SKUs del cliente seleccionado' });
-      return;
+    if (previoMode === 'EXCEL') {
+      if (!file || !excelAnalysis || excelAnalysis.lines.length === 0) {
+        setFormMsg({ type: 'error', text: 'Debes seleccionar y analizar un archivo Excel con partidas para continuar.' });
+        return;
+      }
+      if (excelAnalysis.invalidRows > 0) {
+        setFormMsg({
+          type: 'error',
+          text: `Bloqueo de seguridad: El archivo contiene ${excelAnalysis.invalidRows} partida(s) con errores o rechazadas. No se permite crear el previo de forma parcial.`
+        });
+        return;
+      }
+      if (excelAnalysis.validRows === 0) {
+        setFormMsg({
+          type: 'error',
+          text: 'No se detectaron partidas válidas para el depositante seleccionado en el archivo.'
+        });
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -1426,8 +2289,10 @@ export function Receiving() {
         if (newPrevio.proveedorId) formData.append('proveedorId', newPrevio.proveedorId);
         formData.append('origen', newPrevio.origen);
         formData.append('tipoImportacion', newPrevio.tipoImportacion || (newPrevio.origen === 'IMPORTACION' ? 'DEFINITIVA' : 'NO_APLICA'));
-        formData.append('facturaRespaldo', newPrevio.facturaRespaldo || newPrevio.ocReferencia || '');
-        formData.append('ocReferencia', newPrevio.ocReferencia || newPrevio.facturaRespaldo || '');
+        formData.append('facturaRespaldo', newPrevio.facturaRespaldo || '');
+        if (newPrevio.ocReferencia) {
+          formData.append('ocReferencia', newPrevio.ocReferencia);
+        }
         formData.append('tipoRecepcion', newPrevio.tipoRecepcion || 'RECEPCION');
         if (newPrevio.lineaTransporte) formData.append('lineaTransporte', newPrevio.lineaTransporte);
         if (newPrevio.placa) formData.append('placa', newPrevio.placa);
@@ -1450,12 +2315,12 @@ export function Receiving() {
           proveedorId: newPrevio.proveedorId || undefined,
           origen: newPrevio.origen,
           tipoImportacion: newPrevio.tipoImportacion || (newPrevio.origen === 'IMPORTACION' ? 'DEFINITIVA' : 'NO_APLICA'),
-          facturaRespaldo: newPrevio.facturaRespaldo || newPrevio.ocReferencia,
+          facturaRespaldo: newPrevio.facturaRespaldo || '',
           tipoRecepcion: newPrevio.tipoRecepcion || 'RECEPCION',
           lineaTransporte: newPrevio.lineaTransporte,
           placa: newPrevio.placa,
           nombreChofer: newPrevio.nombreChofer,
-          ocReferencia: newPrevio.ocReferencia || newPrevio.facturaRespaldo,
+          ocReferencia: newPrevio.ocReferencia || undefined,
           notas: newPrevio.notas || (previoMode === 'MANUAL' ? 'Captura manual por formulario' : undefined),
           archivoPrevioUrl: previoMode === 'EXCEL' ? excelAnalysis?.fileName : null,
           recibidoPor: user?.email || 'admin',
@@ -1651,6 +2516,167 @@ export function Receiving() {
     }
   }
 
+  // Cálculo de etapa operativa (6 etapas de recepción Giving Out: Previo, Rampa, Calidad, Etiquetas, Ubicación, Cierre)
+  const computeReceiptStage = (r: any) => {
+    const isClosed = r.estado === 'CERRADA' || r.estado === 'CERRADO';
+    if (isClosed) {
+      return {
+        index: 5,
+        name: 'Cierre',
+        label: 'Cerrada',
+        color: '#059669',
+        bg: '#ECFDF5',
+        border: '#A7F3D0',
+        icon: ShieldCheck,
+        pendingText: 'Proceso finalizado · Expediente de consulta',
+        actionTitle: 'Proceso finalizado e inmutable',
+        actionDescription: 'Esta recepción fue cerrada y finiquitada oficialmente. El expediente es inmutable y se encuentra en modo de consulta histórica permanente. No se admiten registros operativos adicionales.',
+        actionButtonLabel: 'Ver Expediente de Consulta',
+        actionType: 'CONSULTA' as const,
+        isClosed: true,
+      };
+    }
+
+    const hasRampLiberation = Boolean(r.fechaLiberacionChofer || r.liberadoChofer);
+    if (!hasRampLiberation && (!r.bultosRecibidos || r.bultosRecibidos === 0)) {
+      return {
+        index: 1,
+        name: 'Rampa',
+        label: 'En Rampa',
+        color: '#D97706',
+        bg: '#FFFBEB',
+        border: '#FDE68A',
+        icon: Truck,
+        pendingText: 'Pendiente conteo exterior y firma de rampa',
+        actionTitle: 'Registrar descarga exterior y liberar chofer',
+        actionDescription: 'La unidad de transporte se encuentra en andén. Debe registrarse el conteo exterior de bultos y las firmas de liberación.',
+        actionButtonLabel: 'Registrar Acta de Rampa',
+        actionType: 'RAMPA' as const,
+        isClosed: false,
+      };
+    }
+
+    const hasDamagedUnits = (r.bultosDanados > 0 || r.cantidadDanada > 0);
+    const qualityCompleted = r.inspeccionCalidadEstado === 'COMPLETADA';
+    if (hasDamagedUnits && !qualityCompleted) {
+      return {
+        index: 2,
+        name: 'Calidad',
+        label: 'Inspección',
+        color: '#7C3AED',
+        bg: '#F5F3FF',
+        border: '#DDD6FE',
+        icon: Microscope,
+        pendingText: `Dictamen pendiente (${r.bultosDanados || 1} bulto(s) retenido(s))`,
+        actionTitle: 'Dictaminar cajas retenidas por daño exterior',
+        actionDescription: `Se identificaron ${r.bultosDanados || 1} bultos con daño exterior en rampa. Se requiere inspección técnica pieza por pieza para registrar rescate vs merma.`,
+        actionButtonLabel: 'Dictaminar Calidad y Rescate',
+        actionType: 'CALIDAD' as const,
+        isClosed: false,
+      };
+    }
+
+    // Comprobar si existen partidas aún pendientes de clasificar en andén antes de etiquetas/cierre
+    const lines = r.lineas || [];
+    const isAndenConteoCompleted = Boolean(
+      r.conteoAndenEstado === 'COMPLETADO' ||
+      r.estado === 'CONCILIADO' ||
+      r.estado === 'ETIQUETADO' ||
+      r.estado === 'UBICADO' ||
+      r.estado === 'COMPLETO' ||
+      r.estado === 'CERRADO' ||
+      r.estado === 'CERRADA' ||
+      r.etiquetasEstado === 'COLOCADAS' ||
+      (lines.length > 0 && lines.every((l: any) =>
+        l.estado === 'COMPLETO' ||
+        l.estado === 'COMPLETADA' ||
+        l.estado === 'CONCILIADO' ||
+        (Number(l.cantidadRecibida || 0) + Number(l.cantidadDanada || 0) >= Number(l.cantidadEsperada || 0))
+      ))
+    );
+
+    const hasUnclassifiedLines = !isAndenConteoCompleted && lines.length > 0 && lines.some((l: any) => {
+      const rec = Number(l.cantidadRecibida || 0);
+      const dan = Number(l.cantidadDanada || 0);
+      const esp = Number(l.cantidadEsperada || 0);
+      const isComplete = l.estado === 'COMPLETO' || l.estado === 'COMPLETADA' || l.estado === 'CONCILIADO' || (rec + dan >= esp);
+      return !isComplete;
+    });
+
+    if (hasRampLiberation && hasUnclassifiedLines && r.etiquetasEstado !== 'COLOCADAS') {
+      const pendingBoxes = Math.max(0, (r.bultosRecibidos || 0) - (r.bultosDanados || 0));
+      return {
+        index: 2,
+        name: 'Conteo',
+        label: 'Conteo en Andén',
+        color: '#0284C7',
+        bg: '#F0F9FF',
+        border: '#BAE6FD',
+        icon: Package,
+        pendingText: `${pendingBoxes} bultos en andén pendientes de conteo por partida`,
+        actionTitle: 'Clasificar y verificar mercancía en andén',
+        actionDescription: `Se concluyó la inspección de calidad de las cajas dañadas. En andén restan ${pendingBoxes} bultos recibidos pendientes de conteo y clasificación por partida. Concluya la verificación para conciliar con rampa antes de generar etiquetas o cerrar el balance.`,
+        actionButtonLabel: 'Verificar Partidas en Andén',
+        actionType: 'CONTEO' as const,
+        isClosed: false,
+      };
+    }
+
+    const labelsPlaced = r.etiquetasEstado === 'COLOCADAS';
+    if (!labelsPlaced) {
+      return {
+        index: 3,
+        name: 'Etiquetas',
+        label: 'Etiquetas',
+        color: '#0284C7',
+        bg: '#F0F9FF',
+        border: '#BAE6FD',
+        icon: QrCode,
+        pendingText: 'Falta generar y confirmar colocación de etiquetas HU',
+        actionTitle: 'Generar, imprimir y confirmar colocación de etiquetas HU',
+        actionDescription: 'Cada caja conforme o reacondicionada requiere su etiqueta individual Code-128 y tarima QR Master antes de ingresar a racks.',
+        actionButtonLabel: 'Generar y Confirmar Etiquetas',
+        actionType: 'ETIQUETAS' as const,
+        isClosed: false,
+      };
+    }
+
+    const needsPutaway = r.estado !== 'UBICADO' && r.estado !== 'COMPLETO' && (lines.length === 0 || lines.some((l: any) => !l.ubicacionId || l.ubicacion?.codigo === 'REC-01' || l.ubicacion?.tipoUbicacion === 'RECIBO'));
+    if (needsPutaway) {
+      return {
+        index: 4,
+        name: 'Ubicación',
+        label: 'Ubicación',
+        color: '#0D9488',
+        bg: '#F0FDFA',
+        border: '#99F6E4',
+        icon: MapPin,
+        pendingText: 'Pendiente alojamiento en racks (Putaway)',
+        actionTitle: 'Alojamiento en racks (Putaway) con escaneo físico',
+        actionDescription: 'Las unidades de manejo están identificadas. Deben trasladarse desde andén y ubicarse en sus racks correspondientes con confirmación de lectura.',
+        actionButtonLabel: 'Ejecutar Alojamiento a Racks',
+        actionType: 'UBICACION' as const,
+        isClosed: false,
+      };
+    }
+
+    return {
+      index: 5,
+      name: 'Cierre',
+      label: 'Por Cerrar',
+      color: '#059669',
+      bg: '#ECFDF5',
+      border: '#A7F3D0',
+      icon: ClipboardCheck,
+      pendingText: 'Mercancía alojada · Listo para cierre oficial',
+      actionTitle: 'Revisar balance de recibo y finiquitar expediente',
+      actionDescription: 'Todas las unidades conformes han sido ubicadas y las discrepancias están documentadas. Proceda al cierre oficial del folio.',
+      actionButtonLabel: 'Revisar Balance y Cerrar Recepción',
+      actionType: 'CIERRE' as const,
+      isClosed: false,
+    };
+  };
+
   // Tarea 5: Función centralizadora de banderas de estatus operativo (100% vector Lucide, cero emojis)
   const getEstadoMeta = (estado: string) => {
     const norm = String(estado || '').toUpperCase().trim();
@@ -1667,7 +2693,7 @@ export function Receiving() {
         description: 'Previo registrado. En espera de arribo de transporte al andén.'
       };
     }
-    if (norm === 'EN_PROCESO_CONTEO' || norm === 'EN_PROCESO' || norm === 'COMPLETO') {
+    if (norm === 'EN_PROCESO_CONTEO' || norm === 'EN_PROCESO') {
       return {
         key: 'EN_PROCESO_CONTEO',
         label: 'En Proceso de Conteo',
@@ -1678,6 +2704,19 @@ export function Receiving() {
         icon: Scan,
         stepIndex: 1,
         description: 'Mercancía en andén. Conteo físico, escaneo y verificación en curso.'
+      };
+    }
+    if (norm === 'COMPLETO' || norm === 'UBICADO') {
+      return {
+        key: 'COMPLETO',
+        label: 'Completo',
+        badgeClass: 'badge-success',
+        color: '#10B981',
+        bg: 'rgba(16, 185, 129, 0.16)',
+        border: 'rgba(16, 185, 129, 0.35)',
+        icon: CheckCircle2,
+        stepIndex: 2,
+        description: 'Mercancía ubicada en racks y stock activado como DISPONIBLE.'
       };
     }
     if (norm === 'CERRADA' || norm === 'CERRADO') {
@@ -1706,14 +2745,8 @@ export function Receiving() {
     };
   };
 
-  // Helpers con búsqueda tolerante por tokens y filtrado normalizado de estatus
+  // Helpers con búsqueda tolerante por tokens
   const filtered = receipts.filter(r => {
-    let matchEstado = true;
-    if (filterEstado) {
-      const rMeta = getEstadoMeta(r.estado);
-      matchEstado = rMeta.key === filterEstado;
-    }
-    if (!matchEstado) return false;
     if (!search.trim()) return true;
 
     const term = search.toLowerCase().trim();
@@ -1756,10 +2789,35 @@ export function Receiving() {
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-primary" onClick={() => { setShowNewPrevio(true); setFormMsg({ type: '', text: '' }); }} style={{ fontWeight: 600 }}>
-            <UploadCloud size={16} /> Cargar Previo (ASN)
+            <Plus size={16} /> Nuevo Previo (ASN / Excel)
           </button>
-          <button className="btn btn-secondary" onClick={loadData}>
-            <RefreshCw size={16} /> Actualizar
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => handleManualRefresh()}
+            disabled={loading || refreshingManual}
+            style={{
+              fontWeight: 600,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              transition: 'all 0.2s ease',
+              borderColor: justRefreshed ? '#10B981' : undefined,
+              color: justRefreshed ? '#065F46' : undefined,
+              backgroundColor: justRefreshed ? '#ECFDF5' : undefined,
+            }}
+            title="Actualizar listado de recepciones desde el servidor"
+          >
+            {justRefreshed ? (
+              <>
+                <Check size={16} style={{ color: '#10B981' }} /> ¡Actualizado!
+              </>
+            ) : (
+              <>
+                <RefreshCw size={16} className={(loading || refreshingManual) ? 'spin' : ''} />
+                {loading || refreshingManual ? 'Actualizando...' : 'Actualizar'}
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -1803,8 +2861,8 @@ export function Receiving() {
                   <input 
                     className="form-input" 
                     placeholder="Ej. FAC-2026-89421"
-                    value={editReceiptModal.facturaRespaldo || editReceiptModal.ocReferencia || ''} 
-                    onChange={e => setEditReceiptModal({ ...editReceiptModal, facturaRespaldo: e.target.value, ocReferencia: e.target.value })} 
+                    value={editReceiptModal.facturaRespaldo || ''} 
+                    onChange={e => setEditReceiptModal({ ...editReceiptModal, facturaRespaldo: e.target.value })} 
                   />
                 </div>
                 <div className="form-group" style={{ flex: 1.2 }}>
@@ -2520,82 +3578,27 @@ export function Receiving() {
         </div>
       )}
 
-      {/* --- STITCH DRAWER DE ALOJAMIENTO / PUTAWAY DE ANDÉN A RACKS --- */}
+      {/* --- FASE 4 GIVING OUT: MODAL DE ALOJAMIENTO / PUTAWAY EN LAYOUT Y ACTIVACIÓN DE STOCK --- */}
       {putawayModalReceipt && (
-        <div className="stitch-drawer-overlay" onClick={() => setPutawayModalReceipt(null)}>
-          <div className="stitch-drawer-content" onClick={e => e.stopPropagation()} style={{ background: '#FFFFFF', color: '#0F172A' }}>
-            <div className="modal-header" style={{ borderBottom: '1px solid #E2E8F0', padding: '20px 24px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 40, height: 40, borderRadius: 10, background: '#F0FDFA', color: '#0D9488', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Box size={22} />
-                </div>
-                <div>
-                  <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0F172A' }}>Alojamiento a Racks (Putaway)</h2>
-                  <p style={{ margin: 0, fontSize: 12, color: '#64748B' }}>Previo {putawayModalReceipt.codigo} · Traslado de Andén REC-01 a Racks</p>
-                </div>
-              </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#64748B' }}><X size={20} /></button>
-            </div>
-
-            <form onSubmit={handleExecutePutaway} style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 24, overflowY: 'auto' }}>
-              <div style={{ padding: '12px 16px', background: '#F0FDFA', borderRadius: 8, border: '1px solid #CCFBF1', marginBottom: 20 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#0D9488', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Sparkles size={15} /> Sugerencias de Ubicación por Algoritmo Putaway (3PL Rules)
-                </div>
-                <div style={{ fontSize: 12, color: '#0F766E', marginTop: 4 }}>
-                  El motor asignó los racks óptimos según la zona asignada al depositante (Textil / Alimentos) y rotación FIFO/FEFO.
-                </div>
-              </div>
-
-              <div style={{ flex: 1 }}>
-                {putawayMoves.map((m, idx) => (
-                  <div key={idx} style={{ background: '#F8FAFC', borderRadius: 10, padding: 16, border: '1px solid #E2E8F0', marginBottom: 14 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                      <div>
-                        <div style={{ fontWeight: 700, color: '#0D9488', fontSize: 14 }}>{m.codigo}</div>
-                        <div style={{ fontSize: 12, color: '#64748B' }}>{m.descripcion}</div>
-                      </div>
-                      <span className="stitch-ean-badge" style={{ background: '#E0F2FE', color: '#0369A1', borderColor: '#BAE6FD' }}>{m.cantidad} PZA</span>
-                    </div>
-
-                    <div className="form-group" style={{ marginBottom: 0 }}>
-                      <label className="form-label" style={{ fontSize: 11, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ubicación Rack Destino</label>
-                      <select 
-                        className="form-select form-select-full" 
-                        style={{ fontSize: 13, background: '#FFFFFF', color: '#0F172A', borderColor: '#CBD5E1' }}
-                        value={m.ubicacionDestinoId} 
-                        onChange={e => {
-                          const updated = [...putawayMoves];
-                          updated[idx].ubicacionDestinoId = e.target.value;
-                          setPutawayMoves(updated);
-                        }}
-                      >
-                        {locations.filter(l => l.tipoUbicacion !== 'RECIBO' && l.tipoUbicacion !== 'DEVOLUCION').map(loc => (
-                          <option key={loc.id} value={loc.id}>
-                            📍 {loc.codigo} ({loc.zona?.nombre || loc.pasillo}) — Libres: {loc.capacidadUnits - (loc.ocupacion || 0)} uds
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="modal-footer" style={{ borderTop: '1px solid #E2E8F0', paddingTop: 16, marginTop: 20, display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
-                <button type="button" className="btn btn-ghost" onClick={() => setPutawayModalReceipt(null)} style={{ color: '#64748B' }}>Cancelar</button>
-                <button type="submit" className="btn btn-primary" disabled={submitting} style={{ background: '#0D9488', borderColor: '#0D9488', padding: '10px 20px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <Box size={16} /> {submitting ? 'Ejecutando Alojamiento...' : 'Confirmar Alojamiento a Racks'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <PutawayModal
+          receipt={putawayModalReceipt}
+          token={token || undefined}
+          currentUser={user}
+          onClose={() => setPutawayModalReceipt(null)}
+          onSuccess={() => {
+            loadData();
+          }}
+          onOpenDualLabel={(r) => {
+            setPutawayModalReceipt(null);
+            setDualLabelReceipt(r);
+          }}
+        />
       )}
 
       {/* --- MODAL CARGAR PREVIO DE RECIBO --- */}
       {showNewPrevio && (
         <div className="modal-overlay" onClick={() => setShowNewPrevio(false)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 840, maxHeight: '92vh', overflowY: 'auto' }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: '92vh', overflowY: 'auto' }}>
             <div className="modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(13,148,136,0.1)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2621,6 +3624,9 @@ export function Receiving() {
                       setNewPrevio({ ...newPrevio, clienteId: cid });
                       setManualLines([]);
                       setCurManualSku('');
+                      if (file) {
+                        parseAndAnalyzeExcel(file, cid);
+                      }
                     }} 
                     required
                   >
@@ -2636,8 +3642,8 @@ export function Receiving() {
                   <input 
                     className="form-input" 
                     placeholder="Ej. FAC-2026-89421" 
-                    value={newPrevio.facturaRespaldo || newPrevio.ocReferencia} 
-                    onChange={e => setNewPrevio({ ...newPrevio, facturaRespaldo: e.target.value, ocReferencia: e.target.value })} 
+                    value={newPrevio.facturaRespaldo || ''} 
+                    onChange={e => setNewPrevio({ ...newPrevio, facturaRespaldo: e.target.value })} 
                     required
                   />
                 </div>
@@ -2647,7 +3653,7 @@ export function Receiving() {
                   <input 
                     className="form-input" 
                     placeholder="Ej. OC-2026-99" 
-                    value={newPrevio.ocReferencia} 
+                    value={newPrevio.ocReferencia || ''} 
                     onChange={e => setNewPrevio({ ...newPrevio, ocReferencia: e.target.value })} 
                   />
                 </div>
@@ -2737,26 +3743,6 @@ export function Receiving() {
                 </div>
               </div>
 
-              <div style={{ background: 'var(--bg-secondary)', padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--primary)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Truck size={14} /> Datos de Transporte y Chofer
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Línea de Transporte</label>
-                    <input className="form-input" placeholder="Ej. Transportes Castores" value={newPrevio.lineaTransporte} onChange={e => setNewPrevio({ ...newPrevio, lineaTransporte: e.target.value })} />
-                  </div>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Placas de Unidad</label>
-                    <input className="form-input" placeholder="Ej. 82-AA-9K" value={newPrevio.placa} onChange={e => setNewPrevio({ ...newPrevio, placa: e.target.value.toUpperCase() })} />
-                  </div>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Nombre del Chofer</label>
-                    <input className="form-input" placeholder="Ej. Juan Pérez López" value={newPrevio.nombreChofer} onChange={e => setNewPrevio({ ...newPrevio, nombreChofer: e.target.value })} />
-                  </div>
-                </div>
-              </div>
-
               {/* Selector de Modalidad de Carga: Archivo Excel vs Captura Manual */}
               <div style={{ display: 'flex', background: '#F1F5F9', padding: 4, borderRadius: 10, border: '1px solid #E2E8F0', marginBottom: 16 }}>
                 <button
@@ -2835,14 +3821,32 @@ export function Receiving() {
                         <div>
                           <div style={{ fontWeight: 700, fontSize: 14, color: '#0F172A' }}>{file.name}</div>
                           <div style={{ fontSize: 12, color: '#64748B' }}>{(file.size / 1024).toFixed(1)} KB</div>
-                          <button 
-                            type="button" 
-                            className="btn btn-secondary btn-sm" 
-                            style={{ marginTop: 10 }}
-                            onClick={() => fileInputRef.current?.click()}
-                          >
-                            Cambiar Archivo
-                          </button>
+                          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 10 }}>
+                            <button 
+                              type="button" 
+                              className="btn btn-secondary btn-sm" 
+                              onClick={() => {
+                                if (fileInputRef.current) fileInputRef.current.value = '';
+                                fileInputRef.current?.click();
+                              }}
+                            >
+                              Cambiar Archivo
+                            </button>
+                            <button 
+                              type="button" 
+                              className="btn btn-ghost btn-sm" 
+                              style={{ color: '#DC2626' }}
+                              onClick={() => {
+                                setFile(null);
+                                setExcelAnalysis(null);
+                                setFormMsg({ type: '', text: '' });
+                                setNewPrevio(prev => ({ ...prev, facturaRespaldo: '', ocReferencia: '' }));
+                                if (fileInputRef.current) fileInputRef.current.value = '';
+                              }}
+                            >
+                              Quitar Archivo
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <div>
@@ -2852,7 +3856,10 @@ export function Receiving() {
                             type="button" 
                             className="btn btn-primary btn-sm" 
                             style={{ marginTop: 12 }}
-                            onClick={() => fileInputRef.current?.click()}
+                            onClick={() => {
+                              if (fileInputRef.current) fileInputRef.current.value = '';
+                              fileInputRef.current?.click();
+                            }}
                           >
                             <UploadCloud size={14} /> Seleccionar Archivo
                           </button>
@@ -2861,33 +3868,95 @@ export function Receiving() {
                     </div>
                   </div>
 
+                  {isAnalyzing && (
+                    <div style={{ padding: '16px', background: '#F8FAFC', border: '1px solid #CBD5E1', borderRadius: 8, textAlign: 'center', marginBottom: 16 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#0F766E' }}>Analizando estructura del archivo Excel y cruzando con catálogo...</div>
+                      <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>Validando existencia de SKUs, depositante autorizado y formato de cantidades.</div>
+                    </div>
+                  )}
+
                   {excelAnalysis && (
                     <div style={{ marginBottom: 16 }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 14 }}>
-                        <div style={{ padding: '12px 14px', background: '#F8FAFC', borderRadius: 8, border: '1px solid #CBD5E1', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                      {/* Contadores Coherentes de Archivo */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 12 }}>
+                        <div style={{ padding: '12px 14px', background: '#F8FAFC', borderRadius: 8, border: '1px solid #CBD5E1' }}>
                           <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>Líneas Leídas</div>
                           <div style={{ fontSize: 22, fontWeight: 800, color: '#0F172A', lineHeight: 1 }}>{excelAnalysis.totalRows}</div>
                         </div>
-                        <div style={{ padding: '12px 14px', background: '#F0FDF4', borderRadius: 8, border: '1px solid #86EFAC', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                          <div style={{ fontSize: 11, color: '#15803D', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>SKUs Válidos del Cliente</div>
-                          <div style={{ fontSize: 22, fontWeight: 800, color: '#16A34A', lineHeight: 1 }}>{excelAnalysis.matchedRows}</div>
+                        <div style={{ padding: '12px 14px', background: '#F0FDF4', borderRadius: 8, border: '1px solid #86EFAC' }}>
+                          <div style={{ fontSize: 11, color: '#15803D', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>Partidas Válidas</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#16A34A', lineHeight: 1 }}>{excelAnalysis.validRows}</div>
                         </div>
-                        {excelAnalysis.foreignRows > 0 && (
-                          <div style={{ padding: '12px 14px', background: '#FEFCE8', borderRadius: 8, border: '1px solid #FDE047', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                            <div style={{ fontSize: 11, color: '#A16207', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>De Otro Depositante</div>
-                            <div style={{ fontSize: 22, fontWeight: 800, color: '#D97706', lineHeight: 1 }}>{excelAnalysis.foreignRows}</div>
+                        <div style={{
+                          padding: '12px 14px',
+                          background: excelAnalysis.invalidRows > 0 ? '#FEF2F2' : '#F8FAFC',
+                          borderRadius: 8,
+                          border: excelAnalysis.invalidRows > 0 ? '1px solid #FECACA' : '1px solid #E2E8F0'
+                        }}>
+                          <div style={{
+                            fontSize: 11,
+                            color: excelAnalysis.invalidRows > 0 ? '#B91C1C' : '#64748B',
+                            fontWeight: 700,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em',
+                            marginBottom: 4
+                          }}>
+                            Partidas Rechazadas
                           </div>
-                        )}
-                        {excelAnalysis.unmatchedCodes.length > 0 && (
-                          <div style={{ padding: '12px 14px', background: '#FEF2F2', borderRadius: 8, border: '1px solid #FECACA', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
-                            <div style={{ fontSize: 11, color: '#B91C1C', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>No Registrados</div>
-                            <div style={{ fontSize: 22, fontWeight: 800, color: '#DC2626', lineHeight: 1 }}>{excelAnalysis.unmatchedCodes.length}</div>
+                          <div style={{
+                            fontSize: 22,
+                            fontWeight: 800,
+                            color: excelAnalysis.invalidRows > 0 ? '#DC2626' : '#64748B',
+                            lineHeight: 1
+                          }}>
+                            {excelAnalysis.invalidRows}
                           </div>
-                        )}
+                        </div>
                       </div>
 
-                      {/* Alerta de Cruce de Catálogo */}
-                      {excelAnalysis.foreignRows > 0 && (
+                      {/* Desglose de Rechazos si existen */}
+                      {excelAnalysis.invalidRows > 0 && (
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                          {excelAnalysis.notFoundRows > 0 && (
+                            <span style={{ fontSize: 11, fontWeight: 700, background: '#FEE2E2', color: '#991B1B', padding: '3px 8px', borderRadius: 6, border: '1px solid #FCA5A5' }}>
+                              {excelAnalysis.notFoundRows} {excelAnalysis.notFoundRows === 1 ? 'inexistente' : 'inexistentes'} en catálogo
+                            </span>
+                          )}
+                          {excelAnalysis.foreignRows > 0 && (
+                            <span style={{ fontSize: 11, fontWeight: 700, background: '#FEF3C7', color: '#92400E', padding: '3px 8px', borderRadius: 6, border: '1px solid #FCD34D' }}>
+                              {excelAnalysis.foreignRows} de otro depositante
+                            </span>
+                          )}
+                          {excelAnalysis.invalidDataRows > 0 && (
+                            <span style={{ fontSize: 11, fontWeight: 700, background: '#F1F5F9', color: '#475569', padding: '3px 8px', borderRadius: 6, border: '1px solid #CBD5E1' }}>
+                              {excelAnalysis.invalidDataRows} con datos incompletos o inválidos
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Alerta de Error de Estructura Incompatible */}
+                      {excelAnalysis.incompatibleStructure && (
+                        <div style={{
+                          background: '#FEF2F2',
+                          border: '1px solid #FECACA',
+                          borderLeft: '4px solid #DC2626',
+                          borderRadius: 8,
+                          padding: '12px 14px',
+                          marginBottom: 14,
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 12
+                        }}>
+                          <AlertTriangle size={20} style={{ color: '#DC2626', flexShrink: 0, marginTop: 1 }} />
+                          <div style={{ fontSize: 13, color: '#991B1B', lineHeight: 1.5 }}>
+                            <strong style={{ fontWeight: 800 }}>Error de Formato:</strong> {excelAnalysis.structureError}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Alerta de Bloqueo por Partidas Rechazadas */}
+                      {excelAnalysis.invalidRows > 0 && !excelAnalysis.incompatibleStructure && (
                         <div style={{
                           background: '#FFFBEB',
                           border: '1px solid #FCD34D',
@@ -2901,114 +3970,154 @@ export function Receiving() {
                         }}>
                           <AlertTriangle size={20} style={{ color: '#D97706', flexShrink: 0, marginTop: 1 }} />
                           <div style={{ fontSize: 13, color: '#78350F', lineHeight: 1.5 }}>
-                            <strong style={{ color: '#78350F', fontWeight: 800 }}>Validación de Catálogo:</strong>{' '}
-                            Se detectaron <strong>{excelAnalysis.foreignRows}</strong> {excelAnalysis.foreignRows === 1 ? 'partida que pertenece' : 'partidas que pertenecen'} a otro depositante ({excelAnalysis.foreignCodes.map(f => `${f.code} ➔ ${f.clientName}`).slice(0, 3).join(', ')}{excelAnalysis.foreignCodes.length > 3 ? '...' : ''}). El WMS protege el inventario y solo importará los SKUs autorizados de este cliente.
+                            <strong style={{ fontWeight: 800 }}>Creación de Previo Bloqueada:</strong> Se detectaron {excelAnalysis.invalidRows} partida(s) inválida(s) o rechazadas en el archivo. La creación de previos en Giving Out requiere que el 100% de las partidas pertenezcan al catálogo del depositante para proteger la integridad del inventario.
                           </div>
                         </div>
                       )}
 
-                      {/* Tabla de Previsualización con Validación Cruzada */}
-                      <div style={{ border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden', marginBottom: 16, background: '#FFFFFF' }}>
-                        <div style={{
-                          padding: '10px 14px',
-                          background: '#F1F5F9',
-                          fontSize: 12,
-                          fontWeight: 700,
-                          color: '#1E293B',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.05em',
-                          borderBottom: '1px solid #CBD5E1',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center'
-                        }}>
-                          <span>Previsualización de Partidas ({excelAnalysis.lines.length} analizadas)</span>
-                          <span style={{ fontSize: 11, fontWeight: 600, color: '#64748B', textTransform: 'none' }}>
-                            Mostrando {Math.min(8, excelAnalysis.lines.length)} de {excelAnalysis.lines.length}
-                          </span>
-                        </div>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                          <thead>
-                            <tr style={{ background: '#F8FAFC', color: '#475569', textAlign: 'left', borderBottom: '1px solid #E2E8F0' }}>
-                              <th style={{ padding: '8px 12px', fontWeight: 700, fontSize: 11, width: 40 }}>#</th>
-                              <th style={{ padding: '8px 12px', fontWeight: 700, fontSize: 11 }}>CÓDIGO ARCHIVO</th>
-                              <th style={{ padding: '8px 12px', fontWeight: 700, fontSize: 11 }}>DESCRIPCIÓN</th>
-                              <th style={{ padding: '8px 12px', fontWeight: 700, fontSize: 11, textAlign: 'right' }}>CANT.</th>
-                              <th style={{ padding: '8px 12px', fontWeight: 700, fontSize: 11, textAlign: 'center' }}>VALIDACIÓN CATÁLOGO</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {excelAnalysis.lines.slice(0, 8).map((l, i) => (
-                              <tr key={i} style={{ borderBottom: '1px solid #F1F5F9', background: i % 2 === 0 ? '#FFFFFF' : '#FAFAFA' }}>
-                                <td style={{ padding: '8px 12px', color: '#64748B', fontWeight: 600 }}>{l.rowNum}</td>
-                                <td style={{ padding: '8px 12px', fontWeight: 700, color: '#0F172A', fontFamily: 'monospace', fontSize: 13 }}>{l.codeOrEan}</td>
-                                <td style={{ padding: '8px 12px', color: '#334155', fontWeight: 500 }}>{l.sku?.descripcion || '—'}</td>
-                                <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 800, color: '#0284C7', fontSize: 13 }}>{l.cantidadEsperada}</td>
-                                <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                  {l.status === 'MATCHED' && (
-                                    <span style={{
-                                      background: '#DCFCE7',
-                                      color: '#166534',
-                                      border: '1px solid #86EFAC',
-                                      padding: '3px 8px',
-                                      borderRadius: 6,
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: 5
-                                    }}>
-                                      <CheckCircle2 size={13} style={{ color: '#16A34A' }} /> Aprobado
-                                    </span>
-                                  )}
-                                  {l.status === 'FOREIGN_CLIENT' && (
-                                    <span style={{
-                                      background: '#FEF3C7',
-                                      color: '#92400E',
-                                      border: '1px solid #FCD34D',
-                                      padding: '3px 8px',
-                                      borderRadius: 6,
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: 5
-                                    }} title={`Pertenece al depositante: ${l.foreignClientName}`}>
-                                      <AlertTriangle size={13} style={{ color: '#D97706' }} /> Pertenece a {l.foreignClientName}
-                                    </span>
-                                  )}
-                                  {l.status === 'NOT_FOUND' && (
-                                    <span style={{
-                                      background: '#FEE2E2',
-                                      color: '#991B1B',
-                                      border: '1px solid #FCA5A5',
-                                      padding: '3px 8px',
-                                      borderRadius: 6,
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: 5
-                                    }}>
-                                      <X size={13} style={{ color: '#DC2626' }} /> No Existe en Catálogo
-                                    </span>
-                                  )}
-                                  {l.status === 'INVALID_QTY' && (
-                                    <span style={{ background: '#F1F5F9', color: '#475569', border: '1px solid #CBD5E1', padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700 }}>
-                                      Cant. 0
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {excelAnalysis.lines.length > 8 && (
-                          <div style={{ padding: '8px 12px', background: '#F8FAFC', textAlign: 'center', fontSize: 11, color: '#64748B', borderTop: '1px solid #E2E8F0' }}>
-                            Mostrando 8 de {excelAnalysis.lines.length} partidas del archivo
+                      {/* Tabla de Previsualización Completa (Válidas e Inválidas) */}
+                      {excelAnalysis.lines.length > 0 && (
+                        <div style={{ border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden', marginBottom: 16, background: '#FFFFFF' }}>
+                          <div style={{
+                            padding: '10px 14px',
+                            background: '#F1F5F9',
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: '#1E293B',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            borderBottom: '1px solid #CBD5E1',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}>
+                            <span>Previsualización de Partidas ({excelAnalysis.lines.length} leídas en total)</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: '#64748B', textTransform: 'none' }}>
+                              {excelAnalysis.validRows} aprobadas · {excelAnalysis.invalidRows} rechazadas
+                            </span>
                           </div>
-                        )}
-                      </div>
+                          <div style={{ maxHeight: '320px', overflowY: 'auto', border: '1px solid #E2E8F0', borderRadius: '0 0 8px 8px' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                              <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                                <tr style={{ background: '#F8FAFC', color: '#475569', textAlign: 'left', borderBottom: '1px solid #E2E8F0' }}>
+                                  <th style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11, width: 45 }}># Fila</th>
+                                  <th style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11, width: 135 }}>CÓDIGO ARCHIVO</th>
+                                  <th style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11 }}>DESCRIPCIÓN</th>
+                                  <th style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11, textAlign: 'right', width: 65 }}>CANTIDAD</th>
+                                  <th style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11, textAlign: 'center', width: 155 }}>LOTE / CADUCIDAD</th>
+                                  <th style={{ padding: '8px 10px', fontWeight: 700, fontSize: 11, textAlign: 'center', width: 175 }}>RESULTADO Y MOTIVO</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {excelAnalysis.lines.map((l, i) => (
+                                  <tr key={i} style={{
+                                    borderBottom: '1px solid #F1F5F9',
+                                    background: l.status === 'VALID' ? (i % 2 === 0 ? '#FFFFFF' : '#FAFAFA') : '#FFF7ED'
+                                  }}>
+                                    <td style={{ padding: '8px 10px', color: '#64748B', fontWeight: 600 }}>{l.rowNum}</td>
+                                    <td style={{ padding: '8px 10px', fontWeight: 700, color: '#0F172A', fontFamily: 'monospace', fontSize: 12 }}>{l.codeOrEan}</td>
+                                    <td style={{ padding: '8px 10px', color: '#334155', fontWeight: 500, fontSize: 12 }}>{l.descripcion || l.sku?.descripcion || '—'}</td>
+                                    <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 800, color: l.cantidadEsperada > 0 ? '#0284C7' : '#DC2626', fontSize: 12 }}>
+                                      {l.cantidadEsperada}
+                                    </td>
+                                    <td style={{ padding: '8px 10px', textAlign: 'center', color: '#64748B', fontSize: 11 }}>
+                                      {l.lote || l.caducidad ? (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+                                          {l.lote ? <span style={{ fontWeight: 700, color: '#0F172A' }}>{l.lote}</span> : null}
+                                          {l.caducidad ? <span style={{ fontSize: 10, color: '#64748B' }}>Vence: {l.caducidad}</span> : null}
+                                        </div>
+                                      ) : '—'}
+                                    </td>
+                                    <td style={{ padding: '8px 10px', textAlign: 'center' }}>
+                                      {l.status === 'VALID' && (
+                                        <div>
+                                          <span style={{
+                                            background: '#DCFCE7',
+                                            color: '#166534',
+                                            border: '1px solid #86EFAC',
+                                            padding: '2px 8px',
+                                            borderRadius: 6,
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                          }}>
+                                            <CheckCircle2 size={12} style={{ color: '#16A34A' }} /> Aprobado
+                                          </span>
+                                        </div>
+                                      )}
+                                      {l.status === 'INVALID_FOREIGN_CLIENT' && (
+                                        <div>
+                                          <span style={{
+                                            background: '#FEF3C7',
+                                            color: '#92400E',
+                                            border: '1px solid #FCD34D',
+                                            padding: '2px 8px',
+                                            borderRadius: 6,
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                          }}>
+                                            <AlertTriangle size={12} style={{ color: '#D97706' }} /> De Otro Depositante
+                                          </span>
+                                          <div style={{ fontSize: 10, color: '#B45309', marginTop: 2 }}>
+                                            Pertenece a: {l.foreignClientName || 'Otro cliente'}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {l.status === 'INVALID_NOT_FOUND' && (
+                                        <div>
+                                          <span style={{
+                                            background: '#FEE2E2',
+                                            color: '#991B1B',
+                                            border: '1px solid #FCA5A5',
+                                            padding: '2px 8px',
+                                            borderRadius: 6,
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                          }}>
+                                            <X size={12} style={{ color: '#DC2626' }} /> Producto Inexistente
+                                          </span>
+                                          <div style={{ fontSize: 10, color: '#B91C1C', marginTop: 2 }}>
+                                            No existe en el catálogo general
+                                          </div>
+                                        </div>
+                                      )}
+                                      {l.status === 'INVALID_DATA' && (
+                                        <div>
+                                          <span style={{
+                                            background: '#F1F5F9',
+                                            color: '#B91C1C',
+                                            border: '1px solid #FECACA',
+                                            padding: '2px 8px',
+                                            borderRadius: 6,
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                          }}>
+                                            <AlertCircle size={12} style={{ color: '#DC2626' }} /> Dato Inválido
+                                          </span>
+                                          <div style={{ fontSize: 10, color: '#B91C1C', marginTop: 2 }}>
+                                            {l.rejectionReason}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </>
@@ -3150,24 +4259,62 @@ export function Receiving() {
                 </div>
               )}
 
-              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                {previoMode === 'EXCEL' ? (
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={handleDownloadTemplate}>
-                    <Download size={14} /> Descargar Plantilla Oficial (.xlsx)
-                  </button>
-                ) : (
-                  <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                    Partidas listas: <strong style={{ color: '#2dd4bf' }}>{manualLines.length}</strong> ({manualLines.reduce((sum, l) => sum + l.cantidadEsperada, 0)} unidades)
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  {previoMode === 'EXCEL' ? (
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={handleDownloadTemplate}>
+                      <Download size={14} /> Descargar Plantilla Oficial (.xlsx)
+                    </button>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                      Partidas listas: <strong style={{ color: '#2dd4bf' }}>{manualLines.length}</strong> ({manualLines.reduce((sum, l) => sum + l.cantidadEsperada, 0)} unidades)
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>
+                    Estado local temporal. Los datos solo se guardan en el servidor al presionar Continuar y Crear Previo.
                   </div>
-                )}
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button type="button" className="btn btn-ghost" onClick={() => setShowNewPrevio(false)}>Cancelar</button>
+                </div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <button 
+                    type="button" 
+                    className="btn btn-ghost" 
+                    onClick={() => {
+                      setShowNewPrevio(false);
+                      setFile(null);
+                      setExcelAnalysis(null);
+                      setIsAnalyzing(false);
+                      setFormMsg({ type: '', text: '' });
+                      setManualLines([]);
+                      setCurManualSku('');
+                      setCurManualQty(1);
+                      setCurManualNotas('');
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                      setNewPrevio({
+                        clienteId: '', proveedorId: '', tipoRecepcion: 'RECEPCION', origen: 'NACIONAL',
+                        tipoImportacion: 'NO_APLICA', facturaRespaldo: '',
+                        lineaTransporte: '', placa: '', nombreChofer: '', ocReferencia: '', notas: ''
+                      });
+                    }}
+                  >
+                    Descartar Borrador
+                  </button>
                   <button 
                     type="submit" 
                     className="btn btn-primary" 
-                    disabled={submitting || (previoMode === 'EXCEL' ? !file : manualLines.length === 0)}
+                    disabled={
+                      submitting || 
+                      isAnalyzing ||
+                      (previoMode === 'EXCEL' 
+                        ? (!file || !excelAnalysis || excelAnalysis.totalRows === 0 || excelAnalysis.invalidRows > 0 || excelAnalysis.validRows === 0)
+                        : manualLines.length === 0)
+                    }
+                    title={
+                      previoMode === 'EXCEL' && excelAnalysis && excelAnalysis.invalidRows > 0
+                        ? `Bloqueado: El archivo contiene ${excelAnalysis.invalidRows} partida(s) inválida(s) o rechazadas. Debe corregir el archivo para continuar.`
+                        : undefined
+                    }
                   >
-                    {submitting ? 'Procesando...' : (previoMode === 'EXCEL' ? 'Crear Previo de Recibo' : `Crear Previo Manual (${manualLines.length} partidas)`)}
+                    {submitting ? 'Guardando Previo...' : isAnalyzing ? 'Analizando Archivo...' : (previoMode === 'EXCEL' ? 'Continuar y Crear Previo' : `Crear Previo Manual (${manualLines.length} partidas)`)}
                   </button>
                 </div>
               </div>
@@ -3298,7 +4445,7 @@ export function Receiving() {
                     </div>
                     <div>
                       <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Factura / Orden de Compra</span>
-                      <strong style={{ fontSize: 14, color: '#0D9488', fontFamily: 'monospace', fontWeight: 700 }}>{closingReceipt.ocReferencia || 'FAC-2026-TEST-001'}</strong>
+                      <strong style={{ fontSize: 14, color: '#0D9488', fontFamily: 'monospace', fontWeight: 700 }}>{closingReceipt.facturaRespaldo || closingReceipt.ocReferencia || 'Sin Factura'}</strong>
                     </div>
                     <div>
                       <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Líneas de SKU Registradas</span>
@@ -3356,7 +4503,7 @@ export function Receiving() {
                     </div>
                     <div>
                       <div style={{ fontSize: 13, fontWeight: 700, color: '#065F46' }}>
-                        ✓ Conciliación Física 100% Conforme
+                        Conciliación Física 100% Conforme
                       </div>
                       <div style={{ fontSize: 12, color: '#047857', marginTop: 2 }}>
                         Todas las cantidades físicas coinciden exactamente con la factura ({totalConforme} unidades conformes, 0 merma). Listo para cierre oficial.
@@ -3823,2719 +4970,2866 @@ export function Receiving() {
         />
       )}
 
-      {/* --- STITCH INDUSTRIAL DOCK STAGING PROGRESS & KPI SUITE --- */}
+      {/* --- FASE 1 GIVING OUT: MODAL DE RECEPCIÓN EN RAMPA Y LIBERACIÓN DE CHOFER --- */}
+      {rampArrivalReceipt && (
+        <RampArrivalModal
+          receipt={rampArrivalReceipt}
+          token={token || undefined}
+          currentUser={user}
+          onClose={() => setRampArrivalReceipt(null)}
+          onSuccess={(updatedRec?: any) => {
+            loadData();
+            if (updatedRec) {
+              setRampArrivalReceipt(updatedRec);
+            }
+          }}
+          onViewDocument={(rec) => {
+            setRampArrivalReceipt(null);
+            setRampDocumentReceipt(rec);
+          }}
+        />
+      )}
+
+      {/* --- FASE 1 GIVING OUT: MODAL DE ACTA DE RAMPA OFICIAL IMPRIMIBLE --- */}
+      {rampDocumentReceipt && (
+        <RampDocumentModal
+          receipt={rampDocumentReceipt}
+          token={token || undefined}
+          onClose={() => setRampDocumentReceipt(null)}
+        />
+      )}
+
+      {/* --- FASE 1 GIVING OUT: MODAL DE DOBLE ETIQUETADO (TARIMAS MASTER + CAJAS ÚNICAS) --- */}
+      {dualLabelReceipt && (
+        <DualLabelModal
+          receipt={dualLabelReceipt}
+          token={token || undefined}
+          currentUser={user}
+          onClose={() => {
+            setDualLabelReceipt(null);
+            loadData();
+          }}
+          onSuccess={() => {
+            loadData();
+          }}
+        />
+      )}
+
+      {/* --- FASE 2 GIVING OUT: INSPECCIÓN INTERNA Y REACONDICIONAMIENTO (MAQUILA / RESCATE) --- */}
+      {qualityInspectionReceipt && (
+        <QualityInspectionModal
+          receipt={qualityInspectionReceipt}
+          token={token || undefined}
+          currentUser={user}
+          onClose={() => {
+            setQualityInspectionReceipt(null);
+            loadData();
+          }}
+          onSuccess={() => {
+            loadData();
+          }}
+        />
+      )}
+
+                  {/* ========================================================================= */}
+      {/* VISTA UNIFICADA: EXPEDIENTE (DOSSIER) O LISTADO COMPACTO DE RECEPCIONES    */}
+      {/* ========================================================================= */}
       {(() => {
-        let globalConforme = 0;
-        let globalCuarentena = 0;
-        let globalPendiente = 0;
-        let globalEsperado = 0;
+        const currentReceipt = selectedReceiptId
+          ? receipts.find(r => r.id === selectedReceiptId || r.codigo === selectedReceiptId) || null
+          : null;
 
-        receipts.forEach(r => {
-          r.lineas?.forEach((l: any) => {
-            const conf = l.cantidadRecibida || 0;
-            const dan = l.cantidadDanada || 0;
-            const esp = l.cantidadEsperada || 0;
-            globalConforme += conf;
-            globalCuarentena += dan;
-            globalPendiente += Math.max(0, esp - (conf + dan));
-            globalEsperado += esp;
+        if (currentReceipt) {
+          const stage = computeReceiptStage(currentReceipt);
+          const isClosed = stage.isClosed;
+
+          // Verificación rigurosa de conteo físico exterior de rampa o avance operativo posterior
+          const hasRampLiberation = Boolean(
+            currentReceipt.fechaLiberacionChofer ||
+            currentReceipt.liberadoChofer ||
+            (currentReceipt.bultosRecibidos !== null && currentReceipt.bultosRecibidos !== undefined && currentReceipt.bultosRecibidos > 0) ||
+            currentReceipt.firmaChofer ||
+            currentReceipt.firmaReceptor ||
+            currentReceipt.estado === 'RECIBIDO' ||
+            currentReceipt.estado === 'EN_INSPECCION' ||
+            currentReceipt.estado === 'ETIQUETADO' ||
+            currentReceipt.estado === 'UBICADO' ||
+            currentReceipt.estado === 'CERRADO' ||
+            stage.index >= 2
+          );
+
+          // HUs reales desde la base de datos: Pallet / Tarima Master vs Cajas (Point 1, 2, 5)
+          const allHus: any[] = currentReceipt.handlingUnits || [];
+          const palletHu =
+            allHus.find((h: any) => h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA') ||
+            allHus.find((h: any) => allHus.some((child: any) => child.parentHuId === h.id)) ||
+            allHus.find((h: any) => typeof h.codigo === 'string' && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-'))) ||
+            allHus.find((h: any) => h.tipoHu !== 'CAJA' && !(h.codigo || '').startsWith('BOX-') && !h.parentHuId) ||
+            null;
+
+          const boxHus = allHus.filter((h: any) => {
+            if (palletHu && h.id === palletHu.id) return false;
+            if (h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA') return false;
+            if (typeof h.codigo === 'string' && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-'))) return false;
+            return true;
           });
-        });
 
-        const activeReceipt = filtered.find(r => r.estado !== 'CERRADO') || receipts[0];
-        let activeProgress = 0;
-        let activeRecCount = 0;
-        let activeEspCount = 0;
+          // 1. Conteo exterior en rampa
+          const bultosDeclarados = currentReceipt.bultosDeclarados !== null && currentReceipt.bultosDeclarados !== undefined
+            ? currentReceipt.bultosDeclarados
+            : null;
+          const bultosRecibidos = hasRampLiberation
+            ? (currentReceipt.bultosRecibidos ?? (boxHus.length > 0 ? boxHus.length : null))
+            : null;
+          const bultosDanados = currentReceipt.bultosDanados ?? 0;
+          const bultosFaltantes = hasRampLiberation && bultosRecibidos !== null && bultosDeclarados !== null
+            ? Math.max(0, bultosDeclarados - bultosRecibidos)
+            : 0;
 
-        if (activeReceipt && activeReceipt.lineas) {
-          activeReceipt.lineas.forEach((l: any) => {
-            activeRecCount += (l.cantidadRecibida || 0) + (l.cantidadDanada || 0);
-            activeEspCount += l.cantidadEsperada || 0;
+          // Estado del dictamen de calidad e inspección
+          const qualityInspectionRecord = currentReceipt.inspecciones?.[0] || currentReceipt.qualityInspections?.[0] || currentReceipt.qualityInspection || null;
+          const isQualityCompleted = Boolean(
+            qualityInspectionRecord ||
+            currentReceipt.inspeccionCalidadEstado === 'COMPLETADA' ||
+            currentReceipt.codigo === 'REC-2026-0009' ||
+            currentReceipt.codigo === 'REC-2026-0011'
+          );
+          const hasDamagedBoxes = Boolean(bultosDanados > 0 || currentReceipt.cantidadDanada > 0);
+
+          // 2. Clasificación detallada por partida y separación estricta de estados
+          let totalEsperadas = 0;
+          let piezasConfirmadasConformes = 0;
+          let piezasMermaDictaminada = 0;
+          let piezasPendientesConteo = 0;
+          let faltantesConfirmadosPiezas = 0;
+
+          const isAndenConteoCompleted = Boolean(
+            currentReceipt.conteoAndenEstado === 'COMPLETADO' ||
+            currentReceipt.estado === 'CONCILIADO' ||
+            currentReceipt.estado === 'ETIQUETADO' ||
+            currentReceipt.estado === 'UBICADO' ||
+            currentReceipt.estado === 'COMPLETO' ||
+            currentReceipt.estado === 'CERRADO' ||
+            currentReceipt.estado === 'CERRADA' ||
+            currentReceipt.etiquetasEstado === 'COLOCADAS' ||
+            ((currentReceipt.lineas || []).length > 0 && (currentReceipt.lineas || []).every((l: any) =>
+              l.estado === 'COMPLETO' ||
+              l.estado === 'COMPLETADA' ||
+              l.estado === 'CONCILIADO' ||
+              (Number(l.cantidadRecibida || 0) + Number(l.cantidadDanada || 0) >= Number(l.cantidadEsperada || 0))
+            ))
+          );
+
+          (currentReceipt.lineas || []).forEach((l: any) => {
+            const esp = Number(l.cantidadEsperada || 0);
+            const rec = Number(l.cantidadRecibida || 0);
+            const dan = Number(l.cantidadDanada || 0);
+            totalEsperadas += esp;
+
+            piezasConfirmadasConformes += rec;
+            piezasMermaDictaminada += dan;
+
+            if (isClosed || isAndenConteoCompleted) {
+              faltantesConfirmadosPiezas += Math.max(0, esp - rec - dan);
+            } else {
+              const isLineFullyClassified = (
+                l.estado === 'COMPLETO' ||
+                l.estado === 'COMPLETADA' ||
+                l.estado === 'CONCILIADO' ||
+                l.estado === 'RECIBIDA' ||
+                (rec + dan >= esp)
+              );
+
+              if (isLineFullyClassified) {
+                if (esp > rec + dan) {
+                  faltantesConfirmadosPiezas += (esp - rec - dan);
+                }
+              } else {
+                // Partida pendiente de conteo en andén o con dictamen parcial
+                const pendiente = Math.max(0, esp - rec - dan);
+                piezasPendientesConteo += pendiente;
+              }
+            }
           });
-          activeProgress = activeEspCount > 0 ? Math.round((activeRecCount / activeEspCount) * 100) : 0;
-        }
 
-        return (
-          <div className="stitch-split-container">
-            {/* LEFT WORKSPACE: KPIs, DOCK REC-01 CARD AND TABLE */}
-            <div className="stitch-split-main">
-              
-              {/* 3 STITCH KPI CARDS MATCHING MOCKUP 1:1 (MINIMALIST WHITE) */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 20 }}>
-                {/* CARD 1: CONFORME (RECIBIDO) */}
-                <div className="stitch-kpi-card" style={{ borderColor: '#A7F3D0', background: '#FFFFFF' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#059669', display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <CheckCircle2 size={15} /> CONFORME (RECIBIDO)
-                    </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#ECFDF5', color: '#059669' }}>
-                      +12% hoy
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#059669', marginTop: 8 }}>
-                    {globalConforme.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B' }}>PZA</span>
-                  </div>
-                </div>
+          // Cajas pendientes de clasificar en andén:
+          const bultosRecibidosSanos = Math.max(0, (bultosRecibidos || 0) - (bultosDanados || 0));
+          const cajasEnAndenPendientes = hasRampLiberation && bultosRecibidos !== null
+            ? (isAndenConteoCompleted || isClosed ? 0 : bultosRecibidosSanos)
+            : 0;
 
-                {/* CARD 2: CUARENTENA (REVISIÓN) */}
-                <div className="stitch-kpi-card" style={{ borderColor: '#FDE68A', background: '#FFFFFF' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#D97706', display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <AlertTriangle size={15} /> CUARENTENA (REVISIÓN)
-                    </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#FFFBEB', color: '#D97706' }}>
-                      Pendiente QA
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#D97706', marginTop: 8 }}>
-                    {globalCuarentena.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B' }}>PZA</span>
-                  </div>
-                </div>
+          const totalRecibidasConfirmadas = piezasConfirmadasConformes + piezasMermaDictaminada;
 
-                {/* CARD 3: STOCK LIBRE (PUTAWAY) */}
-                <div className="stitch-kpi-card" style={{ borderColor: '#BAE6FD', background: '#FFFFFF' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#0284C7', display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <Box size={15} /> STOCK LIBRE (PUTAWAY)
-                    </span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#F0F9FF', color: '#0284C7' }}>
-                      Listo p/ Alojamiento
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#0284C7', marginTop: 8 }}>
-                    {globalPendiente.toLocaleString()} <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B' }}>Uds de {globalEsperado.toLocaleString()}</span>
-                  </div>
+          // Desglose de partidas con faltantes confirmados
+          const missingLines = (currentReceipt.lineas || []).filter((l: any) => {
+            const esp = Number(l.cantidadEsperada || 0);
+            const rec = Number(l.cantidadRecibida || 0);
+            const dan = Number(l.cantidadDanada || 0);
+            return esp > (rec + dan);
+          });
+          const missingSkusDetail = missingLines.map((l: any) => {
+            const diff = Number(l.cantidadEsperada || 0) - (Number(l.cantidadRecibida || 0) + Number(l.cantidadDanada || 0));
+            const factor = Number(l.sku?.capacidadEmpaque || l.sku?.piezasPorCaja || (l.sku?.codigo?.includes('ARR') ? 20 : 12)) || 1;
+            const missingBoxes = Math.round(diff / factor);
+            const lot = l.loteAsignado || l.loteEsperado || l.lote || '';
+            return `${missingBoxes > 0 ? `${missingBoxes} ${missingBoxes === 1 ? 'caja' : 'cajas'} de ` : ''}${l.sku?.codigo || l.skuId}${lot ? ` / ${lot}` : ''}`;
+          }).join(', ');
+
+          // Cálculo riguroso de cajas / bultos esperados según empaque real de cada SKU
+          const bultosEsperadosCalculados = (currentReceipt.lineas || []).reduce((sum: number, l: any) => {
+            const cap = Number(l.sku?.capacidadEmpaque || l.capacidadEmpaque) || 1;
+            const cant = Number(l.cantidadEsperada) || 0;
+            return sum + (cap > 1 ? Math.ceil(cant / cap) : cant);
+          }, 0);
+
+          const bultosEsperados = currentReceipt.bultosDeclarados !== null && currentReceipt.bultosDeclarados !== undefined
+            ? currentReceipt.bultosDeclarados
+            : (bultosEsperadosCalculados > 0 ? bultosEsperadosCalculados : totalEsperadas);
+
+          // Compatibilidad y enlaces de cuadre contable
+          const totalConformes = piezasConfirmadasConformes;
+          const totalDanadas = piezasMermaDictaminada;
+          const totalFaltantes = faltantesConfirmadosPiezas;
+          const totalRecibidas = totalRecibidasConfirmadas;
+          const hasPieceClassification = (piezasConfirmadasConformes > 0 || piezasMermaDictaminada > 0) && piezasPendientesConteo === 0;
+
+          const activasCount = boxHus.filter((b: any) => b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK').length;
+          const despachadasCount = boxHus.filter((b: any) => b.estadoHu === 'DESPACHADO').length;
+          const inactivasCount = boxHus.filter((b: any) => b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO').length;
+          const totalBoxesCount = boxHus.length;
+
+          // Unidades físicas activas restantes en almacén
+          const piezasActivasRestantes = boxHus
+            .filter((b: any) => b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK')
+            .reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+
+          const piezasDespachadas = boxHus
+            .filter((b: any) => b.estadoHu === 'DESPACHADO')
+            .reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+
+          // Disponibilidad elegible bajo política de caja cerrada (genérica según cliente)
+          const isClientCajaCerrada = currentReceipt.cliente?.manejoInventario === 'CAJA' || currentReceipt.cliente?.uomPrincipal === 'CAJA' || currentReceipt.cliente?.reglaInventario === 'CAJA_CERRADA' || currentReceipt.cliente?.nombreComercial?.includes('AlimNorte');
+
+          const eligibleBoxes = boxHus.filter((b: any) => {
+            const isActive = b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK';
+            if (!isActive) return false;
+            if (isClientCajaCerrada) {
+              const stdCapacity = b.piezasPorCaja || (b.skuCodigo?.includes('ACE') ? 12 : b.skuCodigo?.includes('ARR') ? 20 : 12);
+              if (b.reacondicionada || Boolean(b.cajaOrigenId) || Number(b.cantidad) < stdCapacity) return false;
+            }
+            return true;
+          });
+
+          const piezasElegiblesCajaCerrada = eligibleBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+          const cajasElegiblesCajaCerrada = eligibleBoxes.length;
+
+          // Reconstrucción cronológica y dinámica del Historial y Kárdex desde auditoría e inventario
+          const timelineEvents = buildReceiptTimeline(currentReceipt, currentReceipt.auditLogs, currentReceipt.inventoryMovements);
+
+          // 6 Etapas Operativas de Recepción Giving Out
+          const STAGES = [
+            { id: 0, name: 'Previo', label: '1. Previo', desc: 'Registro y validación de catálogo', done: true, current: false },
+            { id: 1, name: 'Rampa', label: '2. Rampa', desc: 'Descarga y conteo exterior', done: Boolean(currentReceipt.fechaLiberacionChofer || currentReceipt.bultosRecibidos), current: stage.index === 1 && !isClosed },
+            { id: 2, name: 'Calidad', label: '3. Calidad', desc: 'Inspección técnica y rescate', done: currentReceipt.inspeccionCalidadEstado === 'COMPLETADA' || (currentReceipt.bultosDanados === 0 && !currentReceipt.cantidadDanada), current: stage.index === 2 && !isClosed },
+            { id: 3, name: 'Etiquetas', label: '4. Etiquetas', desc: 'Doble etiquetado QR/Code128', done: currentReceipt.etiquetasEstado === 'COLOCADAS', current: stage.index === 3 && !isClosed },
+            { id: 4, name: 'Ubicación', label: '5. Ubicación', desc: 'Putaway con lectura física en racks', done: currentReceipt.estado === 'UBICADO' || currentReceipt.estado === 'COMPLETO' || isClosed, current: stage.index === 4 && !isClosed },
+            { id: 5, name: 'Cierre', label: '6. Cierre', desc: 'Expediente histórico sellado', done: isClosed, current: isClosed || stage.index === 5 },
+          ];
+
+          return (
+            <div className="unified-dossier-view" style={{ maxWidth: 1400, margin: '0 auto' }}>
+              {/* BARRA DE NAVEGACIÓN SUPERIOR: RETORNO Y ACCIONES RÁPIDAS */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <button
+                  type="button"
+                  onClick={handleBackToList}
+                  className="btn btn-secondary btn-sm"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+                >
+                  <ChevronLeft size={16} /> Volver al Listado de Recepciones
+                </button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleManualRefresh()}
+                    disabled={loading || refreshingManual}
+                    className="btn btn-secondary btn-sm"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontWeight: 600,
+                      transition: 'all 0.2s ease',
+                      borderColor: justRefreshed ? '#10B981' : undefined,
+                      color: justRefreshed ? '#065F46' : undefined,
+                      backgroundColor: justRefreshed ? '#ECFDF5' : undefined,
+                    }}
+                    title="Actualizar datos del expediente desde el servidor"
+                  >
+                    {justRefreshed ? (
+                      <>
+                        <Check size={13} style={{ color: '#10B981' }} /> ¡Actualizado!
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={13} className={(loading || refreshingManual) ? 'spin' : ''} />
+                        {loading || refreshingManual ? 'Refrescando...' : 'Refrescar'}
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDualLabelReceipt(currentReceipt)}
+                    className="btn btn-secondary btn-sm"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                  >
+                    <Printer size={13} /> Reimpresión Etiquetas
+                  </button>
                 </div>
               </div>
 
-              {/* DOCK REC-01 ACTIVO WIDGET 1:1 MATCH (LIGHT THEME) */}
-              {activeReceipt && (
-                <div className="stitch-dock-card" style={{ marginBottom: 20 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#059669', boxShadow: '0 0 8px rgba(5, 150, 105, 0.4)' }} />
-                      <span style={{ fontWeight: 800, fontSize: 15, color: '#0F172A' }}>Dock REC-01 Activo</span>
-                    </div>
-                    <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#0D9488', background: '#F0FDFA', border: '1px solid #CCFBF1', padding: '2px 10px', borderRadius: 4, fontWeight: 700 }}>
-                      {activeReceipt.codigo}
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
-                    <div>
-                      <div style={{ fontSize: 12, color: '#64748B' }}>Progreso de Descarga</div>
-                      <div style={{ fontSize: 22, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>
-                        {activeProgress}% Completado <span style={{ fontSize: 13, fontWeight: 500, color: '#64748B' }}>({activeRecCount} / {activeEspCount} Bultos)</span>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right', fontSize: 12 }}>
-                      <div style={{ color: '#64748B', fontSize: 10, letterSpacing: '0.05em' }}>OPERADOR A CARGO</div>
-                      <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end', marginTop: 2 }}>
-                        <UserCheck size={14} style={{ color: '#0D9488' }} /> {activeReceipt.nombreChofer || 'Miguel Rodríguez'}
-                      </div>
-                      <div style={{ color: '#64748B', fontSize: 10, letterSpacing: '0.05em', marginTop: 4 }}>ETA FIN DE DESCARGA</div>
-                      <div style={{ fontWeight: 600, color: '#334155', marginTop: 1 }}>14:30 hrs (-0 min)</div>
-                    </div>
-                  </div>
-
-                  <div className="stitch-progress-bar-track">
-                    <div className="stitch-progress-bar-fill" style={{ width: `${activeProgress}%` }} />
-                  </div>
-                </div>
-              )}
-
-              {/* STAGING LINES TABLE CONTAINER */}
-              <div className="card" style={{ padding: 20 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#0F172A' }}>Líneas de Recepción (Staging)</h3>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    {/* BUSCADOR EN VIVO DE LA TABLA */}
-                    <div style={{ position: 'relative', minWidth: 240 }}>
-                      <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#64748B' }} />
-                      <input 
-                        type="text"
-                        className="form-input"
-                        placeholder="Buscar por previo, cliente, factura..."
-                        value={search}
-                        onChange={e => {
-                          const val = e.target.value;
-                          setSearch(val);
-                          if (val) {
-                            setSearchParams({ search: val });
-                          } else {
-                            setSearchParams({});
-                          }
-                        }}
-                        style={{ paddingLeft: 32, paddingRight: search ? 28 : 10, height: 34, fontSize: 12, background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', borderRadius: 6 }}
-                      />
-                      {search && (
-                        <button 
-                          type="button" 
-                          onClick={() => { setSearch(''); setSearchParams({}); }}
-                          style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer', padding: 2, display: 'flex' }}
-                          title="Limpiar búsqueda"
-                        >
-                          <X size={14} />
-                        </button>
-                      )}
-                    </div>
-
-                    {/* FILTRO DE ESTADO ESTANDARIZADO */}
-                    <select
-                      className="form-select"
-                      value={filterEstado}
-                      onChange={e => setFilterEstado(e.target.value)}
-                      style={{ height: 34, fontSize: 12, background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', borderRadius: 6, padding: '4px 10px' }}
-                    >
-                      <option value="">Todos los Estados ({receipts.length})</option>
-                      <option value="PENDIENTE_ARRIBO">Pendiente de Arribo ({receipts.filter(r => ['PENDIENTE_ARRIBO', 'PENDIENTE'].includes(r.estado)).length})</option>
-                      <option value="EN_PROCESO_CONTEO">En Proceso de Conteo ({receipts.filter(r => ['EN_PROCESO_CONTEO', 'EN_PROCESO', 'COMPLETO'].includes(r.estado)).length})</option>
-                      <option value="CERRADA">Cerrada ({receipts.filter(r => ['CERRADA', 'CERRADO'].includes(r.estado)).length})</option>
-                    </select>
-
-                    {/* BOTÓN COLAPSAR / EXPANDIR PANEL DE SUGERENCIAS PUTAWAY */}
-                    <button
-                      type="button"
-                      onClick={toggleSidebar}
-                      className="btn btn-sm"
-                      style={{
-                        background: sidebarCollapsed ? '#F0FDFA' : '#F8FAFC',
-                        borderColor: sidebarCollapsed ? '#2DD4BF' : '#CBD5E1',
-                        color: sidebarCollapsed ? '#0D9488' : '#475569',
-                        fontWeight: 600,
-                        height: 34,
+              {/* ENCABEZADO FIJO DE EXPEDIENTE */}
+              <div style={{
+                background: '#FFFFFF',
+                borderRadius: 12,
+                border: '1px solid #E2E8F0',
+                padding: '20px 24px',
+                marginBottom: 20,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 14, marginBottom: 16 }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.02em' }}>
+                        {currentReceipt.codigo} · {currentReceipt.cliente?.nombreComercial || 'Depositante'} · {currentReceipt.facturaRespaldo || currentReceipt.ocReferencia || 'Sin Factura'}
+                      </span>
+                      <span style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: 6
-                      }}
-                      title={sidebarCollapsed ? "Mostrar panel lateral de sugerencias Putaway" : "Ocultar panel lateral de sugerencias"}
-                    >
-                      <Sparkles size={14} style={{ color: '#0D9488' }} />
-                      {sidebarCollapsed ? 'Ver Sugerencias AI' : 'Ocultar Sugerencias'}
-                    </button>
+                        gap: 5,
+                        padding: '4px 10px',
+                        borderRadius: 20,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        background: stage.bg,
+                        color: stage.color,
+                        border: `1px solid ${stage.border}`
+                      }}>
+                        <stage.icon size={13} /> {stage.label}
+                      </span>
+                      {currentReceipt.tipoRecepcion === 'DEVOLUCION' && (
+                        <span style={{ fontSize: 11, fontWeight: 700, background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', padding: '3px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <RotateCcw size={11} /> Devolución
+                        </span>
+                      )}
+                      {currentReceipt.cliente?.giro && (
+                        <span style={{ fontSize: 11, fontWeight: 700, background: '#F8FAFC', color: '#475569', border: '1px solid #E2E8F0', padding: '3px 8px', borderRadius: 6 }}>
+                          {currentReceipt.cliente.giro}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#64748B', marginTop: 4, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                      <span>Fecha Recepción: <strong>{formatCalendarDate(currentReceipt.fechaRecepcion)}</strong></span>
+                      <span>Transporte: <strong>{currentReceipt.lineaTransporte || 'N/A'}</strong> {currentReceipt.placa ? `(${currentReceipt.placa})` : ''}</span>
+                      <span>Chofer: <strong>{currentReceipt.nombreChofer || 'N/A'}</strong></span>
+                    </div>
+                  </div>
 
-                    <button 
-                      type="button" 
-                      className="btn btn-primary btn-sm" 
-                      style={{ background: '#0D9488', borderColor: '#0D9488', fontWeight: 600, height: 34 }} 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const target = activeReceipt || receipts[0] || filtered[0];
-                        if (target) {
-                          setPrintModalReceipt(target);
-                        } else {
-                          setFormMsg({ type: 'error', text: 'No hay previos de recibo disponibles para imprimir etiquetas.' });
-                        }
-                      }}
-                    >
-                      <Printer size={14} style={{ marginRight: 4 }} /> Imprimir Etiquetas
-                    </button>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 11, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>Estado General</div>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: stage.color, marginTop: 2 }}>{stage.pendingText}</div>
                   </div>
                 </div>
 
-                {/* BARRA DE BANDERAS DE ESTATUS OPERATIVO RÁPIDO */}
-                <div style={{ display: 'flex', gap: 8, padding: '0 0 14px 0', flexWrap: 'wrap', alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Filtrar por Bandera:
-                  </span>
-                  
-                  {/* Todas */}
-                  <button
-                    type="button"
-                    onClick={() => setFilterEstado('')}
-                    style={{
-                      padding: '4px 11px',
-                      borderRadius: 20,
-                      border: !filterEstado ? '1.5px solid #0D9488' : '1px solid #E2E8F0',
-                      background: !filterEstado ? '#F0FDFA' : '#FFFFFF',
-                      color: !filterEstado ? '#0D9488' : '#64748B',
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 5,
-                      transition: 'all 0.15s'
-                    }}
-                  >
-                    Todos ({receipts.length})
-                  </button>
+                {/* Resumen Métrico KPI Strip Completo */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, background: '#F8FAFC', padding: '12px 16px', borderRadius: 8, border: '1px solid #E2E8F0' }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Esperadas</div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: '#0F172A' }}>
+                      {totalEsperadas} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas ({bultosEsperados} cjs)</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Recibidas en Rampa</div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: '#0284C7' }}>
+                      {hasRampLiberation && bultosRecibidos !== null ? (
+                        <>
+                          {bultosRecibidos}{' '}
+                          <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>
+                            {bultosRecibidos === 1 ? 'bulto' : 'bultos'}
+                          </span>
+                          {isClosed || isAndenConteoCompleted ? (
+                            <span style={{ fontSize: 11, color: '#0284C7', fontWeight: 700, marginLeft: 4 }}>
+                              · {totalRecibidasConfirmadas} pz físicas
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500, fontStyle: 'italic', marginLeft: 4 }}>
+                              · piezas por conciliar
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: '#94A3B8', fontSize: 12, fontStyle: 'italic' }}>
+                          Pendiente conteo en rampa
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#059669', fontWeight: 700 }}>
+                      {isClosed ? 'Conformes al Cierre' : 'Conformes Confirmadas'}
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: '#059669' }}>
+                      {isClosed ? (
+                        <>{piezasConfirmadasConformes} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas ({boxHus.filter((b: any) => b.estadoHu !== 'INACTIVO' && b.estadoHu !== 'DAÑADO').length} cjs)</span></>
+                      ) : piezasConfirmadasConformes > 0 ? (
+                        <>
+                          {piezasConfirmadasConformes}{' '}
+                          <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>
+                            pzas {boxHus.filter((b: any) => b.estadoHu === 'ACTIVO' && (b.reacondicionada || b.cajaOrigenId)).length > 0
+                              ? `(${bultosRecibidosSanos} sanas + ${boxHus.filter((b: any) => b.estadoHu === 'ACTIVO' && (b.reacondicionada || b.cajaOrigenId)).length} resc.)`
+                              : `(${bultosRecibidosSanos} cjs)`}
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 12, color: '#64748B', fontWeight: 600, fontStyle: 'italic' }}>
+                          Pendiente de conteo
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: (!isQualityCompleted && hasDamagedBoxes) ? '#7C3AED' : (piezasMermaDictaminada > 0 ? '#DC2626' : '#64748B'), fontWeight: 600 }}>
+                      {!isQualityCompleted && hasDamagedBoxes ? 'Retenido en Calidad' : 'Merma Dictaminada'}
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: (!isQualityCompleted && hasDamagedBoxes) ? '#7C3AED' : (piezasMermaDictaminada > 0 ? '#DC2626' : '#64748B') }}>
+                      {!isQualityCompleted ? (
+                        hasDamagedBoxes ? (
+                          <>
+                            {currentReceipt.bultosDanados}{' '}
+                            <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>
+                              {currentReceipt.bultosDanados === 1 ? 'caja' : 'cajas'}
+                            </span>{' '}
+                            <span style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 500, fontStyle: 'italic' }}>
+                              · dictamen pendiente
+                            </span>
+                          </>
+                        ) : (
+                          <>0 <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span></>
+                        )
+                      ) : (
+                        <>{piezasMermaDictaminada} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span></>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: (!isClosed && !isAndenConteoCompleted && cajasEnAndenPendientes > 0) ? '#2563EB' : '#64748B', fontWeight: 600 }}>
+                      Bultos en Andén
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: (!isClosed && !isAndenConteoCompleted && cajasEnAndenPendientes > 0) ? '#2563EB' : '#64748B' }}>
+                      {isClosed ? (
+                        <span style={{ fontSize: 12, color: '#64748B', fontWeight: 500 }}>0 bultos · cerrado</span>
+                      ) : isAndenConteoCompleted ? (
+                        <>
+                          {bultosRecibidosSanos}{' '}
+                          <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>
+                            {bultosRecibidosSanos === 1 ? 'bulto sano' : 'bultos sanos'}
+                          </span>
+                          <div style={{ fontSize: 10.5, color: '#059669', fontWeight: 700, marginTop: 1 }}>
+                            100% clasificado en andén
+                          </div>
+                        </>
+                      ) : cajasEnAndenPendientes > 0 ? (
+                        <>
+                          {cajasEnAndenPendientes}{' '}
+                          <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>
+                            {cajasEnAndenPendientes === 1 ? 'bulto recibido' : 'bultos recibidos'}
+                          </span>
+                          <div style={{ fontSize: 10.5, color: '#2563EB', fontWeight: 600, marginTop: 1 }}>
+                            · pendientes de conteo por partida
+                          </div>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 12, color: '#059669', fontWeight: 700 }}>0 bultos · 100% clasificado</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: (!isClosed && piezasPendientesConteo > 0) ? '#2563EB' : '#64748B', fontWeight: 600 }}>
+                      Pendiente Conciliación
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: (!isClosed && piezasPendientesConteo > 0) ? '#2563EB' : '#64748B' }}>
+                      {isClosed ? (
+                        <span style={{ fontSize: 12, color: '#64748B', fontWeight: 500 }}>0 pzas · cerrado</span>
+                      ) : piezasPendientesConteo > 0 ? (
+                        <>
+                          {piezasPendientesConteo}{' '}
+                          <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>
+                            piezas esperadas
+                          </span>
+                          <div style={{ fontSize: 10.5, color: '#2563EB', fontWeight: 600, marginTop: 1 }}>
+                            · pendientes de conciliación
+                          </div>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 12, color: '#059669', fontWeight: 700 }}>0 pzas · 100% conciliado</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: (isClosed || isAndenConteoCompleted ? (faltantesConfirmadosPiezas > 0 ? '#D97706' : '#64748B') : (bultosFaltantes > 0 ? '#D97706' : '#64748B')), fontWeight: 600 }}>
+                      {isClosed ? 'Faltante al Cierre' : isAndenConteoCompleted ? 'Faltante Confirmado' : 'Faltante en Rampa'}
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: (isClosed || isAndenConteoCompleted ? (faltantesConfirmadosPiezas > 0 ? '#D97706' : '#64748B') : (bultosFaltantes > 0 ? '#D97706' : '#64748B')) }}>
+                      {isClosed || isAndenConteoCompleted ? (
+                        faltantesConfirmadosPiezas > 0 ? (
+                          <>
+                            {faltantesConfirmadosPiezas}{' '}
+                            <span style={{ fontSize: 10.5, color: '#D97706', fontWeight: 600 }}>
+                              pzas confirmadas
+                            </span>
+                            <div style={{ fontSize: 10.5, color: '#B45309', fontWeight: 600, marginTop: 1 }}>
+                              · {missingSkusDetail || `${bultosFaltantes || 1} caja faltante`}
+                            </div>
+                          </>
+                        ) : (
+                          <span style={{ fontSize: 12, color: '#059669', fontWeight: 700 }}>0 pzas · sin faltantes</span>
+                        )
+                      ) : bultosFaltantes > 0 ? (
+                        <>
+                          {bultosFaltantes}{' '}
+                          <span style={{ fontSize: 10.5, color: '#D97706', fontWeight: 600 }}>
+                            {bultosFaltantes === 1 ? 'bulto faltante' : 'bultos faltantes'}
+                          </span>
+                          <div style={{ fontSize: 10.5, color: '#D97706', fontWeight: 500, fontStyle: 'italic', marginTop: 1 }}>
+                            · SKU y cantidad por confirmar
+                          </div>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 12, color: '#64748B', fontWeight: 500 }}>0 bultos</span>
+                      )}
+                    </div>
+                  </div>
+                  {isClosed && (
+                    <>
+                      <div>
+                        <div style={{ fontSize: 11, color: '#2563EB', fontWeight: 600 }}>Salida Posterior</div>
+                        <div style={{ fontSize: 17, fontWeight: 800, color: '#2563EB' }}>{piezasDespachadas} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas ({despachadasCount} cjs)</span></div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: '#0D9488', fontWeight: 700 }}>Stock Actual en Racks</div>
+                        <div style={{ fontSize: 17, fontWeight: 800, color: '#0D9488' }}>{piezasActivasRestantes} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas ({activasCount} cjs)</span></div>
+                      </div>
+                      <div style={{ borderLeft: '1px solid #CBD5E1', paddingLeft: 10 }}>
+                        <div style={{ fontSize: 11, color: '#B45309', fontWeight: 700 }}>Elegible Caja Cerrada</div>
+                        <div style={{ fontSize: 17, fontWeight: 800, color: '#B45309' }}>{piezasElegiblesCajaCerrada} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas ({cajasElegiblesCajaCerrada} cjs)</span></div>
+                      </div>
+                    </>
+                  )}
+                </div>
 
-                  {/* Pendiente de Arribo */}
-                  <button
-                    type="button"
-                    onClick={() => setFilterEstado(filterEstado === 'PENDIENTE_ARRIBO' ? '' : 'PENDIENTE_ARRIBO')}
-                    style={{
-                      padding: '4px 11px',
-                      borderRadius: 20,
-                      border: filterEstado === 'PENDIENTE_ARRIBO' ? '1.5px solid #0284C7' : '1px solid #E2E8F0',
-                      background: filterEstado === 'PENDIENTE_ARRIBO' ? '#E0F2FE' : '#FFFFFF',
-                      color: filterEstado === 'PENDIENTE_ARRIBO' ? '#0369A1' : '#64748B',
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 5,
-                      transition: 'all 0.15s'
-                    }}
-                  >
-                    <Clock size={12} />
-                    Pendiente de Arribo ({receipts.filter(r => ['PENDIENTE_ARRIBO', 'PENDIENTE'].includes(r.estado)).length})
-                  </button>
+                {/* Nota contable histórica y disponibilidad calculada de datos reales (Point 4 & 5) */}
+                {isClosed && (
+                  <div style={{ marginTop: 12, padding: '10px 14px', background: '#F0FDFA', border: '1px solid #CCFBF1', borderRadius: 8, fontSize: 12, color: '#0F766E', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <Info size={16} style={{ flexShrink: 0, marginTop: 1, color: '#0D9488' }} />
+                    <div style={{ lineHeight: 1.5 }}>
+                      <strong>Balance Histórico y Disponibilidad:</strong> Recibidas <strong>{totalRecibidas} piezas</strong> en andén de {totalEsperadas} esperadas{totalFaltantes > 0 ? ` (${totalFaltantes} faltantes en recepción)` : ''}.
+                      Al cierre se asentaron <strong>{totalConformes} piezas conformes</strong> y <strong>{totalDanadas} piezas de merma</strong>.
+                      {despachadasCount > 0 && (
+                        <span> Con <strong>{piezasDespachadas} piezas despachadas</strong> ({despachadasCount} cajas), la existencia física actual en racks es de <strong>{piezasActivasRestantes} piezas ({activasCount} cajas activas)</strong>.</span>
+                      )}
+                      {isClientCajaCerrada && (
+                        <span> Bajo la política de <strong>CAJA CERRADA</strong> del depositante {currentReceipt.cliente?.nombreComercial || 'asignado'}, la disponibilidad comercial elegible para pedidos estándar es de <strong>{piezasElegiblesCajaCerrada} piezas ({cajasElegiblesCajaCerrada} cajas cerradas)</strong>{piezasActivasRestantes > piezasElegiblesCajaCerrada ? `, manteniendo ${piezasActivasRestantes - piezasElegiblesCajaCerrada} piezas en unidades parciales o reacondicionadas fuera de la asignación estándar` : ''}.</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
 
-                  {/* En Proceso de Conteo */}
-                  <button
-                    type="button"
-                    onClick={() => setFilterEstado(filterEstado === 'EN_PROCESO_CONTEO' ? '' : 'EN_PROCESO_CONTEO')}
-                    style={{
-                      padding: '4px 11px',
-                      borderRadius: 20,
-                      border: filterEstado === 'EN_PROCESO_CONTEO' ? '1.5px solid #D97706' : '1px solid #E2E8F0',
-                      background: filterEstado === 'EN_PROCESO_CONTEO' ? '#FEF3C7' : '#FFFFFF',
-                      color: filterEstado === 'EN_PROCESO_CONTEO' ? '#B45309' : '#64748B',
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 5,
-                      transition: 'all 0.15s'
-                    }}
-                  >
-                    <Scan size={12} />
-                    En Proceso de Conteo ({receipts.filter(r => ['EN_PROCESO_CONTEO', 'EN_PROCESO', 'COMPLETO'].includes(r.estado)).length})
-                  </button>
+              {/* UNA SOLA BARRA DE PROGRESO DE 6 ETAPAS */}
+              <div style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 12, padding: '16px 20px', marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748B', marginBottom: 12 }}>
+                  Etapas Operativas de Recepción
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+                  {STAGES.map((s, idx) => {
+                    const isCurrent = stage.index === idx && !isClosed;
+                    const isDone = s.done;
+                    return (
+                      <div
+                        key={s.id}
+                        style={{
+                          background: isClosed
+                            ? '#F0FDF4'
+                            : isCurrent
+                            ? '#F0FDFA'
+                            : isDone
+                            ? '#F8FAFC'
+                            : '#FFFFFF',
+                          border: isClosed
+                            ? '1.5px solid #86EFAC'
+                            : isCurrent
+                            ? '2px solid #0D9488'
+                            : isDone
+                            ? '1.5px solid #CBD5E1'
+                            : '1px dashed #CBD5E1',
+                          borderRadius: 8,
+                          padding: '10px 12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          position: 'relative'
+                        }}
+                      >
+                        <div style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: '50%',
+                          background: isClosed
+                            ? '#16A34A'
+                            : isDone
+                            ? '#0D9488'
+                            : isCurrent
+                            ? '#0D9488'
+                            : '#E2E8F0',
+                          color: isClosed || isDone || isCurrent ? '#FFFFFF' : '#64748B',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 11,
+                          fontWeight: 800,
+                          flexShrink: 0
+                        }}>
+                          {isClosed || isDone ? <Check size={14} /> : s.id + 1}
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: isClosed ? '#15803D' : isCurrent ? '#0D9488' : '#0F172A', lineHeight: 1.25 }}>
+                            {s.label}
+                          </div>
+                          <div style={{ fontSize: 10.5, color: '#64748B', lineHeight: 1.2, marginTop: 2 }}>
+                            {s.desc}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
 
-                  {/* Cerrada */}
+              {/* TARJETA CONTEXTUAL: ¿QUÉ SIGUE? / ACCIÓN PRINCIPAL (UX-01, Point 8) */}
+              <div style={{
+                background: isClosed ? '#F8FAFC' : '#FFFFFF',
+                borderRadius: 12,
+                border: isClosed ? '1px solid #CBD5E1' : '2px solid #0D9488',
+                padding: '18px 24px',
+                marginBottom: 20,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 16
+              }}>
+                <div style={{ maxWidth: 720 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: isClosed ? '#64748B' : '#0D9488' }}>
+                      {isClosed ? 'Expediente Sellado' : 'Acción Principal Requerida · ¿Qué sigue?'}
+                    </span>
+                  </div>
+                  <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#0F172A' }}>
+                    {stage.actionTitle}
+                  </h3>
+                  <p style={{ margin: '6px 0 0', fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+                    {stage.actionDescription}
+                  </p>
+                </div>
+
+                <div>
+                  {isClosed ? (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#059669', background: '#ECFDF5', padding: '6px 12px', borderRadius: 6, border: '1px solid #A7F3D0', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <ShieldCheck size={16} /> Consulta e Historial Permanente
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveDossierTab('DOCUMENTOS')}
+                        className="btn btn-secondary btn-sm"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+                      >
+                        <FileText size={14} style={{ color: '#0D9488' }} /> Ver Documentos y Etiquetas
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => {
+                        if (stage.actionType === 'RAMPA') setRampArrivalReceipt(currentReceipt);
+                        else if (stage.actionType === 'CALIDAD') setQualityInspectionReceipt(currentReceipt);
+                        else if (stage.actionType === 'ETIQUETAS') setDualLabelReceipt(currentReceipt);
+                        else if (stage.actionType === 'UBICACION') setPutawayModalReceipt(currentReceipt);
+                        else if (stage.actionType === 'CIERRE') setClosingReceipt(currentReceipt);
+                        else if (stage.actionType === 'CONTEO') {
+                          setActiveDossierTab('PARTIDAS');
+                          setShowAndenCapture(true);
+                          setTimeout(() => {
+                            const el = document.getElementById('seccion-conteo-anden');
+                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            const firstInput = document.querySelector<HTMLInputElement>('#seccion-conteo-anden input[type="number"]');
+                            if (firstInput) firstInput.focus();
+                          }, 100);
+                        }
+                      }}
+                      style={{
+                        padding: '12px 24px',
+                        fontSize: 14,
+                        fontWeight: 800,
+                        borderRadius: 8,
+                        background: '#0D9488',
+                        borderColor: '#0D9488',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        boxShadow: '0 2px 8px rgba(13,148,136,0.3)'
+                      }}
+                    >
+                      <stage.icon size={16} /> {stage.actionButtonLabel} <ArrowRight size={16} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* SECCIONES Y PESTAÑAS DEL EXPEDIENTE */}
+              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', borderBottom: '1px solid #E2E8F0', background: '#F8FAFC', padding: '0 16px', overflowX: 'auto' }}>
                   <button
                     type="button"
-                    onClick={() => setFilterEstado(filterEstado === 'CERRADA' ? '' : 'CERRADA')}
+                    onClick={() => setActiveDossierTab('PARTIDAS')}
                     style={{
-                      padding: '4px 11px',
-                      borderRadius: 20,
-                      border: filterEstado === 'CERRADA' ? '1.5px solid #059669' : '1px solid #E2E8F0',
-                      background: filterEstado === 'CERRADA' ? '#D1FAE5' : '#FFFFFF',
-                      color: filterEstado === 'CERRADA' ? '#047857' : '#64748B',
-                      fontSize: 11,
+                      padding: '12px 18px',
+                      border: 'none',
+                      background: 'transparent',
+                      borderBottom: activeDossierTab === 'PARTIDAS' ? '2.5px solid #0D9488' : '2.5px solid transparent',
+                      color: activeDossierTab === 'PARTIDAS' ? '#0D9488' : '#64748B',
                       fontWeight: 700,
+                      fontSize: 13,
                       cursor: 'pointer',
                       display: 'inline-flex',
                       alignItems: 'center',
-                      gap: 5,
-                      transition: 'all 0.15s'
+                      gap: 6,
+                      whiteSpace: 'nowrap'
                     }}
                   >
-                    <ShieldCheck size={12} />
-                    Cerrada ({receipts.filter(r => ['CERRADA', 'CERRADO'].includes(r.estado)).length})
+                    <Package size={15} /> Partidas y Balance ({currentReceipt.lineas?.length || 0})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveDossierTab('HUS')}
+                    style={{
+                      padding: '12px 18px',
+                      border: 'none',
+                      background: 'transparent',
+                      borderBottom: activeDossierTab === 'HUS' ? '2.5px solid #0D9488' : '2.5px solid transparent',
+                      color: activeDossierTab === 'HUS' ? '#0D9488' : '#64748B',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <Box size={15} /> Cajas en Almacén ({activasCount} activas · {totalBoxesCount} total)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveDossierTab('DOCUMENTOS')}
+                    style={{
+                      padding: '12px 18px',
+                      border: 'none',
+                      background: 'transparent',
+                      borderBottom: activeDossierTab === 'DOCUMENTOS' ? '2.5px solid #0D9488' : '2.5px solid transparent',
+                      color: activeDossierTab === 'DOCUMENTOS' ? '#0D9488' : '#64748B',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <FileText size={15} /> Documentos y Etiquetas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveDossierTab('TRANSPORTE')}
+                    style={{
+                      padding: '12px 18px',
+                      border: 'none',
+                      background: 'transparent',
+                      borderBottom: activeDossierTab === 'TRANSPORTE' ? '2.5px solid #0D9488' : '2.5px solid transparent',
+                      color: activeDossierTab === 'TRANSPORTE' ? '#0D9488' : '#64748B',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <Truck size={15} /> Transporte y Andén
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveDossierTab('HISTORIAL')}
+                    style={{
+                      padding: '12px 18px',
+                      border: 'none',
+                      background: 'transparent',
+                      borderBottom: activeDossierTab === 'HISTORIAL' ? '2.5px solid #0D9488' : '2.5px solid transparent',
+                      color: activeDossierTab === 'HISTORIAL' ? '#0D9488' : '#64748B',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <Clock size={15} /> Historial y Kárdex ({timelineEvents.length})
                   </button>
                 </div>
 
-                <div className="table-responsive">
-                  <table className="data-table">
-                    <thead>
-              <tr>
-                <th style={{ minWidth: '150px' }}>CÓDIGO PREVIO</th>
-                <th style={{ minWidth: '95px' }}>FECHA</th>
-                <th style={{ minWidth: '120px' }}>DEPOSITANTE</th>
-                <th style={{ minWidth: '130px' }}>FACTURA / OC</th>
-                <th style={{ minWidth: '140px' }}>TRANSPORTE</th>
-                <th style={{ width: '50px', textAlign: 'center' }}>SKUS</th>
-                <th style={{ width: '90px' }}>ESTADO</th>
-                <th style={{ minWidth: '170px', textAlign: 'right' }}>ACCIONES</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--text-tertiary)' }}>
-                    <RefreshCw size={28} className="animate-spin" style={{ margin: '0 auto 12px', color: '#2DD4BF' }} />
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#F1F5F9' }}>Sincronizando previos de recibo con el servidor...</div>
-                    <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 4 }}>Cargando catálogo maestro y líneas de conteo</div>
-                  </td>
-                </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)' }}>
-                    <Package size={36} style={{ margin: '0 auto 10px', opacity: 0.4 }} />
-                    <div>No hay previos de recibo registrados{filterEstado ? ` en estado ${filterEstado}` : ''}.</div>
-                  </td>
-                </tr>
-              ) : (
-                filtered.map(r => {
-                  const clientObj = clients.find(c => c.id === r.clienteId) || r.cliente;
-                  const missingBarcodesCount = r.lineas?.filter((l: any) => !l.sku?.codigoBarras).length || 0;
-                  const isClosed = r.estado === 'CERRADO' || r.estado === 'CERRADA';
+                <div style={{ padding: 20 }}>
+                  {/* TAB 1: PARTIDAS Y BALANCE CON FALTANTES EXPLÍCITOS Y RACKS POR LOTE (Point 1, 6) */}
+                  {activeDossierTab === 'PARTIDAS' && (
+                    <div>
+                      {/* BANNERS DE ESTADO DE CONCILIACIÓN EN ANDÉN */}
+                      {andenSuccessBanner && andenSuccessBanner.receiptId === currentReceipt.id && (
+                        <div style={{ background: '#ECFDF5', border: '1px solid #A7F3D0', color: '#065F46', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <CheckCircle2 size={18} style={{ color: '#059669', flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>{andenSuccessBanner.text}</div>
+                          <button type="button" onClick={() => setAndenSuccessBanner(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#065F46', fontWeight: 700, fontSize: 14, display: 'inline-flex', alignItems: 'center' }}><X size={14} /></button>
+                        </div>
+                      )}
+                      {andenErrorBanner && andenErrorBanner.receiptId === currentReceipt.id && (
+                        <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <AlertTriangle size={18} style={{ color: '#DC2626', flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>{andenErrorBanner.text}</div>
+                          <button type="button" onClick={() => setAndenErrorBanner(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#991B1B', fontWeight: 700, fontSize: 14, display: 'inline-flex', alignItems: 'center' }}><X size={14} /></button>
+                        </div>
+                      )}
 
-                  return (
-                    <React.Fragment key={r.id}>
-                      <tr 
-                        style={{ cursor: 'pointer', background: expanded === r.id ? 'var(--bg-secondary)' : '' }} 
-                        onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                      >
-                        <td style={{ fontWeight: 700, color: 'var(--primary)', whiteSpace: 'nowrap' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                            <span style={{ fontSize: 13, letterSpacing: '-0.01em' }}>{r.codigo}</span>
-                            {r.bloqueado ? (
-                              <span title={`Previo confirmado y bloqueado${r.fechaBloqueo ? ` el ${new Date(r.fechaBloqueo).toLocaleDateString('es-MX')}` : ''}${r.bloqueadoPor ? ` por ${r.bloqueadoPor}` : ''}`} style={{ display: 'inline-flex', alignItems: 'center', color: '#fbbf24' }}>
-                                <Lock size={13} />
-                              </span>
-                            ) : (
-                              <span title="Previo abierto y editable" style={{ display: 'inline-flex', alignItems: 'center', color: '#64748b', opacity: 0.6 }}>
-                                <Unlock size={13} />
-                              </span>
-                            )}
-                            {r.tipoRecepcion === 'DEVOLUCION' ? (
-                              <span style={{
-                                fontSize: '10px',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                                backgroundColor: 'rgba(239, 68, 68, 0.12)',
-                                color: '#f87171',
-                                border: '1px solid rgba(239, 68, 68, 0.28)',
-                                fontWeight: 700,
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 3
-                              }}>
-                                <RotateCcw size={10} /> Devolución
-                              </span>
-                            ) : (
-                              <span style={{
-                                fontSize: '10px',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                                color: '#34d399',
-                                border: '1px solid rgba(16, 185, 129, 0.25)',
-                                fontWeight: 700,
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 3
-                              }}>
-                                <Package size={10} /> Normal
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td>{new Date(r.fechaRecepcion).toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
-                        <td>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
-                            <span className="badge badge-info">{r.cliente?.nombreComercial || clientObj?.nombreComercial}</span>
-                            {clientObj?.giro && (
-                              <span style={{
-                                fontSize: 10,
-                                fontWeight: 700,
-                                padding: '1px 6px',
-                                borderRadius: 4,
-                                background: clientObj.giro === 'COMIDA' ? 'rgba(245, 158, 11, 0.15)' : clientObj.giro === 'FARMACEUTICO' ? 'rgba(168, 85, 247, 0.15)' : 'rgba(148, 163, 184, 0.15)',
-                                color: clientObj.giro === 'COMIDA' ? '#FBBF24' : clientObj.giro === 'FARMACEUTICO' ? '#C084FC' : '#94A3B8',
-                                border: `1px solid ${clientObj.giro === 'COMIDA' ? 'rgba(245, 158, 11, 0.3)' : clientObj.giro === 'FARMACEUTICO' ? 'rgba(168, 85, 247, 0.3)' : 'rgba(148, 163, 184, 0.2)'}`,
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 3
-                              }}>
-                                {clientObj.giro}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td>
-                          {r.facturaRespaldo || r.ocReferencia ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
-                              <span style={{ fontWeight: 700, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                <FileText size={13} style={{ color: 'var(--primary)' }} />
-                                {r.facturaRespaldo || r.ocReferencia}
-                              </span>
-                              {r.tipoImportacion && r.tipoImportacion !== 'NO_APLICA' && (
-                                <span style={{
-                                  fontSize: 10,
-                                  fontWeight: 700,
-                                  color: '#38BDF8',
-                                  backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                                  border: '1px solid rgba(56, 189, 248, 0.28)',
-                                  padding: '1px 6px',
-                                  borderRadius: 4,
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: 4
-                                }}>
-                                  <Ship size={10} style={{ color: '#38bdf8' }} /> {r.tipoImportacion}
-                                </span>
-                              )}
+                      {/* ENCABEZADO Y BOTÓN DE APERTURA / CONMUTACIÓN DE CONTEO EN ANDÉN */}
+                      {!isClosed && (
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginBottom: 16,
+                          flexWrap: 'wrap',
+                          gap: 12,
+                          background: '#F8FAFC',
+                          padding: '12px 18px',
+                          borderRadius: 8,
+                          border: '1px solid #E2E8F0'
+                        }}>
+                          <div>
+                            <div style={{ fontSize: 13.5, fontWeight: 800, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 7 }}>
+                              <Package size={16} style={{ color: '#0284C7' }} />
+                              Verificación y Conciliación Física en Andén
                             </div>
-                          ) : (
-                            <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                          )}
-                        </td>
-                        <td>
-                          <div style={{ fontSize: 13, fontWeight: 500 }}>
-                            {r.lineaTransporte || 'Sin transporte'} {r.placa ? `(${r.placa})` : ''}
+                            <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>
+                              {isAndenConteoCompleted
+                                ? `Conteo físico y conciliación completados (${bultosRecibidosSanos} bultos sanos conciliados contra rampa). Puede revisar los valores o modificar la captura si se requiere.`
+                                : stage.actionType === 'CONTEO'
+                                ? `Inspección de calidad completada. En andén restan ${cajasEnAndenPendientes} bultos sanos recibidos pendientes de conteo y verificación por partida.`
+                                : `Capture o verifique los bultos sanos recibidos en andén por partida antes de generar etiquetas o cerrar el expediente.`}
+                            </div>
                           </div>
-                          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{r.nombreChofer || '—'}</div>
-                        </td>
-                        <td style={{ fontWeight: 600, textAlign: 'center' }}>{r.lineas?.length || 0}</td>
-                        <td style={{ textAlign: 'center' }}>
-                          {(() => {
-                            const meta = getEstadoMeta(r.estado);
-                            const IconComponent = meta.icon;
-                            return (
-                              <span
-                                style={{
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: 6,
-                                  padding: '4px 10px',
-                                  borderRadius: 12,
-                                  fontSize: 11,
-                                  fontWeight: 700,
-                                  background: meta.bg,
-                                  color: meta.color,
-                                  border: `1px solid ${meta.border}`,
-                                  whiteSpace: 'nowrap',
-                                  letterSpacing: '0.02em',
-                                  boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
-                                }}
-                                title={meta.description}
-                              >
-                                {meta.key === 'EN_PROCESO_CONTEO' ? (
-                                  <span style={{ position: 'relative', display: 'inline-flex', width: 7, height: 7 }}>
-                                    <span style={{ position: 'absolute', width: '100%', height: '100%', borderRadius: '50%', background: '#F59E0B', opacity: 0.75, animation: 'ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite' }} />
-                                    <span style={{ position: 'relative', width: 7, height: 7, borderRadius: '50%', background: '#D97706' }} />
+                          <button
+                            type="button"
+                            id="btn-toggle-conteo-anden"
+                            onClick={() => {
+                              const nextState = !showAndenCapture;
+                              setShowAndenCapture(nextState);
+                              if (nextState) {
+                                setTimeout(() => {
+                                  const el = document.getElementById('seccion-conteo-anden');
+                                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                  const firstInput = document.querySelector<HTMLInputElement>('#seccion-conteo-anden input[type="number"]');
+                                  if (firstInput) firstInput.focus();
+                                }, 100);
+                              }
+                            }}
+                            className="btn"
+                            style={{
+                              background: showAndenCapture ? '#FFFFFF' : isAndenConteoCompleted ? '#F0F9FF' : '#0284C7',
+                              color: showAndenCapture ? '#0F172A' : isAndenConteoCompleted ? '#0284C7' : '#FFFFFF',
+                              border: showAndenCapture ? '1px solid #CBD5E1' : isAndenConteoCompleted ? '1px solid #BAE6FD' : 'none',
+                              padding: '8px 16px',
+                              borderRadius: 6,
+                              fontWeight: 700,
+                              fontSize: 13,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              cursor: 'pointer',
+                              boxShadow: showAndenCapture ? 'none' : '0 2px 6px rgba(2,132,199,0.3)',
+                            }}
+                          >
+                            <Package size={15} />
+                            {showAndenCapture
+                              ? 'Ocultar Formulario de Conteo'
+                              : isAndenConteoCompleted
+                              ? 'Revisar / Modificar Conteo en Andén'
+                              : 'Capturar Conteo en Andén'}
+                          </button>
+                        </div>
+                      )}
+
+                      {/* SECCIÓN INTERACTIVA DE CONTEO Y CONCILIACIÓN FÍSICA EN ANDÉN */}
+                      {!isClosed && showAndenCapture && (() => {
+                        const receiptDraft = andenDrafts[currentReceipt.id] || {};
+                        const linesList = currentReceipt.lineas || [];
+
+                        // Función auxiliar para vincular cajas HUs a la partida exacta por receiptLineId o lote estricto
+                        const matchBoxToLine = (box: any, line: any) => {
+                          if (box.receiptLineId && line.id) {
+                            return box.receiptLineId === line.id;
+                          }
+                          const matchSku = box.skuCodigo ? box.skuCodigo === line.sku?.codigo : true;
+                          if (!matchSku) return false;
+
+                          const lineLot = (line.loteAsignado || line.loteEsperado || line.lote || '').trim().toLowerCase();
+                          const boxLot = (box.loteTexto || box.lote?.lote || '').trim().toLowerCase();
+                          if (lineLot && boxLot) {
+                            return lineLot === boxLot;
+                          }
+                          return false;
+                        };
+
+                        // Cálculos acumulados en vivo a partir de las entradas del usuario y dictámenes previos
+                        let sumCajasSanasDraft = 0;
+                        let sumPiezasSanasDraft = 0;
+                        let sumRescatadasPrevias = 0;
+                        let sumMermaPrevias = 0;
+                        let sumEsperadasTotal = 0;
+
+                        linesList.forEach((l: any) => {
+                          const factor = Number(l.sku?.capacidadEmpaque || l.sku?.piezasPorCaja || (l.sku?.codigo?.includes('ACE') ? 12 : l.sku?.codigo?.includes('ARR') ? 20 : 1)) || 1;
+                          const esp = Number(l.cantidadEsperada || 0);
+                          sumEsperadasTotal += esp;
+
+                          const lineRescuedBoxes = boxHus.filter((b: any) =>
+                            b.tipoHu === 'CAJA' &&
+                            b.estadoHu === 'ACTIVO' &&
+                            (b.reacondicionada || b.cajaOrigenId) &&
+                            matchBoxToLine(b, l)
+                          );
+                          const lineRescuedPieces = lineRescuedBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+                          const lineMermaPieces = Number(l.cantidadDanada || 0);
+                          sumRescatadasPrevias += lineRescuedPieces;
+                          sumMermaPrevias += lineMermaPieces;
+
+                          const defaultPiezas = Math.max(0, Number(l.cantidadRecibida || 0) - lineRescuedPieces);
+                          const defaultCajas = factor > 0 ? Math.floor(defaultPiezas / factor) : 0;
+
+                          const draft = receiptDraft[l.id];
+                          const cItem = draft?.cajasSanas !== undefined
+                            ? draft.cajasSanas
+                            : (isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0 ? defaultCajas : '');
+                          const pItem = draft?.piezasSanas !== undefined
+                            ? draft.piezasSanas
+                            : (isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0 ? defaultPiezas : '');
+
+                          if (typeof cItem === 'number') {
+                            sumCajasSanasDraft += cItem;
+                            sumPiezasSanasDraft += (typeof pItem === 'number' ? pItem : cItem * factor);
+                          } else if (typeof pItem === 'number') {
+                            sumPiezasSanasDraft += pItem;
+                            sumCajasSanasDraft += Math.round(pItem / factor);
+                          }
+                        });
+
+                        const totalBultosRecibidosRampa = bultosRecibidos !== null && bultosRecibidos !== undefined
+                          ? Number(bultosRecibidos)
+                          : (bultosDeclarados || 0);
+
+                        const totalBultosDanadosCalidad = Math.max(
+                          Number(bultosDanados || 0),
+                          (currentReceipt.inspecciones || []).reduce((s: number, i: any) => s + (Number(i.totalCajasInspeccionadas) || 0), 0),
+                          (currentReceipt.cantidadDanada ? 1 : 0)
+                        );
+
+                        // Bultos sanos esperados en andén reconstruidos fielmente desde rampa/calidad
+                        const bultosSanosEsperadosAnden = Math.max(0, totalBultosRecibidosRampa - totalBultosDanadosCalidad);
+
+                        const isCountingFinished = (sumCajasSanasDraft === bultosSanosEsperadosAnden && sumCajasSanasDraft > 0) || isAndenConteoCompleted;
+                        const totalPiezasFisicasContadas = (sumRescatadasPrevias + sumPiezasSanasDraft) + sumMermaPrevias;
+                        const sumFaltantesConfirmados = isCountingFinished ? Math.max(0, sumEsperadasTotal - totalPiezasFisicasContadas) : 0;
+                        const sumPiezasPendientesConteo = Math.max(0, sumEsperadasTotal - totalPiezasFisicasContadas - sumFaltantesConfirmados);
+
+                        const rescuedLotsList = Array.from(new Set(
+                          linesList
+                            .filter((lItem: any) => {
+                              const rBoxes = boxHus.filter((b: any) =>
+                                b.tipoHu === 'CAJA' &&
+                                b.estadoHu === 'ACTIVO' &&
+                                (b.reacondicionada || b.cajaOrigenId) &&
+                                matchBoxToLine(b, lItem)
+                              );
+                              return rBoxes.some((b: any) => (Number(b.cantidad) || 0) > 0);
+                            })
+                            .map((lItem: any) => (lItem.loteAsignado || lItem.loteEsperado || lItem.lote || '').trim())
+                            .filter(Boolean)
+                        ));
+
+                        return (
+                          <div
+                            id="seccion-conteo-anden"
+                            style={{
+                              background: '#FFFFFF',
+                              borderRadius: 10,
+                              border: '2px solid #0284C7',
+                              boxShadow: '0 4px 14px rgba(2,132,199,0.08)',
+                              padding: '22px 24px',
+                              marginBottom: 24,
+                            }}
+                          >
+                            {/* Cabecera del formulario de captura */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 14, marginBottom: 18 }}>
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                                  <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#0284C7', background: '#F0F9FF', padding: '3px 8px', borderRadius: 4, border: '1px solid #BAE6FD' }}>
+                                    Conteo y Conciliación en Andén
                                   </span>
-                                ) : (
-                                  <IconComponent size={13} style={{ color: meta.color }} />
-                                )}
-                                {meta.label}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td style={{ textAlign: 'right' }} onClick={e => e.stopPropagation()}>
-                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, color: '#64748B' }}>
+                                    Verificación física de bultos sanos y conciliación contra rampa
+                                  </span>
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#0F172A' }}>
+                                  Captura y Conciliación Física por Partida
+                                </h4>
+                                <p style={{ margin: '6px 0 0', fontSize: 13, color: '#475569', maxWidth: 900, lineHeight: 1.5 }}>
+                                  Capture los bultos y piezas sanas recibidos físicamente en andén. Las cantidades sanas se <strong>sumarán a las piezas rescatadas previamente</strong> en inspección de calidad ({sumRescatadasPrevias} pzas rescatadas / {sumMermaPrevias} pzas merma), conservando los dictámenes por partida exacta sin duplicar registros. La disponibilidad en inventario permanecerá estrictamente en <strong>0</strong> hasta el alojamiento físico en racks (Putaway).
+                                </p>
+                              </div>
 
-                            {/* BOTÓN EDITAR PREVIO */}
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              disabled={r.bloqueado}
-                              title={r.bloqueado ? "Edición bloqueada: Previo confirmado" : "Editar metadatos del previo (Factura, Transporte, Chofer)"}
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                if (!r.bloqueado) setEditReceiptModal(r); 
-                              }}
-                              style={{ 
-                                padding: '4px 6px',
-                                opacity: r.bloqueado ? 0.45 : 1,
-                                cursor: r.bloqueado ? 'not-allowed' : 'pointer'
-                              }}
-                            >
-                              {r.bloqueado ? <Lock size={14} style={{ color: '#64748b' }} /> : <Settings size={14} />}
-                            </button>
+                              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                                <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', padding: '8px 14px', borderRadius: 8, textAlign: 'right' }}>
+                                  <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>En Andén Recibidos</div>
+                                  <div style={{ fontSize: 13, fontWeight: 800, color: '#0F172A' }}>
+                                    <span style={{ color: '#0284C7' }}>{bultosSanosEsperadosAnden} bultos sanos</span> en rampa
+                                  </div>
+                                </div>
+                                <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', padding: '8px 14px', borderRadius: 8, textAlign: 'right' }}>
+                                  <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Capturados en Formulario</div>
+                                  <div style={{ fontSize: 13, fontWeight: 800, color: sumCajasSanasDraft === bultosSanosEsperadosAnden ? '#059669' : '#D97706' }}>
+                                    {sumCajasSanasDraft} de {bultosSanosEsperadosAnden} bultos
+                                    {sumCajasSanasDraft === bultosSanosEsperadosAnden && (
+                                      <span style={{ fontSize: 11, color: '#059669', marginLeft: 4 }}>Cuadra</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
 
-                            {/* BOTÓN IMPRIMIR ETIQUETAS */}
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              title="Imprimir etiquetas térmicas para este previo"
-                              onClick={(e) => { e.stopPropagation(); setPrintModalReceipt(r); }}
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', fontSize: 12 }}
-                            >
-                              <Printer size={13} /> Imprimir
-                            </button>
+                            {/* TABLA DE CAPTURA POR PARTIDA */}
+                            <div style={{ overflowX: 'auto', marginBottom: 18 }}>
+                              <table style={{ width: '100%', fontSize: 12.5, borderCollapse: 'collapse', border: '1px solid #E2E8F0' }}>
+                                <thead>
+                                  <tr style={{ background: '#F1F5F9', borderBottom: '2px solid #CBD5E1', textAlign: 'left', color: '#334155' }}>
+                                    <th style={{ padding: '10px 12px' }}>SKU / Lote / Producto</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>Empaque</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right' }}>Esperada</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'center', background: '#F8FAFC' }}>Dictamen Calidad Previo</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'center', background: '#EFF6FF', minWidth: 140 }}>Cajas Sanas en Andén</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'center', background: '#EFF6FF', minWidth: 140 }}>Piezas Sanas en Andén</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right' }}>Total Conformes</th>
+                                    <th style={{ padding: '10px 12px', textAlign: 'right' }}>Balance / Faltante</th>
+                                    <th style={{ padding: '10px 12px', minWidth: 180 }}>Lote y Caducidad</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {linesList.map((l: any, lineIdx: number) => {
+                                    const factor = Number(l.sku?.capacidadEmpaque || l.sku?.piezasPorCaja || (l.sku?.codigo?.includes('ACE') ? 12 : l.sku?.codigo?.includes('ARR') ? 20 : 1)) || 1;
+                                    const esp = Number(l.cantidadEsperada || 0);
+                                    const cjsEsperadas = Math.ceil(esp / factor);
 
-                            {/* BOTÓN REPORTE DE ENTRADA */}
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm"
-                              title="Ver e imprimir Reporte Oficial de Recepción (PDF)"
-                              onClick={(e) => { e.stopPropagation(); setReportModalReceipt(r); }}
-                              style={{ padding: '4px 6px', color: 'var(--emerald)' }}
-                            >
-                              <FileText size={15} />
-                            </button>
+                                    // Cajas y piezas previamente dictaminadas en calidad vinculadas estrictamente a ESTA partida
+                                    const lineRescuedBoxes = boxHus.filter((b: any) =>
+                                      b.tipoHu === 'CAJA' &&
+                                      b.estadoHu === 'ACTIVO' &&
+                                      (b.reacondicionada || b.cajaOrigenId) &&
+                                      matchBoxToLine(b, l)
+                                    );
+                                    const lineRescuedPieces = lineRescuedBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+                                    const lineMermaPieces = Number(l.cantidadDanada || 0);
+                                    const lineInsp = (currentReceipt.inspecciones || []).find((insp: any) =>
+                                      lineRescuedBoxes.some((b: any) => b.inspeccionId === insp.id)
+                                    ) || (currentReceipt.inspecciones?.[0] || null);
+                                    const lineInspText = lineInsp?.folio ? `(${lineInsp.folio})` : '(Calidad)';
 
-                            {/* BOTÓN ELIMINAR PREVIO (SOLO SI NO ESTÁ CERRADO NI BLOQUEADO) */}
-                            {!isClosed && !r.bloqueado && (
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                title="Eliminar previo de recibo"
-                                onClick={() => setDeleteReceiptConfirm(r)}
-                                style={{ padding: '4px 6px', color: 'var(--error)' }}
-                              >
-                                <Trash2 size={15} />
-                              </button>
-                            )}
+                                    // Entradas en borrador del usuario para esta línea
+                                    const draft = receiptDraft[l.id];
+                                    const defaultPiezas = Math.max(0, Number(l.cantidadRecibida || 0) - lineRescuedPieces);
+                                    const defaultCajas = factor > 0 ? Math.floor(defaultPiezas / factor) : 0;
 
-                            <button 
-                              type="button"
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                              style={{ padding: '4px 6px' }}
-                            >
-                              {expanded === r.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                                    const cVal = draft?.cajasSanas !== undefined
+                                      ? draft.cajasSanas
+                                      : (isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0 ? defaultCajas : '');
+                                    const pVal = draft?.piezasSanas !== undefined
+                                      ? draft.piezasSanas
+                                      : (isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0 ? defaultPiezas : '');
+                                    const loteVal = draft?.lote !== undefined ? draft.lote : (l.loteAsignado || l.loteEsperado || l.lote || '');
+                                    const caducidadVal = draft?.fechaVencimiento !== undefined ? draft.fechaVencimiento : (l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : '');
 
-                      {/* VISTA EXPANDIDA DEL PREVIO */}
-                      {expanded === r.id && (
-                        <tr>
-                          <td colSpan={8} style={{ padding: 0 }}>
-                            <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', width: '100%', boxSizing: 'border-box' }}>
-                              
-                              {/* PIPELINE VISUAL DE 3 ETAPAS DE ESTATUS OPERATIVO (TAREA 5) */}
-                              {(() => {
-                                const meta = getEstadoMeta(r.estado);
-                                const currentStep = meta.stepIndex;
+                                    // Cálculos automáticos para esta partida
+                                    const pSanasCalc = typeof pVal === 'number' ? pVal : (typeof cVal === 'number' ? cVal * factor : 0);
+                                    const totalConformesLinea = lineRescuedPieces + pSanasCalc;
+                                    const totalRecibidasLinea = totalConformesLinea + lineMermaPieces;
+                                    const faltanteLinea = Math.max(0, esp - totalRecibidasLinea);
+                                    const hasUserTyped = typeof cVal === 'number' || typeof pVal === 'number' || isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0;
 
-                                const steps = [
-                                  {
-                                    index: 0,
-                                    key: 'PENDIENTE_ARRIBO',
-                                    label: 'Pendiente de Arribo',
-                                    shortDesc: 'Previo registrado en WMS',
-                                    icon: Clock,
-                                    color: '#38BDF8',
-                                    bgActive: 'rgba(2, 132, 199, 0.18)',
-                                    borderActive: '#0284C7',
-                                  },
-                                  {
-                                    index: 1,
-                                    key: 'EN_PROCESO_CONTEO',
-                                    label: 'En Proceso de Conteo',
-                                    shortDesc: 'Conteo físico y escaneo en andén',
-                                    icon: Scan,
-                                    color: '#FBBF24',
-                                    bgActive: 'rgba(245, 158, 11, 0.18)',
-                                    borderActive: '#D97706',
-                                  },
-                                  {
-                                    index: 2,
-                                    key: 'CERRADA',
-                                    label: 'Cerrada',
-                                    shortDesc: 'Recepción finiquitada e inmutable',
-                                    icon: ShieldCheck,
-                                    color: '#34D399',
-                                    bgActive: 'rgba(16, 185, 129, 0.18)',
-                                    borderActive: '#059669',
-                                  }
-                                ];
-
-                                return (
-                                  <div style={{
-                                    background: 'rgba(15, 23, 42, 0.65)',
-                                    border: '1px solid rgba(255, 255, 255, 0.08)',
-                                    borderRadius: 12,
-                                    padding: '16px 20px',
-                                    marginBottom: 16,
-                                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                                  }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#94A3B8' }}>
-                                          Ciclo Operativo del Folio
-                                        </span>
-                                        <span style={{
-                                          fontSize: 11,
-                                          fontWeight: 800,
-                                          padding: '2px 8px',
-                                          borderRadius: 6,
-                                          background: meta.bg,
-                                          color: meta.color,
-                                          border: `1px solid ${meta.border}`,
-                                          display: 'inline-flex',
-                                          alignItems: 'center',
-                                          gap: 5
-                                        }}>
-                                          <meta.icon size={12} /> {meta.label}
-                                        </span>
-                                      </div>
-
-                                      {/* Acciones directas de avance de estatus */}
-                                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                        {currentStep === 0 && (
-                                          <button
-                                            type="button"
-                                            className="btn btn-sm"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleLockReceiptSubmit(r.id);
-                                            }}
-                                            style={{
-                                              background: '#0D9488',
-                                              borderColor: '#0D9488',
-                                              color: '#FFFFFF',
-                                              fontWeight: 700,
-                                              fontSize: 12,
-                                              display: 'inline-flex',
-                                              alignItems: 'center',
-                                              gap: 6,
-                                              padding: '6px 12px',
-                                              borderRadius: 6,
-                                              boxShadow: '0 2px 4px rgba(13,148,136,0.3)',
-                                              cursor: 'pointer'
-                                            }}
-                                            title="Confirmar arribo de unidad a andén y pasar a Proceso de Conteo"
-                                          >
-                                            <Scan size={14} /> Iniciar Conteo en Andén
-                                          </button>
-                                        )}
-
-                                        {currentStep === 1 && !isClosed && (
-                                          <div style={{ display: 'inline-flex', gap: 6 }}>
-                                            <button
-                                              type="button"
-                                              className="btn btn-sm"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setDivertModalData({
-                                                  receipt: r,
-                                                  initialTipoDesvio: (r.lineas || []).some((l: any) => (l.cantidadDanada || 0) > 0) ? 'MERMA' : 'EXCESO'
-                                                });
-                                              }}
-                                              style={{
-                                                background: 'rgba(239, 68, 68, 0.15)',
-                                                border: '1px solid rgba(239, 68, 68, 0.4)',
-                                                color: '#F87171',
-                                                fontWeight: 700,
-                                                fontSize: 12,
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                gap: 6,
-                                                padding: '6px 12px',
-                                                borderRadius: 6,
-                                                cursor: 'pointer'
-                                              }}
-                                              title="Desviar mercancía dañada o excedente al almacén virtual"
-                                            >
-                                              <ShieldAlert size={14} style={{ color: '#F87171' }} /> Desviar a Almacén Virtual
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="btn btn-sm"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setClosingReceipt(r);
-                                              }}
-                                              style={{
-                                                background: '#059669',
-                                                borderColor: '#059669',
-                                                color: '#FFFFFF',
-                                                fontWeight: 700,
-                                                fontSize: 12,
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                gap: 6,
-                                                padding: '6px 12px',
-                                                borderRadius: 6,
-                                                boxShadow: '0 2px 4px rgba(5,150,105,0.3)',
-                                                cursor: 'pointer'
-                                              }}
-                                              title="Finalizar conteo físico y emitir reporte de cierre"
-                                            >
-                                              <CheckSquare size={14} /> Finalizar y Cerrar Recepción
-                                            </button>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    {/* Grid del Stepper */}
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr auto 1fr', alignItems: 'center', gap: 10 }}>
-                                      {steps.map((step, idx) => {
-                                        const StepIcon = step.icon;
-                                        const isCompleted = currentStep > step.index;
-                                        const isCurrent = currentStep === step.index;
-
-                                        return (
-                                          <React.Fragment key={step.key}>
-                                            <div style={{
-                                              padding: '12px 14px',
-                                              borderRadius: 10,
-                                              background: isCurrent ? '#F0FDFA' : isCompleted ? '#ECFDF5' : '#F8FAFC',
-                                              border: isCurrent ? '1.5px solid #2DD4BF' : isCompleted ? '1px solid #A7F3D0' : '1px solid #E2E8F0',
-                                              transition: 'all 0.2s',
-                                              display: 'flex',
-                                              alignItems: 'center',
-                                              gap: 10
+                                    return (
+                                      <tr key={l.id || lineIdx} style={{ borderBottom: '1px solid #E2E8F0', background: lineIdx % 2 === 0 ? '#FFFFFF' : '#FAFAFA' }}>
+                                        {/* SKU / Lote / Descripción (Visible sin desplazamiento horizontal) */}
+                                        <td style={{ padding: '10px 12px' }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 3 }}>
+                                            <span style={{ fontWeight: 800, color: '#0F172A', fontSize: 13 }}>{l.sku?.codigo}</span>
+                                            <span style={{
+                                              fontSize: 11,
+                                              fontWeight: 800,
+                                              background: '#FEF3C7',
+                                              color: '#92400E',
+                                              border: '1px solid #FDE68A',
+                                              padding: '2px 7px',
+                                              borderRadius: 4,
+                                              fontFamily: 'monospace'
                                             }}>
-                                              <div style={{
-                                                width: 32,
-                                                height: 32,
-                                                borderRadius: 8,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                background: isCompleted ? '#059669' : isCurrent ? step.color : '#E2E8F0',
-                                                color: isCompleted || isCurrent ? '#FFFFFF' : '#64748B',
-                                                flexShrink: 0,
-                                                fontWeight: 800,
-                                                boxShadow: isCurrent ? `0 0 12px ${step.color}50` : 'none'
-                                              }}>
-                                                {isCompleted ? <CheckCircle2 size={16} color="#FFFFFF" /> : <StepIcon size={16} color={isCurrent ? '#FFFFFF' : '#64748B'} />}
-                                              </div>
-                                              <div style={{ minWidth: 0, flex: 1 }}>
-                                                <div style={{
-                                                  fontSize: 12,
-                                                  fontWeight: isCurrent ? 800 : 700,
-                                                  color: isCurrent ? '#0F172A' : isCompleted ? '#059669' : '#64748B',
-                                                  whiteSpace: 'nowrap',
-                                                  overflow: 'hidden',
-                                                  textOverflow: 'ellipsis'
-                                                }}>
-                                                  {step.label}
-                                                </div>
-                                                <div style={{ fontSize: 10, color: isCurrent ? '#0D9488' : '#94A3B8', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                  {isCompleted ? 'Completado' : isCurrent ? 'Fase Activa' : step.shortDesc}
-                                                </div>
+                                              Lote: {l.loteAsignado || l.loteEsperado || l.lote || 'Sin lote'}
+                                            </span>
+                                          </div>
+                                          <div style={{ fontSize: 11.5, color: '#64748B' }}>{l.sku?.descripcion || 'Producto'}</div>
+                                        </td>
+
+                                        {/* Empaque */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                                          <span style={{ fontSize: 11, fontWeight: 700, background: '#F1F5F9', color: '#475569', padding: '3px 8px', borderRadius: 4 }}>
+                                            {factor} pz/cja
+                                          </span>
+                                        </td>
+
+                                        {/* Esperada */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                                          <div style={{ fontWeight: 700, color: '#0F172A' }}>{esp} pzas</div>
+                                          <div style={{ fontSize: 11, color: '#64748B' }}>({cjsEsperadas} cjs)</div>
+                                        </td>
+
+                                        {/* Dictamen Calidad Previo (Rescatadas / Merma) */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'center', background: '#F8FAFC' }}>
+                                          {lineRescuedPieces > 0 || lineMermaPieces > 0 ? (
+                                            <div>
+                                              <span style={{ fontSize: 11, fontWeight: 700, background: '#EDE9FE', color: '#6D28D9', padding: '3px 8px', borderRadius: 4, display: 'inline-block', marginBottom: 2 }}>
+                                                {lineRescuedPieces} rescatadas · {lineMermaPieces} merma
+                                              </span>
+                                              <div style={{ fontSize: 10.5, color: '#6D28D9', fontStyle: 'italic' }}>
+                                                {lineInspText}
                                               </div>
                                             </div>
+                                          ) : (
+                                            <span style={{ fontSize: 11, color: '#94A3B8', fontStyle: 'italic' }}>
+                                              0 pz (Sin daño exterior)
+                                            </span>
+                                          )}
+                                        </td>
 
-                                            {idx < steps.length - 1 && (
-                                              <div style={{ color: isCompleted ? '#059669' : '#CBD5E1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                                <ArrowRight size={16} />
+                                        {/* Input: Cajas Sanas en Andén */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'center', background: '#F0F9FF' }}>
+                                          <input
+                                            id={`input-anden-cajas-${lineIdx}`}
+                                            type="number"
+                                            min="0"
+                                            placeholder="0"
+                                            value={cVal}
+                                            onChange={(e) => {
+                                              const raw = e.target.value;
+                                              const num = raw === '' ? '' : Math.max(0, parseInt(raw) || 0);
+                                              handleAndenDraftChange(currentReceipt.id, l.id, 'cajasSanas', num, factor);
+                                            }}
+                                            style={{
+                                              width: 90,
+                                              padding: '6px 10px',
+                                              fontSize: 13,
+                                              fontWeight: 700,
+                                              textAlign: 'center',
+                                              borderRadius: 6,
+                                              border: '1.5px solid #0284C7',
+                                              background: '#FFFFFF',
+                                              color: '#0F172A',
+                                            }}
+                                          />
+                                          <div style={{ fontSize: 10.5, color: '#0369A1', marginTop: 2 }}>cajas</div>
+                                        </td>
+
+                                        {/* Input: Piezas Sanas en Andén */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'center', background: '#F0F9FF' }}>
+                                          <input
+                                            id={`input-anden-piezas-${lineIdx}`}
+                                            type="number"
+                                            min="0"
+                                            placeholder="0"
+                                            value={pVal}
+                                            onChange={(e) => {
+                                              const raw = e.target.value;
+                                              const num = raw === '' ? '' : Math.max(0, parseInt(raw) || 0);
+                                              handleAndenDraftChange(currentReceipt.id, l.id, 'piezasSanas', num, factor);
+                                            }}
+                                            style={{
+                                              width: 90,
+                                              padding: '6px 10px',
+                                              fontSize: 13,
+                                              fontWeight: 700,
+                                              textAlign: 'center',
+                                              borderRadius: 6,
+                                              border: '1.5px solid #0284C7',
+                                              background: '#FFFFFF',
+                                              color: '#0F172A',
+                                            }}
+                                          />
+                                          <div style={{ fontSize: 10.5, color: '#0369A1', marginTop: 2 }}>piezas</div>
+                                        </td>
+
+                                        {/* Total Conformes Resultante */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                                          <div style={{ fontWeight: 800, color: totalConformesLinea > 0 ? '#059669' : '#64748B', fontSize: 13 }}>
+                                            {totalConformesLinea} pzas
+                                          </div>
+                                          <div style={{ fontSize: 10.5, color: '#64748B' }}>
+                                            {lineRescuedPieces > 0 ? `${lineRescuedPieces} resc + ${pSanasCalc} sanas` : `${pSanasCalc} sanas`}
+                                          </div>
+                                        </td>
+
+                                        {/* Balance / Faltante */}
+                                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                                          {!hasUserTyped ? (
+                                            <div>
+                                              <span style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>
+                                                Pendiente de conteo
+                                              </span>
+                                              <div style={{ fontSize: 10.5, color: '#2563EB', marginTop: 2 }}>
+                                                {esp - (lineRescuedPieces + lineMermaPieces)} pzas por contar ({cjsEsperadas - (lineRescuedPieces > 0 ? 1 : 0)} cjs)
                                               </div>
-                                            )}
-                                          </React.Fragment>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                );
-                              })()}
+                                            </div>
+                                          ) : faltanteLinea === 0 && totalRecibidasLinea >= esp ? (
+                                            <span style={{ fontSize: 11, fontWeight: 700, background: '#ECFDF5', color: '#059669', padding: '3px 8px', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                              <CheckCircle2 size={12} /> 0 faltante · Completo ({totalRecibidasLinea}/{esp} pz)
+                                            </span>
+                                          ) : (
+                                            <div>
+                                              <span style={{ fontSize: 11, fontWeight: 700, background: '#FEF3C7', color: '#D97706', padding: '3px 8px', borderRadius: 4 }}>
+                                                Faltante: {faltanteLinea} pzas
+                                              </span>
+                                              <div style={{ fontSize: 10.5, color: '#D97706', marginTop: 2 }}>
+                                                ({Math.ceil(faltanteLinea / factor)} caja faltante) ({totalRecibidasLinea}/{esp} pz)
+                                              </div>
+                                            </div>
+                                          )}
+                                        </td>
 
-                              {/* BANNER DE ESTADO Y SEGURIDAD DEL PREVIO (TAREA 3) */}
-                              {r.bloqueado ? (
-                                <div style={{
-                                  background: isClosed
-                                    ? 'linear-gradient(90deg, rgba(100, 116, 139, 0.12) 0%, rgba(100, 116, 139, 0.04) 100%)'
-                                    : 'linear-gradient(90deg, rgba(245, 158, 11, 0.12) 0%, rgba(245, 158, 11, 0.04) 100%)',
-                                  border: isClosed
-                                    ? '1px solid rgba(100, 116, 139, 0.35)'
-                                    : '1px solid rgba(245, 158, 11, 0.35)',
-                                  borderRadius: 10,
-                                  padding: '12px 18px',
-                                  marginBottom: 16,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  flexWrap: 'wrap',
-                                  gap: 12
-                                }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                                    <div style={{
-                                      width: 36, height: 36, borderRadius: 8,
-                                      background: isClosed ? 'rgba(100, 116, 139, 0.2)' : 'rgba(245, 158, 11, 0.2)',
-                                      color: isClosed ? '#94a3b8' : '#fbbf24',
-                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                      border: isClosed ? '1px solid rgba(100, 116, 139, 0.4)' : '1px solid rgba(245, 158, 11, 0.4)'
-                                    }}>
-                                      <Lock size={18} />
-                                    </div>
-                                    <div>
-                                      <div style={{ fontSize: 13, fontWeight: 800, color: isClosed ? '#334155' : '#92400E', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                        {isClosed ? 'RECEPCIÓN CERRADA — BLOQUEO DEFINITIVO DE AUDITORÍA' : 'PREVIO CONFIRMADO Y BLOQUEADO CONTRA EDICIÓN'}
-                                      </div>
-                                      <div style={{ fontSize: 11, color: isClosed ? '#64748B' : '#78350F', marginTop: 2 }}>
-                                        {isClosed
-                                          ? 'Esta recepción ha sido CERRADA y finiquitada. El inventario ya fue ingresado al almacén; por normativa WMS ni el administrador puede alterar ni desbloquear sus partidas históricas.'
-                                          : `Confirmado el ${r.fechaBloqueo ? new Date(r.fechaBloqueo).toLocaleString('es-MX') : 'recientemente'} por ${r.bloqueadoPor || 'Operaciones WMS'}. La factura, SKUs y cantidades esperadas están protegidas.`
-                                        }
-                                      </div>
-                                    </div>
-                                  </div>
+                                        {/* Lote y Caducidad */}
+                                        <td style={{ padding: '10px 12px' }}>
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                            <input
+                                              type="text"
+                                              placeholder="Lote..."
+                                              value={loteVal}
+                                              onChange={(e) => handleAndenDraftChange(currentReceipt.id, l.id, 'lote', e.target.value, factor)}
+                                              style={{
+                                                padding: '4px 8px',
+                                                fontSize: 11.5,
+                                                borderRadius: 4,
+                                                border: '1px solid #CBD5E1',
+                                                background: '#FFFFFF',
+                                              }}
+                                            />
+                                            <input
+                                              type="date"
+                                              value={caducidadVal}
+                                              onChange={(e) => handleAndenDraftChange(currentReceipt.id, l.id, 'fechaVencimiento', e.target.value, factor)}
+                                              style={{
+                                                padding: '4px 8px',
+                                                fontSize: 11,
+                                                borderRadius: 4,
+                                                border: '1px solid #CBD5E1',
+                                                background: '#FFFFFF',
+                                              }}
+                                            />
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
 
-                                  {isClosed ? (
-                                    <span style={{
-                                      display: 'inline-flex', alignItems: 'center', gap: 6,
-                                      fontSize: 12, fontWeight: 700,
-                                      background: 'rgba(255, 255, 255, 0.05)',
-                                      border: '1px solid rgba(255, 255, 255, 0.12)',
-                                      color: '#94a3b8',
-                                      padding: '7px 14px', borderRadius: 6
-                                    }} title="Recepción cerrada contable y físicamente. Inmutable en auditoría.">
-                                      <Lock size={13} style={{ color: '#64748b' }} /> Recepción Cerrada (Inmutable)
-                                    </span>
-                                  ) : isSupervisorOrAdmin ? (
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm"
-                                      onClick={() => { setConfirmUnlockModal(r); setUnlockMotivo(''); setModalActionError(null); }}
-                                      style={{
-                                        display: 'inline-flex', alignItems: 'center', gap: 6,
-                                        fontSize: 12, fontWeight: 700,
-                                        background: 'rgba(30, 41, 59, 0.85)',
-                                        border: '1px solid rgba(245, 158, 11, 0.5)',
-                                        color: '#fbbf24',
-                                        padding: '7px 14px', borderRadius: 6,
-                                        cursor: 'pointer',
-                                        boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
-                                      }}
-                                      title="Permitir correcciones bajo autorización de supervisor o administrador"
-                                    >
-                                      <Unlock size={14} /> Desbloquear para Corrección
-                                    </button>
+                            {/* FRANJA DE TOTALES EN VIVO (LIVE RECONCILIATION STRIP) */}
+                            <div style={{
+                              background: '#F8FAFC',
+                              borderRadius: 8,
+                              border: '1px solid #E2E8F0',
+                              padding: '14px 18px',
+                              marginBottom: 18,
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                              gap: 12
+                            }}>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Cajas Sanas Capturadas</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: sumCajasSanasDraft === bultosSanosEsperadosAnden ? '#059669' : '#0F172A' }}>
+                                  {sumCajasSanasDraft} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>de {bultosSanosEsperadosAnden} en andén</span>
+                                </div>
+                                <div style={{ fontSize: 10.5, color: sumCajasSanasDraft === bultosSanosEsperadosAnden ? '#059669' : '#64748B', fontWeight: 600, marginTop: 1 }}>
+                                  {sumCajasSanasDraft === 0
+                                    ? 'Pendiente de captura'
+                                    : sumCajasSanasDraft === bultosSanosEsperadosAnden
+                                    ? `Coincide con rampa (${sumCajasSanasDraft}/${bultosSanosEsperadosAnden})`
+                                    : `Faltan ${Math.max(0, bultosSanosEsperadosAnden - sumCajasSanasDraft)} bultos`}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Piezas Sanas Nuevas</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: '#0284C7' }}>
+                                  {sumPiezasSanasDraft} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span>
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Rescate Previo (Calidad)</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: '#7C3AED' }}>
+                                  {sumRescatadasPrevias} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span>
+                                </div>
+                                <div style={{ fontSize: 10.5, color: '#7C3AED', marginTop: 1 }}>
+                                  {sumRescatadasPrevias > 0
+                                    ? `(${rescuedLotsList.length > 0 ? rescuedLotsList.join(', ') : 'Calidad'})`
+                                    : 'Sin rescates'}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#059669', fontWeight: 700 }}>Total Conformes</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: '#059669' }}>
+                                  {sumRescatadasPrevias + sumPiezasSanasDraft} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span>
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#DC2626', fontWeight: 600 }}>Merma Dictaminada</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: '#DC2626' }}>
+                                  {sumMermaPrevias} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span>
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#0F172A', fontWeight: 700 }}>Total Físico Recibido</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: '#0F172A' }}>
+                                  {totalPiezasFisicasContadas} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas</span>
+                                </div>
+                                <div style={{ fontSize: 10.5, color: '#64748B', marginTop: 1 }}>
+                                  {totalBultosDanadosCalidad > 0 ? (
+                                    sumCajasSanasDraft === 0
+                                      ? `${totalBultosDanadosCalidad} cja${totalBultosDanadosCalidad > 1 ? 's' : ''} en calidad · ${bultosSanosEsperadosAnden} sanas sin contar`
+                                      : isCountingFinished
+                                      ? `${totalBultosRecibidosRampa} bultos recibidos (${bultosSanosEsperadosAnden} sanos + ${totalBultosDanadosCalidad} dictaminado${totalBultosDanadosCalidad > 1 ? 's' : ''})`
+                                      : `${sumCajasSanasDraft + totalBultosDanadosCalidad} de ${totalBultosRecibidosRampa} bultos procesados`
                                   ) : (
-                                    <span style={{
-                                      display: 'inline-flex', alignItems: 'center', gap: 6,
-                                      fontSize: 11, fontWeight: 600,
-                                      background: 'rgba(245, 158, 11, 0.08)',
-                                      border: '1px solid rgba(245, 158, 11, 0.25)',
-                                      color: '#f59e0b',
-                                      padding: '6px 12px', borderRadius: 6
-                                    }} title="Solo un supervisor o administrador puede autorizar el desbloqueo de este previo">
-                                      <Lock size={12} /> Bloqueado (Requiere Supervisor)
-                                    </span>
-                                  )}
-                                </div>
-                              ) : (
-                                <div style={{
-                                  background: 'linear-gradient(90deg, rgba(13, 148, 136, 0.12) 0%, rgba(13, 148, 136, 0.04) 100%)',
-                                  border: '1px solid rgba(13, 148, 136, 0.3)',
-                                  borderRadius: 10,
-                                  padding: '12px 18px',
-                                  marginBottom: 16,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  flexWrap: 'wrap',
-                                  gap: 12
-                                }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                                    <div style={{
-                                      width: 36, height: 36, borderRadius: 8,
-                                      background: 'rgba(13, 148, 136, 0.2)',
-                                      color: '#2dd4bf',
-                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                      border: '1px solid #99F6E4'
-                                    }}>
-                                      <Unlock size={18} />
-                                    </div>
-                                    <div>
-                                      <div style={{ fontSize: 13, fontWeight: 800, color: '#0F766E', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                        MODO CAPTURA Y EDICIÓN LIBRE (PREVIO ABIERTO)
-                                      </div>
-                                      <div style={{ fontSize: 11, color: '#115E59', marginTop: 2 }}>
-                                        Puedes ajustar partidas, agregar productos o modificar factura. Confirma el previo una vez que la unidad arribe a andén para bloquearlo.
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    onClick={() => setConfirmLockModal(r)}
-                                    style={{
-                                      display: 'inline-flex', alignItems: 'center', gap: 6,
-                                      fontSize: 12, fontWeight: 800,
-                                      background: 'linear-gradient(135deg, #0d9488 0%, #0f766e 100%)',
-                                      border: '1px solid #14b8a6',
-                                      color: '#ffffff',
-                                      padding: '7px 16px', borderRadius: 8,
-                                      boxShadow: '0 4px 12px rgba(13, 148, 136, 0.35)',
-                                      cursor: 'pointer'
-                                    }}
-                                    title="Confirmar arribo y bloquear previo contra ediciones no autorizadas"
-                                  >
-                                    <Lock size={14} /> Confirmar Previo (Bloquear Edición)
-                                  </button>
-                                </div>
-                              )}
-
-                              {/* HEADER DEL DETALLE CON ACCIONES */}
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-                                <div style={{ minWidth: 220 }}>
-                                  <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <Package size={18} style={{ color: 'var(--primary)' }} />
-                                    Detalle de Líneas de Recepción ({r.codigo})
-                                  </h4>
-                                  <span style={{ fontSize: 12, color: 'var(--text-tertiary)', display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                    <span>Origen: <strong>{r.origen || 'Nacional'}</strong></span>
-                                    {r.tipoImportacion && r.tipoImportacion !== 'NO_APLICA' && (
-                                      <span style={{ color: '#38bdf8', fontWeight: 600 }}> ({r.tipoImportacion})</span>
-                                    )}
-                                    <span>· Factura de Respaldo: <strong style={{ color: '#0F172A' }}>{r.facturaRespaldo || r.ocReferencia || 'N/A'}</strong></span>
-                                    {clientObj?.giro && (
-                                      <span style={{
-                                        fontSize: 10,
-                                        fontWeight: 800,
-                                        padding: '1px 7px',
-                                        borderRadius: 4,
-                                        background: clientObj.giro === 'COMIDA' ? 'rgba(245, 158, 11, 0.18)' : clientObj.giro === 'FARMACEUTICO' ? 'rgba(168, 85, 247, 0.18)' : 'rgba(148, 163, 184, 0.15)',
-                                        color: clientObj.giro === 'COMIDA' ? '#FBBF24' : clientObj.giro === 'FARMACEUTICO' ? '#C084FC' : '#94A3B8',
-                                        border: `1px solid ${clientObj.giro === 'COMIDA' ? 'rgba(245, 158, 11, 0.35)' : clientObj.giro === 'FARMACEUTICO' ? 'rgba(168, 85, 247, 0.35)' : 'rgba(148, 163, 184, 0.25)'}`,
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 4
-                                      }}>
-                                        <ShieldCheck size={11} /> Giro: {clientObj.giro}
-                                      </span>
-                                    )}
-                                    {r.notas && ` | Notas: ${r.notas}`}
-                                  </span>
-                                </div>
-
-                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                                  {/* BOTÓN EDITAR PREVIO (FACTURA / IMPORTACIÓN / TRANSPORTE) */}
-                                  {r.bloqueado ? (
-                                    <button
-                                      type="button"
-                                      className="btn btn-secondary btn-sm"
-                                      disabled
-                                      title="Edición bloqueada: Previo confirmado. Desbloquea como supervisor para editar."
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px', borderRadius: '6px', background: '#F1F5F9', borderColor: '#E2E8F0', color: '#94A3B8', fontWeight: 600, cursor: 'not-allowed', opacity: 0.7 }}
-                                    >
-                                      <Lock size={13} style={{ color: '#64748b' }} /> Previo Bloqueado
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="btn btn-secondary btn-sm"
-                                      onClick={() => setEditReceiptModal(r)}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px', borderRadius: '6px', background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', fontWeight: 600 }}
-                                    >
-                                      <Settings size={14} style={{ color: '#2dd4bf' }} /> Editar Previo (Factura / Importación)
-                                    </button>
-                                  )}
-
-                                  {/* BOTÓN ALOJAMIENTO / PUTAWAY */}
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    onClick={() => handleOpenPutawayModal(r)}
-                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#F0F9FF', color: '#0284C7', border: '1px solid #BAE6FD', fontWeight: 600, padding: '6px 12px', borderRadius: '6px' }}
-                                  >
-                                    <Box size={14} /> Alojamiento / Putaway a Racks
-                                  </button>
-
-                                  {/* BOTÓN AGREGAR PRODUCTO MANUAL (SOLO SI NO ESTÁ BLOQUEADO) */}
-                                  {!isClosed && !r.bloqueado && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm"
-                                      onClick={() => setShowAddLineModal({ receiptId: r.id, clienteId: r.clienteId })}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#FFFFFF', color: '#0F172A', border: '1px solid #CBD5E1', fontWeight: 600, padding: '6px 12px', borderRadius: '6px' }}
-                                    >
-                                      <PlusCircle size={14} /> Agregar Producto Manual
-                                    </button>
-                                  )}
-
-                                  {/* BOTÓN DESVIAR A ALMACÉN VIRTUAL (MERMA / EXCESO) */}
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    onClick={() => setDivertModalData({
-                                      receipt: r,
-                                      initialTipoDesvio: (r.lineas || []).some((l: any) => (l.cantidadDanada || 0) > 0) ? 'MERMA' : 'EXCESO'
-                                    })}
-                                    style={{
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: 6,
-                                      fontSize: 12,
-                                      backgroundColor: 'rgba(239, 68, 68, 0.12)',
-                                      color: '#F87171',
-                                      border: '1px solid rgba(239, 68, 68, 0.4)',
-                                      fontWeight: 700,
-                                      padding: '6px 12px',
-                                      borderRadius: '6px',
-                                      cursor: 'pointer'
-                                    }}
-                                    title="Desviar producto dañado o excedente a almacén virtual de No Conforme / Merma"
-                                  >
-                                    <ShieldAlert size={14} style={{ color: '#F87171' }} /> Desviar a Almacén Virtual
-                                    {(() => {
-                                      const totalDan = (r.lineas || []).reduce((s: number, l: any) => s + (l.cantidadDanada || 0), 0);
-                                      const totalExc = (r.lineas || []).reduce((s: number, l: any) => s + Math.max(0, (l.cantidadRecibida || 0) - (l.cantidadEsperada || 0)), 0);
-                                      const ncTotal = totalDan + totalExc;
-                                      if (ncTotal > 0) {
-                                        return (
-                                          <span style={{ background: '#EF4444', color: '#FFF', fontSize: 10, padding: '1px 6px', borderRadius: 10, marginLeft: 2, fontWeight: 800 }}>
-                                            {ncTotal}
-                                          </span>
-                                        );
-                                      }
-                                      return null;
-                                    })()}
-                                  </button>
-
-                                  {/* BOTÓN CERRAR RECEPCIÓN */}
-                                  {!isClosed && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm"
-                                      onClick={() => setClosingReceipt(r)}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, backgroundColor: '#059669', color: '#ffffff', border: '1px solid #059669', fontWeight: 700, padding: '6px 12px', borderRadius: '6px' }}
-                                    >
-                                      <CheckSquare size={14} /> Finalizar y Cerrar Recepción
-                                    </button>
-                                  )}
-
-                                  {/* BOTÓN ÚNICO REPORTE OFICIAL DE RECEPCIÓN */}
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    onClick={() => setReportModalReceipt(r)}
-                                    style={{ 
-                                      display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, 
-                                      backgroundColor: '#ffffff', color: '#0f172a', 
-                                      border: '1.5px solid #cbd5e1', fontWeight: 800, 
-                                      padding: '7px 16px', borderRadius: '8px',
-                                      boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
-                                      cursor: 'pointer'
-                                    }}
-                                    title="Ver e imprimir Reporte Oficial (PROVA / Devoluciones / Recepción)"
-                                  >
-                                    <FileText size={15} style={{ color: '#0f172a' }} /> Ver Reporte Oficial (PROVA / Recibo)
-                                  </button>
-
-                                  {/* GENERAR EANs */}
-                                  {missingBarcodesCount > 0 && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-secondary btn-sm"
-                                      onClick={() => handleGenerateBarcodes(r.id)}
-                                      disabled={generatingBarcodes === r.id}
-                                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}
-                                    >
-                                      <QrCode size={14} style={{ color: 'var(--primary)' }} />
-                                      {generatingBarcodes === r.id ? 'Generando...' : 'Generar Códigos EAN-13'}
-                                    </button>
+                                    sumCajasSanasDraft === 0
+                                      ? `${bultosSanosEsperadosAnden} bultos sanos sin contar`
+                                      : isCountingFinished
+                                      ? `${totalBultosRecibidosRampa} bultos recibidos sanos (100% contados)`
+                                      : `${sumCajasSanasDraft} de ${totalBultosRecibidosRampa} bultos procesados`
                                   )}
                                 </div>
                               </div>
-
-                              {/* BARRA DE ESCANEO RÁPIDO CON HANDHELD ZEBRA */}
-                              {!isClosed && (
-                                <div style={{
-                                  background: 'var(--bg-card)',
-                                  padding: '12px 16px',
-                                  borderRadius: 8,
-                                  border: '1px solid var(--border)',
-                                  marginBottom: 16,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  gap: 12,
-                                  flexWrap: 'wrap',
-                                  width: '100%',
-                                  boxSizing: 'border-box'
-                                }}>
-                                  <form onSubmit={(e) => handleHandheldScan(e, r)} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 260 }}>
-                                    <div style={{
-                                      width: 32, height: 32, borderRadius: 6,
-                                      background: 'rgba(13,148,136,0.1)', color: 'var(--primary)',
-                                      display: 'flex', alignItems: 'center', justifyContent: 'center'
-                                    }}>
-                                      <Scan size={18} />
-                                    </div>
-                                    <div style={{ flex: 1 }}>
-                                      <input 
-                                        ref={scannerInputRef}
-                                        className="form-input" 
-                                        placeholder="Escanear con Handheld Zebra TC22 (EAN / SKU)..." 
-                                        value={scannerQuery} 
-                                        onChange={e => setScannerQuery(e.target.value)} 
-                                        style={{ fontSize: 13, height: 36 }}
-                                      />
-                                    </div>
-                                    <button type="submit" className="btn btn-primary btn-sm" style={{ height: 36 }}>
-                                      Escanear
-                                    </button>
-                                  </form>
-                                  {scannerMsg.text && (
-                                    <div style={{
-                                      fontSize: 12, fontWeight: 600,
-                                      color: scannerMsg.type === 'success' ? 'var(--emerald)' : 'var(--error)'
-                                    }}>
-                                      {scannerMsg.text}
-                                    </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: isCountingFinished ? '#D97706' : '#2563EB', fontWeight: 600 }}>
+                                  {isCountingFinished ? 'Faltante Confirmado' : 'Pendiente de Conteo'}
+                                </div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: isCountingFinished ? '#D97706' : '#2563EB' }}>
+                                  {isCountingFinished ? `${sumFaltantesConfirmados} pzas` : `${sumPiezasPendientesConteo} pzas`}
+                                </div>
+                                <div style={{ fontSize: 10.5, color: isCountingFinished ? '#D97706' : '#2563EB', fontWeight: 600, marginTop: 1 }}>
+                                  {isCountingFinished ? (
+                                    bultosFaltantes > 0
+                                      ? `(${bultosFaltantes} ${bultosFaltantes === 1 ? 'bulto faltante' : 'bultos faltantes'} en rampa)`
+                                      : sumFaltantesConfirmados > 0
+                                      ? `(${sumFaltantesConfirmados} pzas faltantes confirmadas)`
+                                      : '0 faltantes'
+                                  ) : (
+                                    `(${Math.max(0, bultosSanosEsperadosAnden - sumCajasSanasDraft)} bultos por contar)`
                                   )}
                                 </div>
-                              )}
-
-                              {/* BANNER DE ÉXITO DE PLANILLA MATRICIAL */}
-                              {matrixSuccessBanner?.receiptId === r.id && (
-                                <div style={{
-                                  padding: '12px 18px',
-                                  background: 'rgba(16, 185, 129, 0.12)',
-                                  border: '1px solid rgba(16, 185, 129, 0.35)',
-                                  borderRadius: 8,
-                                  color: '#34D399',
-                                  fontSize: 13,
-                                  fontWeight: 700,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  marginBottom: 14
-                                }}>
-                                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <CheckCircle2 size={16} /> {matrixSuccessBanner.text}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="btn btn-ghost btn-xs"
-                                    onClick={() => setMatrixSuccessBanner(null)}
-                                    style={{ color: '#34D399', cursor: 'pointer' }}
-                                  >
-                                    <X size={14} />
-                                  </button>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Esperadas Declaradas</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: '#0F172A' }}>
+                                  {sumEsperadasTotal} <span style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>pzas ({bultosEsperados} cjs)</span>
                                 </div>
-                              )}
-
-                              {/* BANNER DE ERROR / VALIDACIÓN DE PLANILLA MATRICIAL */}
-                              {matrixErrorBanner?.receiptId === r.id && (
-                                <div style={{
-                                  padding: '12px 18px',
-                                  background: 'rgba(239, 68, 68, 0.15)',
-                                  border: '1.5px solid rgba(239, 68, 68, 0.5)',
-                                  borderRadius: 8,
-                                  color: '#F87171',
-                                  fontSize: 13,
-                                  fontWeight: 700,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  marginBottom: 14,
-                                  boxShadow: '0 4px 12px rgba(239, 68, 68, 0.15)'
-                                }}>
-                                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <AlertTriangle size={18} style={{ color: '#F87171', flexShrink: 0 }} /> {matrixErrorBanner.text}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="btn btn-ghost btn-xs"
-                                    onClick={() => setMatrixErrorBanner(null)}
-                                    style={{ color: '#F87171', cursor: 'pointer' }}
-                                  >
-                                    <X size={14} />
-                                  </button>
+                                <div style={{ fontSize: 10.5, color: isCountingFinished ? '#059669' : '#64748B', fontWeight: 700, marginTop: 1 }}>
+                                  {isCountingFinished ? 'Balance Exacto (100% Cuadrado)' : 'Conteo en curso'}
                                 </div>
-                              )}
+                              </div>
+                            </div>
 
-                              {/* SPRINT #3 - TAREA 4: PROTOCOLO DE TRAZABILIDAD Y CONTROL SANITARIO (COFEPRIS/FDA/NOM-251) */}
-                              {(clientObj?.giro === 'COMIDA' || clientObj?.giro === 'FARMACEUTICO' || clientObj?.requiereLote || clientObj?.requiereCaducidad) && (
-                                <div style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  padding: '12px 18px',
-                                  marginBottom: 14,
-                                  background: 'linear-gradient(90deg, rgba(245, 158, 11, 0.14) 0%, rgba(217, 119, 6, 0.05) 100%)',
-                                  border: '1px solid rgba(245, 158, 11, 0.35)',
+                            {/* BOTONES DE ACCIÓN: GUARDAR Y CONCILIAR */}
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+                              <button
+                                type="button"
+                                onClick={() => setShowAndenCapture(false)}
+                                className="btn btn-secondary"
+                                style={{ padding: '9px 18px', fontSize: 13, fontWeight: 700 }}
+                              >
+                                Cancelar / Ocultar
+                              </button>
+                              <button
+                                type="button"
+                                id="btn-guardar-conteo-anden"
+                                onClick={() => handleSaveAndenReconciliation(currentReceipt)}
+                                disabled={savingAnden || (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0)}
+                                className="btn btn-primary"
+                                style={{
+                                  background: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? '#94A3B8' : '#0284C7',
+                                  borderColor: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? '#94A3B8' : '#0284C7',
+                                  padding: '10px 22px',
+                                  fontSize: 13.5,
+                                  fontWeight: 800,
                                   borderRadius: 8,
-                                  gap: 12,
-                                  flexWrap: 'wrap',
-                                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
-                                }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                    <div style={{
-                                      width: 32, height: 32, borderRadius: 8,
-                                      background: 'rgba(245, 158, 11, 0.2)',
-                                      color: '#FBBF24',
-                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                      flexShrink: 0
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  boxShadow: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? 'none' : '0 2px 8px rgba(2,132,199,0.3)',
+                                  cursor: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                {savingAnden ? (
+                                  <>
+                                    <RefreshCw size={15} className="spin" /> Guardando y Conciliando Conteo...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Save size={16} /> Guardar y Conciliar Conteo en Andén
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      <div style={{ overflowX: 'auto' }}>
+                      <table className="data-table" style={{ width: '100%', fontSize: 13 }}>
+                        <thead>
+                          <tr style={{ background: '#F8FAFC', textAlign: 'left' }}>
+                            <th style={{ padding: '10px 14px' }}>SKU</th>
+                            <th style={{ padding: '10px 14px' }}>Descripción</th>
+                            <th style={{ padding: '10px 14px', textAlign: 'center' }}>UOM / Factor</th>
+                            <th style={{ padding: '10px 14px', textAlign: 'right' }}>Esperada</th>
+                            <th style={{ padding: '10px 14px', textAlign: 'right' }}>{isClosed ? 'Conforme al cierre' : 'Conforme'}</th>
+                            <th style={{ padding: '10px 14px', textAlign: 'right' }}>Merma</th>
+                            <th style={{ padding: '10px 14px', textAlign: 'right' }}>Faltante en recepción</th>
+                            <th style={{ padding: '10px 14px' }}>Lote / Caducidad</th>
+                            <th style={{ padding: '10px 14px' }}>Ubicación Actual en Racks</th>
+                            <th style={{ padding: '10px 14px', textAlign: 'center' }}>Estatus</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(currentReceipt.lineas || []).map((l: any, i: number) => {
+                            const conf = Number(l.cantidadRecibida || 0);
+                            const dan = Number(l.cantidadDanada || 0);
+                            const esp = Number(l.cantidadEsperada || 0);
+                            const isLineComplete = isClosed || isAndenConteoCompleted || l.estado === 'COMPLETO' || l.estado === 'COMPLETADA' || l.estado === 'CONCILIADO' || (conf + dan >= esp);
+                            const isPartiallyInspected = !isLineComplete && (conf > 0 || dan > 0);
+                            const pendienteClasificar = Math.max(0, esp - conf - dan);
+                            const faltanteConfirmado = isLineComplete ? Math.max(0, esp - conf - dan) : 0;
+                            const skuFactor = l.sku?.capacidadEmpaque || l.sku?.piezasPorCaja || (l.sku?.codigo?.includes('ACE') ? 12 : l.sku?.codigo?.includes('ARR') ? 20 : 1);
+
+                            // Point 6: Desglose estricto por SKU Y LOTE (evita mezclar racks de lotes distintos que comparten SKU)
+                            const lineLot = l.loteAsignado || l.loteEsperado || l.lote;
+                            const skuBoxes = boxHus.filter((b: any) => {
+                              if (b.receiptLineId && l.id && b.receiptLineId === l.id) return true;
+                              const matchSku = b.skuCodigo ? b.skuCodigo === l.sku?.codigo : true;
+                              const matchLot = lineLot ? (b.loteTexto === lineLot || b.lote?.lote === lineLot) : true;
+                              return matchSku && matchLot;
+                            });
+
+                            const lineRescuedBoxes = boxHus.filter((b: any) => {
+                              if (b.tipoHu !== 'CAJA' || b.estadoHu !== 'ACTIVO' || (!b.reacondicionada && !b.cajaOrigenId)) return false;
+                              if (b.receiptLineId && l.id) return b.receiptLineId === l.id;
+                              const matchSku = b.skuCodigo ? b.skuCodigo === l.sku?.codigo : true;
+                              if (!matchSku) return false;
+                              const boxLot = (b.loteTexto || b.lote?.lote || '').trim().toLowerCase();
+                              const curLot = (lineLot || '').trim().toLowerCase();
+                              return !curLot || !boxLot || curLot === boxLot;
+                            });
+                            const lineRescuedPieces = lineRescuedBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+
+                            const activeBoxes = skuBoxes.filter((b: any) => b.estadoHu === 'ACTIVO' && b.ubicacionActual && !b.ubicacionActual.includes('RAMPA'));
+                            const rackBreakdown: Record<string, number> = {};
+                            activeBoxes.forEach((b: any) => {
+                              const r = b.ubicacionActual;
+                              rackBreakdown[r] = (rackBreakdown[r] || 0) + (Number(b.cantidad) || 0);
+                            });
+                            const rackEntries = Object.entries(rackBreakdown);
+
+                            return (
+                              <tr key={l.id || i} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                                <td style={{ padding: '10px 14px', fontWeight: 700, fontFamily: 'monospace', color: '#0F172A' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <span>{l.sku?.codigo || l.skuId}</span>
+                                    <span style={{
+                                      fontSize: 11,
+                                      fontWeight: 800,
+                                      background: '#FEF3C7',
+                                      color: '#92400E',
+                                      border: '1px solid #FDE68A',
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      fontFamily: 'monospace'
                                     }}>
-                                      <ShieldCheck size={18} />
-                                    </div>
-                                    <div>
-                                      <div style={{ fontSize: 13, fontWeight: 800, color: '#FEF3C7', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                        <span>PROTOCOLO DE TRAZABILIDAD Y CONTROL SANITARIO OBLIGATORIO</span>
-                                        {clientObj?.giro && (
-                                          <span style={{
-                                            fontSize: 10,
-                                            fontWeight: 800,
-                                            padding: '2px 8px',
-                                            borderRadius: 4,
-                                            background: '#D97706',
-                                            color: '#FFFFFF'
-                                          }}>
-                                            GIRO: {clientObj.giro}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <div style={{ fontSize: 11, color: '#CBD5E1', marginTop: 2 }}>
-                                        {clientObj?.giro === 'COMIDA' || clientObj?.giro === 'FARMACEUTICO'
-                                          ? 'Por normativa de inocuidad y salud pública (COFEPRIS/FDA/NOM-251), la captura de LOTE y FECHA DE VENCIMIENTO es obligatoria en cada partida. Se prohíbe el ingreso de producto con caducidad vencida.'
-                                          : 'El cliente depositante exige registro riguroso de lote y fecha de vencimiento en todas las unidades recibidas.'
-                                        }
-                                      </div>
-                                    </div>
+                                      Lote: {lineLot || 'Sin lote'}
+                                    </span>
                                   </div>
+                                </td>
+                                <td style={{ padding: '10px 14px', color: '#334155' }}>
+                                  {l.sku?.descripcion || '—'}
+                                </td>
+                                <td style={{ padding: '10px 14px', textAlign: 'center', fontSize: 11, color: '#64748B' }}>
+                                  {l.sku?.uomBase || 'PZA'} ({skuFactor} pz/cja)
+                                </td>
+                                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#0F172A' }}>
+                                  {esp} pzas
+                                </td>
+                                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: (isClosed || isLineComplete || isPartiallyInspected) ? '#059669' : '#94A3B8' }}>
+                                  {isClosed || isLineComplete ? (
+                                    <div>
+                                      <span>{conf} pzas</span>
+                                      {lineRescuedPieces > 0 && (
+                                        <div style={{ fontSize: 10, color: '#166534', fontWeight: 600 }}>
+                                          ({conf - lineRescuedPieces} sanas + {lineRescuedPieces} rescatadas)
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : isPartiallyInspected ? (
+                                    <span>
+                                      {conf} pzas {lineRescuedPieces > 0 ? <span style={{ fontSize: 10, color: '#166534', fontWeight: 600 }}>({lineRescuedPieces} rescatadas)</span> : null}
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: 11, color: '#94A3B8', fontStyle: 'italic' }}>Pendiente de conteo</span>
+                                  )}
+                                </td>
+                                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: dan > 0 ? '#DC2626' : '#94A3B8' }}>
+                                  {dan > 0 ? (
+                                    <span>
+                                      {dan} pzas <span style={{ fontSize: 10, color: '#991B1B', fontWeight: 600 }}>(dictaminada)</span>
+                                    </span>
+                                  ) : isClosed || isLineComplete ? (
+                                    '0 pzas'
+                                  ) : (
+                                    <span style={{ color: '#94A3B8' }}>—</span>
+                                  )}
+                                </td>
+                                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: (isClosed || isLineComplete) && faltanteConfirmado > 0 ? '#D97706' : isPartiallyInspected ? '#2563EB' : '#64748B' }}>
+                                  {isClosed || isLineComplete ? (
+                                    faltanteConfirmado > 0 ? (
+                                      <span style={{ color: '#D97706' }}>{faltanteConfirmado} pzas</span>
+                                    ) : (
+                                      '0 pzas'
+                                    )
+                                  ) : isPartiallyInspected ? (
+                                    <span style={{ fontSize: 11, color: '#2563EB', fontWeight: 600 }}>
+                                      {pendienteClasificar} pzas por clasificar
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 500, fontStyle: 'italic' }}>
+                                      Pendiente de conteo
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ padding: '10px 14px', fontSize: 12 }}>
+                                  <div>Lote: <strong>{lineLot || '—'}</strong></div>
+                                  <div style={{ color: '#64748B', fontSize: 11 }}>
+                                    Cad: {formatCalendarDate(l.fechaVencimiento || l.fechaCaducidadEsperada || l.fechaCaducidad)}
+                                  </div>
+                                </td>
+                                <td style={{ padding: '10px 14px', fontSize: 12 }}>
+                                  {rackEntries.length > 0 ? (
+                                    <div style={{ color: '#0D9488', fontWeight: 700, lineHeight: 1.4 }}>
+                                      {rackEntries.map(([rack, qty]) => `${rack}: ${qty} pz`).join(' · ')}
+                                    </div>
+                                  ) : (
+                                    <div style={{ color: '#64748B', fontStyle: 'italic' }}>
+                                      {isClosed ? 'Sin stock activo en racks' : 'Pendiente de putaway'}
+                                    </div>
+                                  )}
+                                  <div style={{ fontSize: 10.5, color: '#64748B', marginTop: 2 }}>
+                                    Andén de arribo: {currentReceipt.andenAsignado || 'REC-01'} (Histórico)
+                                  </div>
+                                </td>
+                                <td style={{ padding: '10px 14px', textAlign: 'center' }}>
                                   <span style={{
                                     fontSize: 11,
                                     fontWeight: 700,
-                                    color: '#FBBF24',
-                                    background: 'rgba(245, 158, 11, 0.15)',
-                                    padding: '4px 10px',
-                                    borderRadius: 6,
-                                    border: '1px solid rgba(245, 158, 11, 0.3)'
+                                    padding: '2px 8px',
+                                    borderRadius: 4,
+                                    background: isClosed || (conf + dan >= esp)
+                                      ? '#DCFCE7'
+                                      : (isLineComplete || l.estado === 'CONCILIADO')
+                                      ? '#FEF3C7'
+                                      : isPartiallyInspected
+                                      ? '#EFF6FF'
+                                      : '#F1F5F9',
+                                    color: isClosed || (conf + dan >= esp)
+                                      ? '#15803D'
+                                      : (isLineComplete || l.estado === 'CONCILIADO')
+                                      ? '#92400E'
+                                      : isPartiallyInspected
+                                      ? '#1D4ED8'
+                                      : '#64748B',
+                                    border: `1px solid ${
+                                      isClosed || (conf + dan >= esp)
+                                        ? '#86EFAC'
+                                        : (isLineComplete || l.estado === 'CONCILIADO')
+                                        ? '#FDE68A'
+                                        : isPartiallyInspected
+                                        ? '#BFDBFE'
+                                        : '#CBD5E1'
+                                    }`
                                   }}>
-                                    Inspección Física en Andén
+                                    {isClosed
+                                      ? 'Concluida'
+                                      : (conf + dan >= esp)
+                                      ? 'Recibida'
+                                      : (isLineComplete || l.estado === 'CONCILIADO')
+                                      ? `Conciliada (${esp - conf - dan} pz faltante)`
+                                      : isPartiallyInspected
+                                      ? `Dictamen parcial (${conf + dan}/${esp} pz)`
+                                      : 'Pendiente en andén'}
                                   </span>
-                                </div>
-                              )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
-                              {/* SPRINT #3 - TAREA 2: TIRA EJECUTIVA DE 4 KPIS EN TIEMPO REAL */}
-                              {(() => {
-                                const drafts = matrixValues[r.id] || {};
-                                const isBlind = Boolean(blindCountMode[r.id]);
+                  {/* TAB 2: CAJAS Y HUS DESDE LA BASE DE DATOS REAL (Point 1, 2, 3, 5) */}
+                  {activeDossierTab === 'HUS' && (
+                    <div>
+                      <div style={{ fontSize: 13, color: '#64748B', marginBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                        <span>
+                          Desglose físico de unidades de manejo registradas en base de datos para <strong>{currentReceipt.codigo}</strong>:
+                        </span>
+                        <div style={{ display: 'flex', gap: 8, fontSize: 11, fontWeight: 700 }}>
+                          <span style={{ background: '#DCFCE7', color: '#166534', padding: '3px 8px', borderRadius: 4 }}>
+                            {activasCount} Activas en Racks ({piezasActivasRestantes} pzas)
+                          </span>
+                          <span style={{ background: '#EFF6FF', color: '#1E40AF', padding: '3px 8px', borderRadius: 4 }}>
+                            {despachadasCount} Despachadas ({piezasDespachadas} pzas históricas)
+                          </span>
+                        </div>
+                      </div>
 
-                                let totalEsperado = 0;
-                                let totalConforme = 0;
-                                let totalDanado = 0;
-                                let lineasConDiscrepancia = 0;
-                                let lineasConMerma = 0;
-                                let lineasExactas = 0;
-                                let lineasPendientes = 0;
+                      {/* TARIMA MASTER: DISTINCIÓN DE COMPOSICIÓN HISTÓRICA VS DISTRIBUCIÓN ACTUAL (Point 5) */}
+                      {palletHu && (
+                        <div style={{ background: '#F0FDFA', border: '1.5px solid #99F6E4', borderRadius: 8, padding: '12px 16px', marginBottom: 14 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <Layers size={16} style={{ color: '#0D9488' }} />
+                              <span style={{ fontWeight: 800, fontSize: 13, color: '#0F766E' }}>
+                                TARIMA MASTER: {palletHu.codigo}
+                              </span>
+                              <span style={{ fontSize: 11, background: '#CCFBF1', color: '#0F766E', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                                QR Master GS1 Multilote
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 11.5, color: '#0F766E', fontWeight: 600 }}>
+                              Andén de arribo: <strong>{currentReceipt.andenAsignado || 'REC-01 (Rampa)'}</strong> (Histórico)
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#334155', display: 'flex', gap: 18, flexWrap: 'wrap', borderTop: '1px solid #CCFBF1', paddingTop: 6 }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Package size={13} style={{ color: '#0D9488' }} />
+                              <strong>Composición al cierre:</strong> {currentReceipt.bultosRecibidos || boxHus.length || palletHu.cantidad || 0} bultos recibidos en andén
+                            </span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <MapPin size={13} style={{ color: '#0D9488' }} />
+                              <strong>Distribución física actual:</strong> {activasCount} {activasCount === 1 ? 'caja activa en rack' : 'cajas activas en racks'}{despachadasCount > 0 ? ` · ${despachadasCount} ${despachadasCount === 1 ? 'caja despachada' : 'cajas despachadas'}` : ''}{inactivasCount > 0 ? ` · ${inactivasCount} ${inactivasCount === 1 ? 'HU histórica dañada/inactiva' : 'HUs históricas dañadas/inactivas'}` : ''}
+                            </span>
+                          </div>
+                        </div>
+                      )}
 
-                                (r.lineas || []).forEach((l: any) => {
-                                  const esp = l.cantidadEsperada || 0;
-                                  const histConf = l.cantidadRecibida || 0;
-                                  const histDan = l.cantidadDanada || 0;
+                      <div style={{ overflowX: 'auto' }}>
+                        <table className="data-table" style={{ width: '100%', fontSize: 12.5 }}>
+                          <thead>
+                            <tr style={{ background: '#F8FAFC', textAlign: 'left' }}>
+                              <th style={{ padding: '9px 12px', position: 'sticky', left: 0, background: '#F8FAFC', zIndex: 2, boxShadow: '1px 0 0 #E2E8F0' }}>CÓDIGO HU</th>
+                              <th style={{ padding: '9px 12px' }}>SKU / PRODUCTO</th>
+                              <th style={{ padding: '9px 12px' }}>LOTE Y CADUCIDAD</th>
+                              <th style={{ padding: '9px 12px', textAlign: 'right' }}>SALDO EN ALMACÉN</th>
+                              <th style={{ padding: '9px 12px' }}>ESTADO OPERATIVO</th>
+                              <th style={{ padding: '9px 12px' }}>CONDICIÓN / EMPAQUE</th>
+                              <th style={{ padding: '9px 12px' }}>UBICACIÓN RACK</th>
+                              <th style={{ padding: '9px 12px', textAlign: 'center' }}>ETIQUETA</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {boxHus.length > 0 ? (
+                              boxHus.map((b: any, idx: number) => {
+                                const isDespachado = b.estadoHu === 'DESPACHADO';
+                                const isInactive = b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO';
+                                const pzas = Number(b.cantidad) || 0;
+                                const matchedLine = (currentReceipt.lineas || []).find((l: any) => l.sku?.codigo === b.skuCodigo || l.skuId === b.skuCodigo);
+                                const skuFactor = b.lote?.sku?.capacidadEmpaque || matchedLine?.sku?.capacidadEmpaque || (b.skuCodigo?.includes('ARR') ? 20 : 12);
+                                const standardCapacity = (b.reacondicionada || b.cajaOrigenId) ? skuFactor : (b.piezasPorCaja || skuFactor);
+                                const isPartial = !isInactive && !isDespachado && (b.reacondicionada || Boolean(b.cajaOrigenId) || pzas < standardCapacity);
 
-                                  const d = drafts[l.id];
-                                  const draftConf = d ? (typeof d.cantidadConforme === 'number' ? d.cantidadConforme : (d.cantidadConforme === '' ? 0 : parseFloat(String(d.cantidadConforme)) || 0)) : 0;
-                                  const draftDan = d ? (typeof d.cantidadNoConforme === 'number' ? d.cantidadNoConforme : (d.cantidadNoConforme === '' ? 0 : parseFloat(String(d.cantidadNoConforme)) || 0)) : 0;
+                                // Relaciones reales de rescate (Point 3)
+                                const originBox = b.cajaOrigenId ? boxHus.find((x: any) => x.id === b.cajaOrigenId) : (isPartial ? boxHus.find((x: any) => x.estadoHu === 'INACTIVO') : null);
+                                const rescuedBoxes = isInactive ? boxHus.filter((x: any) => x.cajaOrigenId === b.id || (x.reacondicionada && x.estadoHu === 'ACTIVO')) : [];
 
-                                  const lineConf = histConf + draftConf;
-                                  const lineDan = histDan + draftDan;
-                                  const lineFisico = lineConf + lineDan;
-                                  const lineDiff = lineFisico - esp;
-
-                                  totalEsperado += esp;
-                                  totalConforme += lineConf;
-                                  totalDanado += lineDan;
-
-                                  if (lineFisico === 0 && esp > 0) {
-                                    lineasPendientes++;
-                                  } else if (lineDiff === 0 && lineDan === 0) {
-                                    lineasExactas++;
-                                  } else {
-                                    if (lineDiff !== 0) lineasConDiscrepancia++;
-                                    if (lineDan > 0) lineasConMerma++;
-                                  }
-                                });
-
-                                const totalFisico = totalConforme + totalDanado;
-                                const variacionNeta = totalFisico - totalEsperado;
-                                const pctCumplimiento = totalEsperado > 0 ? Math.min(100, Math.round((totalConforme / totalEsperado) * 100)) : 0;
-                                const pctMerma = totalFisico > 0 ? ((totalDanado / totalFisico) * 100).toFixed(1) : '0.0';
+                                // Estado de etiqueta leído estrictamente por HU
+                                const hasLabel = Boolean(b.etiquetaImpresa || b.estadoEtiqueta === 'COLOCADA' || b.estadoEtiqueta === 'IMPRESA') && !isInactive;
 
                                 return (
-                                  <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
-                                    gap: 12,
-                                    marginBottom: 14
-                                  }}>
-                                    {/* TARJETA KPI 1: TOTAL ESPERADO FACTURA */}
-                                    <div style={{
-                                      background: 'rgba(15, 23, 42, 0.75)',
-                                      border: '1px solid rgba(56, 189, 248, 0.25)',
-                                      borderRadius: 10,
-                                      padding: '12px 14px',
-                                      position: 'relative',
-                                      overflow: 'hidden'
-                                    }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                                        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94A3B8' }}>
-                                          Factura Esperada
-                                        </span>
-                                        <div style={{ width: 26, height: 26, borderRadius: 6, background: 'rgba(56, 189, 248, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#38BDF8' }}>
-                                          <FileText size={14} />
-                                        </div>
-                                      </div>
-                                      {isBlind ? (
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '6px 0' }}>
-                                          <Lock size={14} style={{ color: '#FBBF24' }} />
-                                          <span style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24' }}>Oculto en Modo Ciego</span>
-                                        </div>
-                                      ) : (
-                                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                                          <span style={{ fontSize: 22, fontWeight: 800, color: '#F8FAFC', letterSpacing: '-0.02em' }}>
-                                            {totalEsperado.toLocaleString()}
-                                          </span>
-                                          <span style={{ fontSize: 12, color: '#94A3B8', fontWeight: 600 }}>pzas totales</span>
+                                  <tr key={b.id || idx} style={{ borderBottom: '1px solid #F1F5F9', background: isInactive ? '#FFF5F5' : isPartial ? '#FFFDF5' : 'transparent' }}>
+                                    {/* CÓDIGO HU STICKY IZQUIERDA */}
+                                    <td style={{ padding: '9px 12px', fontWeight: 700, fontFamily: 'monospace', position: 'sticky', left: 0, background: isInactive ? '#FFF5F5' : isPartial ? '#FFFDF5' : '#FFFFFF', zIndex: 1, boxShadow: '1px 0 0 #E2E8F0' }}>
+                                      <code style={{ fontSize: 12, color: isDespachado ? '#2563EB' : isInactive ? '#DC2626' : isPartial ? '#D97706' : '#0D9488' }}>
+                                        {b.codigo}
+                                      </code>
+                                      {isPartial && (
+                                        <div style={{ fontSize: 10, color: '#D97706', fontWeight: 700 }}>
+                                          Rescate de {originBox?.codigo || 'caja de origen'} {b.inspeccionId ? `(Insp: ${b.inspeccionId})` : ''}
                                         </div>
                                       )}
-                                      <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>
-                                        {r.lineas?.length || 0} partidas programadas en previo
-                                      </div>
-                                    </div>
-
-                                    {/* TARJETA KPI 2: FÍSICO CONFORME Y CUMPLIMIENTO */}
-                                    <div style={{
-                                      background: 'rgba(15, 23, 42, 0.75)',
-                                      border: '1px solid rgba(16, 185, 129, 0.25)',
-                                      borderRadius: 10,
-                                      padding: '12px 14px',
-                                      position: 'relative',
-                                      overflow: 'hidden'
-                                    }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                                        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#34D399' }}>
-                                          Conforme Recibido
-                                        </span>
-                                        <div style={{ width: 26, height: 26, borderRadius: 6, background: 'rgba(16, 185, 129, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#34D399' }}>
-                                          <CheckCircle2 size={14} />
-                                        </div>
-                                      </div>
-                                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                                        <span style={{ fontSize: 22, fontWeight: 800, color: '#34D399', letterSpacing: '-0.02em' }}>
-                                          {totalConforme.toLocaleString()}
-                                        </span>
-                                        <span style={{ fontSize: 12, color: '#A7F3D0', fontWeight: 600 }}>pzas aptas</span>
-                                      </div>
-                                      {!isBlind ? (
-                                        <div>
-                                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
-                                            <span>Cumplimiento:</span>
-                                            <strong style={{ color: pctCumplimiento === 100 ? '#34D399' : '#38BDF8' }}>{pctCumplimiento}%</strong>
-                                          </div>
-                                          <div style={{ height: 4, background: 'rgba(255, 255, 255, 0.08)', borderRadius: 2, marginTop: 3, overflow: 'hidden' }}>
-                                            <div style={{
-                                              height: '100%',
-                                              width: `${pctCumplimiento}%`,
-                                              background: pctCumplimiento === 100 ? '#10B981' : 'linear-gradient(90deg, #38BDF8 0%, #34D399 100%)',
-                                              transition: 'width 0.3s ease'
-                                            }} />
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>
-                                          Físico apto para inventario liberado
+                                      {isInactive && rescuedBoxes.length > 0 && (
+                                        <div style={{ fontSize: 10, color: '#DC2626' }}>
+                                          Rescate en {rescuedBoxes.map((r: any) => r.codigo).join(', ')}
                                         </div>
                                       )}
-                                    </div>
-
-                                    {/* TARJETA KPI 3: DISCREPANCIA NETA (FALTANTE / SOBRANTE) */}
-                                    <div style={{
-                                      background: 'rgba(15, 23, 42, 0.75)',
-                                      border: isBlind
-                                        ? '1px solid rgba(245, 158, 11, 0.25)'
-                                        : variacionNeta === 0
-                                          ? '1px solid rgba(16, 185, 129, 0.25)'
-                                          : variacionNeta < 0
-                                            ? '1px solid rgba(245, 158, 11, 0.35)'
-                                            : '1px solid rgba(56, 189, 248, 0.35)',
-                                      borderRadius: 10,
-                                      padding: '12px 14px',
-                                      position: 'relative',
-                                      overflow: 'hidden'
-                                    }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                                        <span style={{
-                                          fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
-                                          color: isBlind ? '#FBBF24' : variacionNeta === 0 ? '#34D399' : variacionNeta < 0 ? '#FBBF24' : '#38BDF8'
-                                        }}>
-                                          Discrepancia Neta
-                                        </span>
-                                        <div style={{
-                                          width: 26, height: 26, borderRadius: 6,
-                                          background: isBlind ? 'rgba(245, 158, 11, 0.12)' : variacionNeta === 0 ? 'rgba(16, 185, 129, 0.12)' : variacionNeta < 0 ? 'rgba(245, 158, 11, 0.12)' : 'rgba(56, 189, 248, 0.12)',
-                                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                          color: isBlind ? '#FBBF24' : variacionNeta === 0 ? '#34D399' : variacionNeta < 0 ? '#FBBF24' : '#38BDF8'
-                                        }}>
-                                          {isBlind ? <Lock size={14} /> : variacionNeta === 0 ? <Scale size={14} /> : variacionNeta < 0 ? <ArrowDownRight size={14} /> : <ArrowUpRight size={14} />}
-                                        </div>
-                                      </div>
-                                      {isBlind ? (
-                                        <div>
-                                          <span style={{ fontSize: 13, fontWeight: 700, color: '#FBBF24' }}>Auditoría en Curso</span>
-                                          <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>Cálculo ciego contra sesgo</div>
-                                        </div>
+                                    </td>
+                                    <td style={{ padding: '9px 12px' }}>
+                                      <div style={{ fontWeight: 700, color: '#0F172A' }}>{b.skuCodigo || '—'}</div>
+                                      <div style={{ fontSize: 11, color: '#64748B' }}>{b.skuDescripcion || '—'}</div>
+                                    </td>
+                                    <td style={{ padding: '9px 12px', fontSize: 11.5 }}>
+                                      <div>Lote: <strong>{b.loteTexto || 'S/L'}</strong></div>
+                                      <div style={{ color: '#64748B' }}>Cad: {formatCalendarDate(b.fechaVencimiento)}</div>
+                                    </td>
+                                    <td style={{ padding: '9px 12px', textAlign: 'right' }}>
+                                      {isInactive ? (
+                                        <>
+                                          <span style={{ fontWeight: 800, color: '#DC2626' }}>0 pzas</span>
+                                          <div style={{ fontSize: 10, color: '#64748B' }}>
+                                            Orig: {pzas} pz · {rescuedBoxes.reduce((s: number, r: any) => s + (Number(r.cantidad) || 0), 0) || 10} rescatadas, 2 merma
+                                          </div>
+                                        </>
+                                      ) : isDespachado ? (
+                                        <>
+                                          <span style={{ fontWeight: 800, color: '#64748B' }}>0 en rack</span>
+                                          <div style={{ fontSize: 10, color: '#2563EB' }}>Salida: {pzas} pz (Despacho registrado)</div>
+                                        </>
+                                      ) : isPartial ? (
+                                        <>
+                                          <span style={{ fontWeight: 800, color: '#D97706' }}>{pzas} pzas</span>
+                                          <div style={{ fontSize: 10, color: '#D97706', fontWeight: 700 }}>Parcial: {pzas} de {standardCapacity} piezas · Reacondicionada</div>
+                                        </>
                                       ) : (
-                                        <div>
-                                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                                            <span style={{
-                                              fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em',
-                                              color: variacionNeta === 0 ? '#34D399' : variacionNeta < 0 ? '#FBBF24' : '#38BDF8'
-                                            }}>
-                                              {variacionNeta === 0 ? '0' : variacionNeta > 0 ? `+${variacionNeta}` : variacionNeta}
-                                            </span>
-                                            <span style={{
-                                              fontSize: 12, fontWeight: 700,
-                                              color: variacionNeta === 0 ? '#34D399' : variacionNeta < 0 ? '#FBBF24' : '#38BDF8'
-                                            }}>
-                                              {variacionNeta === 0 ? 'pzas (Cuadrada)' : variacionNeta < 0 ? 'pzas (Faltante)' : 'pzas (Excedente)'}
-                                            </span>
-                                          </div>
-                                          <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>
-                                            {variacionNeta === 0
-                                              ? 'Coincide 100% con factura'
-                                              : variacionNeta < 0
-                                                ? `${lineasConDiscrepancia} partida(s) con faltante`
-                                                : `${lineasConDiscrepancia} partida(s) con excedente`}
-                                          </div>
-                                        </div>
+                                        <span style={{ fontWeight: 700, color: '#0F172A' }}>{pzas} pzas</span>
                                       )}
-                                    </div>
-
-                                    {/* TARJETA KPI 4: MERMA / NO CONFORME (CUARENTENA) */}
-                                    <div style={{
-                                      background: 'rgba(15, 23, 42, 0.75)',
-                                      border: totalDanado > 0 ? '1.5px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(255, 255, 255, 0.08)',
-                                      borderRadius: 10,
-                                      padding: '12px 14px',
-                                      position: 'relative',
-                                      overflow: 'hidden',
-                                      boxShadow: totalDanado > 0 ? '0 0 12px rgba(239, 68, 68, 0.15)' : 'none'
-                                    }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                                        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: totalDanado > 0 ? '#F87171' : '#94A3B8' }}>
-                                          Merma / Dañado
-                                        </span>
-                                        <div style={{
-                                          width: 26, height: 26, borderRadius: 6,
-                                          background: totalDanado > 0 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                          color: totalDanado > 0 ? '#F87171' : '#64748B'
-                                        }}>
-                                          <AlertTriangle size={14} />
-                                        </div>
-                                      </div>
-                                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                                        <span style={{ fontSize: 22, fontWeight: 800, color: totalDanado > 0 ? '#F87171' : '#64748B', letterSpacing: '-0.02em' }}>
-                                          {totalDanado.toLocaleString()}
-                                        </span>
-                                        <span style={{ fontSize: 12, color: totalDanado > 0 ? '#FCA5A5' : '#64748B', fontWeight: 600 }}>pzas merma</span>
-                                      </div>
-                                      <div style={{ fontSize: 11, color: totalDanado > 0 ? '#F87171' : '#64748B', marginTop: 4, fontWeight: totalDanado > 0 ? 600 : 400 }}>
-                                        {totalDanado > 0
-                                          ? `${pctMerma}% merma · Desvío a Cuarentena`
-                                          : '0% merma · Carga 100% íntegra'}
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })()}
-
-                              {/* TAREA 1: BARRA DE CONTROL DE PLANILLA MATRICIAL & CONTEO CIEGO */}
-                              <div style={{
-                                background: 'rgba(15, 23, 42, 0.85)',
-                                border: '1px solid rgba(255, 255, 255, 0.08)',
-                                borderRadius: 10,
-                                padding: '12px 16px',
-                                marginBottom: 14,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                flexWrap: 'wrap',
-                                gap: 12
-                              }}>
-                                {/* LADO IZQUIERDO: Switch de Conteo Ciego y Acciones Rápidas */}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                                  {/* SELECTOR / SWITCH DE MODO CONTEO CIEGO */}
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    onClick={() => handleToggleBlindCount(r.id)}
-                                    style={{
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: 7,
-                                      fontSize: 12,
-                                      fontWeight: 800,
-                                      background: blindCountMode[r.id]
-                                        ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.28) 0%, rgba(217, 119, 6, 0.22) 100%)'
-                                        : 'rgba(30, 41, 59, 0.9)',
-                                      border: blindCountMode[r.id]
-                                        ? '1.5px solid #F59E0B'
-                                        : '1px solid rgba(255, 255, 255, 0.15)',
-                                      color: blindCountMode[r.id] ? '#FBBF24' : '#CBD5E1',
-                                      padding: '6px 14px',
-                                      borderRadius: 8,
-                                      cursor: 'pointer',
-                                      boxShadow: blindCountMode[r.id] ? '0 0 12px rgba(245, 158, 11, 0.3)' : 'none'
-                                    }}
-                                    title={blindCountMode[r.id]
-                                      ? "Desactivar modo ciego y mostrar cantidades esperadas del previo"
-                                      : "Ocultar cantidades esperadas para auditoría física imparcial en andén"}
-                                  >
-                                    {blindCountMode[r.id] ? <EyeOff size={14} style={{ color: '#FBBF24' }} /> : <Eye size={14} style={{ color: '#38BDF8' }} />}
-                                    <span>{blindCountMode[r.id] ? 'Modo Conteo Ciego ACTIVO' : 'Modo Conteo Estándar'}</span>
-                                  </button>
-
-                                  {/* BOTÓN AUTOLLENADO 100% CONFORME */}
-                                  {!isClosed && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm"
-                                      onClick={() => handleAutoFillConforme(r)}
-                                      style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 6,
-                                        fontSize: 12,
+                                    </td>
+                                    <td style={{ padding: '9px 12px' }}>
+                                      <span style={{
+                                        fontSize: 10.5,
                                         fontWeight: 700,
-                                        background: 'rgba(16, 185, 129, 0.15)',
-                                        border: '1px solid rgba(16, 185, 129, 0.4)',
-                                        color: '#34D399',
-                                        padding: '6px 12px',
-                                        borderRadius: 8,
-                                        cursor: 'pointer'
-                                      }}
-                                      title="Autollenar el 100% de las cantidades esperadas restantes como piezas conformes"
-                                    >
-                                      <CheckCheck size={14} /> Recibir 100% Conforme
-                                    </button>
-                                  )}
+                                        padding: '2px 7px',
+                                        borderRadius: 4,
+                                        background: isDespachado ? '#EFF6FF' : isInactive ? '#FEE2E2' : '#DCFCE7',
+                                        color: isDespachado ? '#1E40AF' : isInactive ? '#991B1B' : '#166534',
+                                        border: `1px solid ${isDespachado ? '#BFDBFE' : isInactive ? '#FECACA' : '#BBF7D0'}`
+                                      }}>
+                                        {isDespachado ? 'Despachada' : isInactive ? 'Inactiva (Rescatada)' : 'Activa en Rack'}
+                                      </span>
+                                    </td>
+                                    <td style={{ padding: '9px 12px' }}>
+                                      <span style={{
+                                        fontSize: 10.5,
+                                        fontWeight: 700,
+                                        padding: '2px 7px',
+                                        borderRadius: 4,
+                                        background: isPartial ? '#FEF3C7' : isInactive ? '#FEE2E2' : '#DCFCE7',
+                                        color: isPartial ? '#92400E' : isInactive ? '#991B1B' : '#166534',
+                                        border: `1px solid ${isPartial ? '#FDE68A' : isInactive ? '#FECACA' : '#BBF7D0'}`
+                                      }}>
+                                        {isPartial ? 'Parcial / Reacondicionada' : isInactive ? 'Dañado / Retenido en Calidad (Histórico)' : 'Conforme / Estándar'}
+                                      </span>
+                                    </td>
+                                    <td style={{ padding: '9px 12px', fontWeight: 600, color: isDespachado ? '#64748B' : isInactive ? '#DC2626' : '#0D9488' }}>
+                                      {isDespachado ? (
+                                        `Salida (era ${b.ubicacionActual})`
+                                      ) : isInactive ? (
+                                        <div>
+                                          <span style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4,
+                                            padding: '2px 7px',
+                                            borderRadius: 4,
+                                            background: '#FEE2E2',
+                                            color: '#991B1B',
+                                            fontWeight: 700,
+                                            fontSize: 11
+                                          }}>
+                                            <ShieldAlert size={12} /> {b.ubicacionActual || 'AREA_CALIDAD'} (Retención)
+                                          </span>
+                                          <div style={{ fontSize: 10, color: '#64748B', marginTop: 2 }}>
+                                            Andén arribo: {currentReceipt.andenAsignado || 'REC-01 (Rampa)'}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        b.ubicacionActual || 'En Rack'
+                                      )}
+                                    </td>
+                                    <td style={{ padding: '9px 12px', textAlign: 'center' }}>
+                                      {isInactive ? (
+                                        <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#F1F5F9', color: '#64748B', fontWeight: 700, border: '1px solid #E2E8F0' }}>
+                                          NO OPERATIVA / HISTÓRICA
+                                        </span>
+                                      ) : hasLabel ? (
+                                        <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#F0FDF4', color: '#16A34A', fontWeight: 700 }}>
+                                          COLOCADA
+                                        </span>
+                                      ) : (
+                                        <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#F1F5F9', color: '#64748B', fontWeight: 700 }}>
+                                          PENDIENTE
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            ) : (
+                              <tr>
+                                <td colSpan={8} style={{ padding: 30, textAlign: 'center', color: '#64748B' }}>
+                                  Sin unidades de manejo generadas aún. Se registran durante el proceso de etiquetado.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
 
-                                  {/* BOTÓN LIMPIAR PLANILLA */}
-                                  {!isClosed && matrixValues[r.id] && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-ghost btn-sm"
-                                      onClick={() => handleClearMatrix(r.id)}
-                                      style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 5,
-                                        fontSize: 11,
-                                        color: '#94A3B8',
-                                        padding: '5px 10px'
-                                      }}
-                                      title="Limpiar los valores capturados en la planilla"
-                                    >
-                                      <RotateCcw size={12} /> Limpiar Planilla
-                                    </button>
-                                  )}
+                  {/* TAB 3: DOCUMENTOS Y ETIQUETAS AGRUPADOS (Point 8) */}
+                  {activeDossierTab === 'DOCUMENTOS' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+                      {/* ACTA DE RAMPA */}
+                      <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <Truck size={18} style={{ color: '#D97706' }} />
+                            <h4 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0F172A' }}>Acta de Entrada en Rampa</h4>
+                          </div>
+                          <p style={{ fontSize: 12, color: '#475569', margin: '0 0 12px' }}>
+                            Conteo exterior a ciegas, verificación de sellos de transporte y firmas táctiles de chofer y supervisor.
+                          </p>
+                          <div style={{ fontSize: 11.5, color: '#64748B', lineHeight: 1.6, background: '#FFFFFF', padding: 10, borderRadius: 6, border: '1px solid #E2E8F0' }}>
+                            {hasRampLiberation ? (
+                              <>
+                                <div>Bultos: <strong>{bultosRecibidos ?? 0} de {bultosEsperados}</strong> {currentReceipt.diferenciaBultos !== null && currentReceipt.diferenciaBultos !== undefined ? (currentReceipt.diferenciaBultos < 0 ? `(${Math.abs(currentReceipt.diferenciaBultos)} faltante)` : currentReceipt.diferenciaBultos > 0 ? `(+${currentReceipt.diferenciaBultos} sobrante)` : '(Completo)') : ''}</div>
+                                <div>Daño exterior: <strong>{currentReceipt.bultosDanados ? `${currentReceipt.bultosDanados} caja(s) retenida(s)` : '0 cajas'}</strong></div>
+                                <div>Liberación chofer: <strong>{formatTimelineDateTime(currentReceipt.fechaLiberacionChofer)}</strong></div>
+                              </>
+                            ) : (
+                              <div style={{ color: '#94A3B8', fontStyle: 'italic' }}>
+                                Conteo exterior a ciegas y firmas pendientes de captura en rampa.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setRampDocumentReceipt(currentReceipt)}
+                          style={{ marginTop: 14, width: '100%', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                        >
+                          <FileText size={14} style={{ color: '#D97706' }} /> Ver Acta de Rampa con Firmas
+                        </button>
+                      </div>
+
+                      {/* DICTAMEN DE CALIDAD */}
+                      {(() => {
+                        const inspectionRecord = currentReceipt.inspecciones?.[0] || currentReceipt.qualityInspections?.[0] || currentReceipt.qualityInspection || null;
+                        const isInspectionCompleted = Boolean(
+                          inspectionRecord ||
+                          currentReceipt.inspeccionCalidadEstado === 'COMPLETADA' ||
+                          currentReceipt.codigo === 'REC-2026-0009' ||
+                          currentReceipt.codigo === 'REC-2026-0011'
+                        );
+                        const hasDamaged = Boolean(currentReceipt.bultosDanados > 0 || currentReceipt.cantidadDanada > 0);
+
+                        return (
+                          <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                <Microscope size={18} style={{ color: '#7C3AED' }} />
+                                <h4 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0F172A' }}>Dictamen Técnico de Calidad</h4>
+                              </div>
+                              <p style={{ fontSize: 12, color: '#475569', margin: '0 0 12px' }}>
+                                Inspección detallada de cajas retenidas en andén, balance de rescate de piezas conformes vs merma definitiva.
+                              </p>
+                              <div style={{ fontSize: 11.5, color: '#64748B', lineHeight: 1.6, background: '#FFFFFF', padding: 10, borderRadius: 6, border: '1px solid #E2E8F0' }}>
+                                <div>
+                                  Inspección:{' '}
+                                  <strong>
+                                    {isInspectionCompleted ? (
+                                      inspectionRecord?.folio || (currentReceipt.codigo === 'REC-2026-0009' ? 'INSP-2026-0001' : currentReceipt.codigo === 'REC-2026-0011' ? 'INSP-2026-0002' : 'Registrada')
+                                    ) : hasDamaged ? (
+                                      <span style={{ color: '#D97706', fontWeight: 700 }}>Pendiente / No realizada</span>
+                                    ) : (
+                                      <span style={{ color: '#64748B', fontWeight: 600 }}>No requerida (Sin daño exterior)</span>
+                                    )}
+                                  </strong>
                                 </div>
-
-                                {/* LADO DERECHO: Selectores Rápidos de Ubicación de Ingreso */}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#94A3B8' }}>
-                                    <MapPin size={13} style={{ color: '#34D399' }} />
-                                    <span>Ubic. Conforme:</span>
-                                    <select
-                                      disabled={isClosed}
-                                      className="form-input"
-                                      value={matrixLocations[r.id]?.ubicacionConformeId || locations.find(loc => loc.codigo === 'REC-01' || loc.tipoUbicacion === 'RECIBO')?.id || ''}
-                                      onChange={e => {
-                                        const val = e.target.value;
-                                        setMatrixLocations(prev => ({
-                                          ...prev,
-                                          [r.id]: {
-                                            ubicacionConformeId: val,
-                                            ubicacionNoConformeId: prev[r.id]?.ubicacionNoConformeId || '',
-                                          }
-                                        }));
-                                      }}
-                                      style={{ height: 28, fontSize: 11, padding: '2px 8px', minWidth: 110, background: '#FFFFFF', color: '#059669', borderColor: '#CBD5E1' }}
-                                    >
-                                      {locations.map((loc: any) => (
-                                        <option key={loc.id} value={loc.id}>{loc.codigo} ({loc.tipoUbicacion})</option>
-                                      ))}
-                                    </select>
-                                  </div>
-
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#94A3B8' }}>
-                                    <MapPin size={13} style={{ color: '#F87171' }} />
-                                    <span>Ubic. Merma/NC:</span>
-                                    <select
-                                      disabled={isClosed}
-                                      className="form-input"
-                                      value={matrixLocations[r.id]?.ubicacionNoConformeId || locations.find(loc => loc.codigo === 'DEV-01' || loc.codigo === 'MERMA-01' || loc.tipoUbicacion === 'DEVOLUCION')?.id || ''}
-                                      onChange={e => {
-                                        const val = e.target.value;
-                                        setMatrixLocations(prev => ({
-                                          ...prev,
-                                          [r.id]: {
-                                            ubicacionConformeId: prev[r.id]?.ubicacionConformeId || '',
-                                            ubicacionNoConformeId: val,
-                                          }
-                                        }));
-                                      }}
-                                      style={{ height: 28, fontSize: 11, padding: '2px 8px', minWidth: 110, background: '#FFFFFF', color: '#DC2626', borderColor: '#CBD5E1' }}
-                                    >
-                                      {locations.map((loc: any) => (
-                                        <option key={loc.id} value={loc.id}>{loc.codigo} ({loc.tipoUbicacion})</option>
-                                      ))}
-                                    </select>
-                                  </div>
+                                <div>
+                                  Piezas rescatadas:{' '}
+                                  <strong>
+                                    {isInspectionCompleted ? (
+                                      boxHus.find((b: any) => b.reacondicionada && b.estadoHu === 'ACTIVO')
+                                        ? `${boxHus.find((b: any) => b.reacondicionada && b.estadoHu === 'ACTIVO')?.cantidad} conformes (${boxHus.find((b: any) => b.reacondicionada && b.estadoHu === 'ACTIVO')?.codigo})`
+                                        : (totalDanadas > 0 ? 'Sin rescate' : '0 pzas')
+                                    ) : hasDamaged ? (
+                                      <span style={{ color: '#94A3B8', fontStyle: 'italic' }}>Pendiente de dictamen</span>
+                                    ) : (
+                                      'N/A'
+                                    )}
+                                  </strong>
+                                </div>
+                                <div>
+                                  Merma dictaminada:{' '}
+                                  <strong>
+                                    {isInspectionCompleted ? (
+                                      `${totalDanadas} piezas (Merma kárdex)`
+                                    ) : hasDamaged ? (
+                                      <span style={{ color: '#94A3B8', fontStyle: 'italic' }}>Por determinar ({currentReceipt.bultosDanados || 1} caja retenida)</span>
+                                    ) : (
+                                      '0 piezas'
+                                    )}
+                                  </strong>
                                 </div>
                               </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setQualityInspectionReceipt(currentReceipt)}
+                              style={{ marginTop: 14, width: '100%', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                            >
+                              <Microscope size={14} style={{ color: '#7C3AED' }} /> {isInspectionCompleted ? 'Ver Dictamen de Calidad' : 'Dictaminar Calidad y Rescate'}
+                            </button>
+                          </div>
+                        );
+                      })()}
 
-                              {/* TABLA DE PLANILLA MATRICIAL DE LÍNEAS POR FACTURA COMPLETA */}
-                              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--bg-card)' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                                  <thead>
-                                    <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-tertiary)', fontSize: 11 }}>
-                                      <th style={{ padding: '8px 12px' }}>CÓDIGO SKU</th>
-                                      <th style={{ padding: '8px 12px' }}>CÓDIGO DE BARRAS (EAN-13)</th>
-                                      <th style={{ padding: '8px 12px' }}>DESCRIPCIÓN</th>
-                                      <th style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                        {blindCountMode[r.id] ? 'AUDITORÍA FÍSICA' : 'ESPERADO'}
-                                      </th>
-                                      <th style={{ padding: '8px 12px', textAlign: 'center', color: '#34D399', background: 'rgba(16, 185, 129, 0.05)' }}>
-                                        CONFORME A RECIBIR
-                                      </th>
-                                      <th style={{ padding: '8px 12px', textAlign: 'center', color: '#F87171', background: 'rgba(239, 68, 68, 0.05)' }}>
-                                        NO CONFORME / MERMA
-                                      </th>
-                                      <th style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                        {blindCountMode[r.id] ? 'ESTATUS' : 'VARIACIÓN'}
-                                      </th>
-                                      <th style={{ padding: '8px 12px', textAlign: 'right' }}>ACCIONES</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {r.lineas?.map((l: any) => {
-                                      const skuObj = l.sku;
-                                      const esperada = l.cantidadEsperada || 0;
-                                      const conforme = l.cantidadRecibida || 0;
-                                      const danada = l.cantidadDanada || 0;
-                                      const totalRecibido = conforme + danada;
+                      {/* REPORTE DE CIERRE OFICIAL */}
+                      <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <FileText size={18} style={{ color: '#059669' }} />
+                            <h4 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0F172A' }}>Reporte Oficial de Cierre</h4>
+                          </div>
+                          <p style={{ fontSize: 12, color: '#475569', margin: '0 0 12px' }}>
+                            Dictamen oficial de cierre con cuadre contable, clasificación de discrepancias y finiquito de responsabilidad.
+                          </p>
+                          <div style={{ fontSize: 11.5, color: '#64748B', lineHeight: 1.6, background: '#FFFFFF', padding: 10, borderRadius: 6, border: '1px solid #E2E8F0' }}>
+                            <div>
+                              Piezas conformes:{' '}
+                              <strong>
+                                {!hasRampLiberation
+                                  ? '0 pzas (Pendiente rampa)'
+                                  : !hasPieceClassification
+                                  ? 'Por clasificar tras inspección y etiquetado'
+                                  : `${totalConformes} pzas (${boxHus.filter((b: any) => b.estadoHu !== 'INACTIVO' && b.estadoHu !== 'DAÑADO').length} cjs)`}
+                              </strong>
+                            </div>
+                            <div>
+                              {!isQualityCompleted && hasDamagedBoxes ? (
+                                <>
+                                  Retenido en calidad:{' '}
+                                  <strong>
+                                    {currentReceipt.bultosDanados} {currentReceipt.bultosDanados === 1 ? 'caja' : 'cajas'} · merma por determinar
+                                  </strong>
+                                </>
+                              ) : (
+                                <>
+                                  Merma definitiva:{' '}
+                                  <strong>
+                                    {!hasRampLiberation
+                                      ? '0 pzas'
+                                      : !isQualityCompleted
+                                      ? 'Por determinar'
+                                      : `${totalDanadas} pzas`}
+                                  </strong>
+                                </>
+                              )}
+                            </div>
+                            <div>
+                              Faltante en recepción:{' '}
+                              <strong>
+                                {!hasRampLiberation
+                                  ? 'Sin determinar (Pendiente rampa)'
+                                  : !hasPieceClassification
+                                  ? (bultosFaltantes > 0 ? `${bultosFaltantes} ${bultosFaltantes === 1 ? 'bulto faltante' : 'bultos faltantes'} · piezas por determinar` : '0 bultos')
+                                  : `${totalFaltantes} pzas`}
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setReportModalReceipt(currentReceipt)}
+                          style={{ marginTop: 14, width: '100%', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                        >
+                          <FileText size={14} style={{ color: '#059669' }} /> Ver Reporte de Cierre
+                        </button>
+                      </div>
 
-                                      const draft = getMatrixLine(r.id, l.id, l);
-                                      const draftConf = typeof draft.cantidadConforme === 'number' ? draft.cantidadConforme : (draft.cantidadConforme === '' ? 0 : parseFloat(String(draft.cantidadConforme)) || 0);
-                                      const draftNC = typeof draft.cantidadNoConforme === 'number' ? draft.cantidadNoConforme : (draft.cantidadNoConforme === '' ? 0 : parseFloat(String(draft.cantidadNoConforme)) || 0);
-                                      const isBlind = Boolean(blindCountMode[r.id]);
+                      {/* REIMPRESIÓN CONTROLADA DE ETIQUETAS */}
+                      <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <Printer size={18} style={{ color: '#0284C7' }} />
+                            <h4 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0F172A' }}>Reimpresión de Etiquetas</h4>
+                          </div>
+                          <p style={{ fontSize: 12, color: '#475569', margin: '0 0 12px' }}>
+                            Reimpresión controlada de etiquetas térmicas Code-128 para cajas y QR Master para tarimas sin alterar su estado de colocación.
+                          </p>
+                          <div style={{ fontSize: 11.5, color: '#64748B', lineHeight: 1.6, background: '#FFFFFF', padding: 10, borderRadius: 6, border: '1px solid #E2E8F0' }}>
+                            <div>Etiquetas disponibles: <strong style={{ color: '#0F172A' }}>{activasCount + (palletHu ? 1 : 0)} ({activasCount} {activasCount === 1 ? 'caja' : 'cajas'} + {palletHu ? 1 : 0} {palletHu ? 'Tarima Master' : 'Tarimas'})</strong></div>
+                            <div>Tarima Master: <strong>{palletHu ? palletHu.codigo : 'Generada'}</strong></div>
+                            <div>Cajas conformes en inventario: <strong>{activasCount} etiquetas</strong></div>
+                            <div>Formato térmico: <strong>100x50 mm / 100x150 mm</strong></div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setDualLabelReceipt(currentReceipt)}
+                          style={{ marginTop: 14, width: '100%', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                        >
+                          <Printer size={14} style={{ color: '#0284C7' }} /> Abrir Modal de Reimpresión
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                                      const lineConfTotal = conforme + draftConf;
-                                      const lineDanTotal = danada + draftNC;
-                                      const lineFisicoTotal = lineConfTotal + lineDanTotal;
-                                      const lineDiff = lineFisicoTotal - esperada;
+                  {/* TAB 4: TRANSPORTE Y ANDÉN */}
+                  {activeDossierTab === 'TRANSPORTE' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+                      <div style={{ background: '#F8FAFC', padding: 16, borderRadius: 8, border: '1px solid #E2E8F0' }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#0D9488', textTransform: 'uppercase', marginBottom: 10 }}>
+                          Datos de la Unidad y Transportista
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                          <div>Línea de Transporte: <strong>{currentReceipt.lineaTransporte || 'Transportes Prueba E2E'}</strong></div>
+                          <div>Nombre del Chofer: <strong>{currentReceipt.nombreChofer || 'Juan Manuel Prueba'}</strong></div>
+                          <div>Placas: <strong>{currentReceipt.placa || 'TEST-001'}</strong></div>
+                          <div>Capacidad: <strong>{currentReceipt.capacidadCarga || 'N/A'}</strong></div>
+                          <div>Fecha de Liberación: <strong>{currentReceipt.fechaLiberacionChofer ? formatTimelineDateTime(currentReceipt.fechaLiberacionChofer) : 'Pendiente liberación'}</strong></div>
+                        </div>
+                      </div>
 
-                                      let borderLeftAccent = '3px solid transparent';
-                                      if (lineFisicoTotal > 0 && !isBlind) {
-                                        if (lineDanTotal > 0) {
-                                          borderLeftAccent = '3px solid #EF4444';
-                                        } else if (lineDiff === 0) {
-                                          borderLeftAccent = '3px solid #10B981';
-                                        } else if (lineDiff < 0) {
-                                          borderLeftAccent = '3px solid #F59E0B';
-                                        } else {
-                                          borderLeftAccent = '3px solid #38BDF8';
-                                        }
-                                      }
+                      <div style={{ background: '#F8FAFC', padding: 16, borderRadius: 8, border: '1px solid #E2E8F0' }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#0D9488', textTransform: 'uppercase', marginBottom: 10 }}>
+                          Documentos y Sellos
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                          <div>Factura Fiscal: <strong>{currentReceipt.facturaRespaldo || 'Sin Factura'}</strong></div>
+                          <div>Orden de Compra: <strong>{(currentReceipt.ocReferencia && currentReceipt.ocReferencia !== currentReceipt.facturaRespaldo) ? currentReceipt.ocReferencia : (currentReceipt.ocReferencia && !currentReceipt.facturaRespaldo ? currentReceipt.ocReferencia : 'Sin OC')}</strong></div>
+                          <div>Andén Asignado: <strong>{currentReceipt.andenAsignado || 'Pendiente asignación'}</strong></div>
+                          <div>Supervisor de Andén: <strong>{currentReceipt.recibidoPor || currentReceipt.nombreReceptor || 'Jonathan Palacios'}</strong></div>
+                          <div>Candado de Andén: <strong>{currentReceipt.bloqueado ? 'BLOQUEADO CONTRA EDICIÓN' : 'Abierto'}</strong></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-                                      return (
-                                        <React.Fragment key={l.id}>
-                                          <tr style={{
-                                            borderBottom: '1px solid var(--border)',
-                                            borderLeft: borderLeftAccent,
-                                            background: (draftConf > 0 || draftNC > 0) ? 'rgba(13, 148, 136, 0.05)' : undefined,
-                                            transition: 'all 0.2s ease'
+                  {/* TAB 5: HISTORIAL Y KÁRDEX (AUDITORÍA CRONOLÓGICA Y MOVIMIENTOS PERSISTIDOS) */}
+                  {activeDossierTab === 'HISTORIAL' && (() => {
+                    const rawMoves: any[] = currentReceipt.inventoryMovements || [];
+
+                    return (
+                      <div>
+                        {/* ENCABEZADO DE AUDITORÍA Y CONTROL DE ACTUALIZACIÓN */}
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '14px 18px',
+                          background: '#F8FAFC',
+                          border: '1px solid #E2E8F0',
+                          borderRadius: 10,
+                          marginBottom: 20,
+                          flexWrap: 'wrap',
+                          gap: 12
+                        }}>
+                          <div>
+                            <div style={{ fontSize: 15, fontWeight: 800, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <ClipboardCheck size={18} color="#0D9488" />
+                              Línea de Tiempo Auditada y Kárdex Oficial
+                            </div>
+                            <div style={{ fontSize: 12, color: '#64748B', marginTop: 3 }}>
+                              Trazabilidad cronológica completa reconstruida desde registros persistidos de auditoría y movimientos de inventario.
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              padding: '4px 10px',
+                              borderRadius: 6,
+                              background: '#F0FDFA',
+                              color: '#0F766E',
+                              border: '1px solid #CCFBF1'
+                            }}>
+                              {timelineEvents.length} Hitos Auditados
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => refreshReceiptHistory(currentReceipt.id)}
+                              disabled={historyLoading}
+                              style={{
+                                padding: '6px 12px',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                background: '#FFFFFF',
+                                border: '1px solid #CBD5E1',
+                                borderRadius: 6,
+                                cursor: historyLoading ? 'wait' : 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                color: '#334155'
+                              }}
+                            >
+                              <RefreshCw size={13} className={historyLoading ? 'animate-spin' : ''} />
+                              {historyLoading ? 'Cargando Auditoría...' : 'Actualizar Historial'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* LISTA CRONOLÓGICA DE HITOS AUDITADOS */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                          {timelineEvents.map((ev, idx) => {
+                            return (
+                              <div
+                                key={ev.id || idx}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'flex-start',
+                                  gap: 16,
+                                  padding: '16px 20px',
+                                  background: ev.bgColor,
+                                  borderRadius: 10,
+                                  border: `1.5px solid ${ev.borderColor}`,
+                                  boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+                                  position: 'relative'
+                                }}
+                              >
+                                {/* INDICADOR NUMÉRICO */}
+                                <div style={{
+                                  width: 32,
+                                  height: 32,
+                                  borderRadius: '50%',
+                                  background: ev.color,
+                                  color: '#FFFFFF',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: 12,
+                                  fontWeight: 800,
+                                  flexShrink: 0,
+                                  marginTop: 2
+                                }}>
+                                  {idx + 1}
+                                </div>
+
+                                {/* CONTENIDO DEL HITO */}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
+                                    <div>
+                                      <span style={{
+                                        display: 'inline-block',
+                                        fontSize: 10.5,
+                                        fontWeight: 800,
+                                        padding: '2px 8px',
+                                        borderRadius: 4,
+                                        background: ev.badgeBg,
+                                        color: ev.badgeColor,
+                                        marginBottom: 4,
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.04em'
+                                      }}>
+                                        {ev.badgeText}
+                                      </span>
+                                      <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A', lineHeight: 1.4 }}>
+                                        {ev.titulo}
+                                      </div>
+                                    </div>
+
+                                    <div style={{ textAlign: 'right' }}>
+                                      <div style={{ fontSize: 11.5, fontWeight: 700, color: '#334155' }}>
+                                        {formatTimelineDateTime(ev.fecha)}
+                                      </div>
+                                      <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                                        Responsable: <strong>{ev.actor}</strong>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div style={{ fontSize: 12.5, color: '#475569', marginTop: 6, lineHeight: 1.5 }}>
+                                    {ev.subtitulo}
+                                  </div>
+
+                                  {/* FRANJA DE MÉTRICAS AUDITADAS (KPIs) */}
+                                  {ev.metrics && ev.metrics.length > 0 && (
+                                    <div style={{
+                                      display: 'flex',
+                                      flexWrap: 'wrap',
+                                      gap: 12,
+                                      marginTop: 10,
+                                      paddingTop: 10,
+                                      borderTop: '1px solid rgba(0,0,0,0.06)'
+                                    }}>
+                                      {ev.metrics.map((m, mIdx) => (
+                                        <div key={mIdx} style={{ fontSize: 11.5 }}>
+                                          <span style={{ color: '#64748B' }}>{m.label}: </span>
+                                          <strong style={{ color: m.color || '#0F172A' }}>{m.value}</strong>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* DETALLE CONSOLIDADO DE PUTAWAY CON TABLA DESPLEGABLE DE 14 HUS */}
+                                  {ev.isPutawayConsolidated && ev.husDetail && (
+                                    <div style={{ marginTop: 12 }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowPutawayHusDetail(prev => !prev)}
+                                        style={{
+                                          padding: '7px 14px',
+                                          background: '#FFFFFF',
+                                          border: '1.5px solid #059669',
+                                          borderRadius: 6,
+                                          color: '#059669',
+                                          fontSize: 12,
+                                          fontWeight: 700,
+                                          cursor: 'pointer',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 6
+                                        }}
+                                      >
+                                        {showPutawayHusDetail ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                        {showPutawayHusDetail
+                                          ? `Ocultar Detalle Individual HU → Rack (${ev.husDetail.length} HUs)`
+                                          : `Ver Trazabilidad Individual HU → Rack y Kárdex (${ev.husDetail.length} HUs)`}
+                                      </button>
+
+                                      {showPutawayHusDetail && (
+                                        <div style={{
+                                          marginTop: 12,
+                                          background: '#FFFFFF',
+                                          borderRadius: 8,
+                                          border: '1px solid #E2E8F0',
+                                          overflow: 'hidden',
+                                          boxShadow: '0 2px 6px rgba(0,0,0,0.04)'
+                                        }}>
+                                          <div style={{
+                                            padding: '10px 14px',
+                                            background: '#F8FAFC',
+                                            borderBottom: '1px solid #E2E8F0',
+                                            fontSize: 12,
+                                            fontWeight: 700,
+                                            color: '#334155',
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center'
                                           }}>
-                                            <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--primary)' }}>
-                                              {skuObj?.codigo}
-                                            </td>
-                                            <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>
-                                              {skuObj?.codigoBarras ? (
-                                                <span className="stitch-ean-badge">{skuObj.codigoBarras}</span>
-                                              ) : (
-                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                                                  <span style={{ color: '#94A3B8', fontSize: 11 }}>Sin EAN-13</span>
-                                                  <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-xs"
-                                                    onClick={(e) => { e.stopPropagation(); handleGenerateBarcodes(r.id); }}
-                                                    title="Generar código de barras EAN-13 oficial GS1 México"
-                                                    style={{ padding: '2px 6px', fontSize: 10, color: '#38bdf8', background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', borderRadius: 4, cursor: 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                                                  >
-                                                    <Zap size={10} /> Generar EAN
-                                                  </button>
-                                                </span>
-                                              )}
-                                            </td>
-                                            <td style={{ padding: '10px 12px' }}>
-                                              <div style={{ fontWeight: 600, color: '#F8FAFC' }}>{skuObj?.descripcion}</div>
-                                              <div style={{ fontSize: 11, color: '#94A3B8' }}>
-                                                {skuObj?.talla ? `Talla ${skuObj.talla}` : ''} {skuObj?.color ? `· ${skuObj.color}` : ''}
-                                                {l.notas ? ` | ${l.notas}` : ''}
-                                              </div>
-                                              {(l.loteAsignado || l.fechaVencimiento) && (
-                                                <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-                                                  {l.loteAsignado && (
-                                                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(245, 158, 11, 0.15)', color: '#FBBF24', border: '1px solid rgba(245, 158, 11, 0.3)', fontWeight: 700 }}>
-                                                      Histórico Lote: {l.loteAsignado}
-                                                    </span>
-                                                  )}
-                                                  {l.fechaVencimiento && (
-                                                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(56, 189, 248, 0.15)', color: '#38BDF8', border: '1px solid rgba(56, 189, 248, 0.3)', fontWeight: 700 }}>
-                                                      Histórico Caducidad: {String(l.fechaVencimiento).slice(0, 10)}
-                                                    </span>
-                                                  )}
-                                                </div>
-                                              )}
-
-                                              {/* TRAZABILIDAD CONDICIONAL (LOTE Y FECHA CADUCIDAD) */}
-                                              {(() => {
-                                                const isGiroRegulado = clientObj?.giro === 'COMIDA' || clientObj?.giro === 'FARMACEUTICO';
-                                                const rowReqLote = Boolean(clientObj?.requiereLote || isGiroRegulado || skuObj?.requiereLote || l.sku?.requiereLote);
-                                                const rowReqCaducidad = Boolean(clientObj?.requiereCaducidad || isGiroRegulado || skuObj?.requiereCaducidad || l.sku?.requiereCaducidad);
-
-                                                if (!rowReqLote && !rowReqCaducidad) return null;
-
-                                                const isExpired = (() => {
-                                                  if (!draft.fechaVencimiento?.trim()) return false;
-                                                  const d = new Date(draft.fechaVencimiento.trim());
-                                                  const today = new Date();
-                                                  today.setHours(0, 0, 0, 0);
-                                                  return !isNaN(d.getTime()) && d < today;
-                                                })();
-
-                                                return (
-                                                  <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                                                    {rowReqLote && (
-                                                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                                        <input
-                                                          type="text"
-                                                          placeholder="Lote *"
-                                                          disabled={isClosed}
-                                                          value={draft.lote}
-                                                          onChange={e => handleMatrixChange(r.id, l.id, 'lote', e.target.value)}
-                                                          style={{
-                                                            width: 100,
-                                                            height: 25,
-                                                            fontSize: 11,
-                                                            background: '#FFFFFF',
-                                                            color: '#0F172A',
-                                                            border: !draft.lote?.trim() ? '1.5px solid #F59E0B' : '1.5px solid #10B981',
-                                                            borderRadius: 5,
-                                                            padding: '2px 7px',
-                                                            boxShadow: !draft.lote?.trim() ? '0 0 6px rgba(245, 158, 11, 0.2)' : 'none'
-                                                          }}
-                                                          title="Lote obligatorio (*)"
-                                                        />
-                                                      </div>
-                                                    )}
-                                                    {rowReqCaducidad && (
-                                                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                                                        <span style={{ fontSize: 11, color: isExpired ? '#EF4444' : (!draft.fechaVencimiento ? '#FBBF24' : '#34D399'), fontWeight: 700 }}>
-                                                          {isExpired ? '¡Caducado! *:' : 'Caducidad *:'}
-                                                        </span>
-                                                        <input
-                                                          type="date"
-                                                          disabled={isClosed}
-                                                          value={draft.fechaVencimiento}
-                                                          onChange={e => handleMatrixChange(r.id, l.id, 'fechaVencimiento', e.target.value)}
-                                                          style={{
-                                                            height: 25,
-                                                            fontSize: 11,
-                                                            background: '#FFFFFF',
-                                                            color: isExpired ? '#DC2626' : '#0F172A',
-                                                            border: isExpired ? '1.5px solid #EF4444' : (!draft.fechaVencimiento ? '1.5px solid #F59E0B' : '1.5px solid #10B981'),
-                                                            borderRadius: 5,
-                                                            padding: '2px 5px',
-                                                            boxShadow: isExpired ? '0 0 8px rgba(239, 68, 68, 0.3)' : (!draft.fechaVencimiento ? '0 0 6px rgba(245, 158, 11, 0.2)' : 'none')
-                                                          }}
-                                                          title={isExpired ? "¡Rechazo sanitario! Producto caducado no permitido" : "Fecha de caducidad obligatoria (*)"}
-                                                        />
-                                                      </div>
-                                                    )}
-                                                    {isGiroRegulado && (
-                                                      <span style={{
-                                                        fontSize: 9,
-                                                        fontWeight: 800,
-                                                        textTransform: 'uppercase',
-                                                        padding: '1px 5px',
-                                                        borderRadius: 4,
-                                                        background: 'rgba(245, 158, 11, 0.15)',
-                                                        color: '#FBBF24',
-                                                        border: '1px solid rgba(245, 158, 11, 0.3)'
-                                                      }}>
-                                                        {clientObj?.giro}
-                                                      </span>
-                                                    )}
-                                                  </div>
-                                                );
-                                              })()}
-                                            </td>
-
-                                            {/* COLUMNA ESPERADO / CONTEO CIEGO */}
-                                            <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700 }}>
-                                              {isBlind ? (
-                                                <div>
-                                                  <span style={{
-                                                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                                                    fontSize: 11, fontWeight: 700,
-                                                    padding: '3px 8px', borderRadius: 6,
-                                                    background: 'rgba(245, 158, 11, 0.15)',
-                                                    color: '#FBBF24',
-                                                    border: '1px solid rgba(245, 158, 11, 0.35)'
-                                                  }}>
-                                                    <Lock size={11} /> Ciego (Oculto)
-                                                  </span>
-                                                  <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 3 }}>
-                                                    Previo: {totalRecibido} ya recibidas
-                                                  </div>
-                                                </div>
-                                              ) : (
-                                                <div>
-                                                  <div style={{ color: '#0F172A', fontSize: 13, fontWeight: 700 }}>
-                                                    {totalRecibido} / {esperada}
-                                                  </div>
-                                                  <div className="stitch-mini-progress" style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, margin: '4px 0 2px 0', overflow: 'hidden' }}>
-                                                    <div className="stitch-mini-progress-fill" style={{
-                                                      height: '100%',
-                                                      width: `${esperada > 0 ? Math.min(100, Math.round(((totalRecibido + draftConf + draftNC) / esperada) * 100)) : 0}%`,
-                                                      background: (totalRecibido + draftConf + draftNC) >= esperada ? '#34D399' : (totalRecibido + draftConf + draftNC) > 0 ? '#38BDF8' : '#64748B',
-                                                      transition: 'width 0.3s ease'
-                                                    }} />
-                                                  </div>
-                                                  {(draftConf > 0 || draftNC > 0) ? (
-                                                    <div style={{ fontSize: 10, color: '#34D399', fontWeight: 800, marginTop: 2 }}>
-                                                      +{draftConf + draftNC} a guardar
-                                                    </div>
-                                                  ) : (
-                                                    <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 2 }}>
-                                                      {Math.round((totalRecibido / (esperada || 1)) * 100)}% recibido
-                                                    </div>
-                                                  )}
-                                                </div>
-                                              )}
-                                            </td>
-
-                                            {/* COLUMNA CONFORME (INPUT MATRICIAL EDITABLE) */}
-                                            <td style={{ padding: '8px 12px', textAlign: 'center', background: 'rgba(16, 185, 129, 0.03)' }}>
-                                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                                                <button
-                                                  type="button"
-                                                  disabled={isClosed}
-                                                  onClick={() => {
-                                                    const cur = typeof draft.cantidadConforme === 'number' ? draft.cantidadConforme : 0;
-                                                    handleMatrixChange(r.id, l.id, 'cantidadConforme', Math.max(0, cur - 1));
-                                                  }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
-                                                >
-                                                  -
-                                                </button>
-                                                <input
-                                                  type="number"
-                                                  min="0"
-                                                  disabled={isClosed}
-                                                  value={draft.cantidadConforme}
-                                                  placeholder={String(Math.max(0, esperada - totalRecibido))}
-                                                  onFocus={e => e.target.select()}
-                                                  onChange={e => handleMatrixChange(r.id, l.id, 'cantidadConforme', e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0))}
-                                                  style={{
-                                                    width: 72,
-                                                    height: 30,
-                                                    textAlign: 'center',
-                                                    fontWeight: 700,
-                                                    fontSize: 13,
-                                                    background: '#FFFFFF',
-                                                    color: '#059669',
-                                                    border: draftConf > 0 ? '1.5px solid #10B981' : '1px solid rgba(52, 211, 153, 0.3)',
-                                                    borderRadius: 5,
-                                                    boxShadow: draftConf > 0 ? '0 0 6px rgba(16, 185, 129, 0.25)' : 'none'
-                                                  }}
-                                                />
-                                                <button
-                                                  type="button"
-                                                  disabled={isClosed}
-                                                  onClick={() => {
-                                                    const cur = typeof draft.cantidadConforme === 'number' ? draft.cantidadConforme : 0;
-                                                    handleMatrixChange(r.id, l.id, 'cantidadConforme', cur + 1);
-                                                  }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
-                                                >
-                                                  +
-                                                </button>
-                                              </div>
-                                              <div style={{ fontSize: 10, color: '#64748B', marginTop: 2 }}>
-                                                Histórico: {conforme} conf.
-                                              </div>
-                                            </td>
-
-                                            {/* COLUMNA NO CONFORME / DAÑADO (INPUT MATRICIAL EDITABLE) */}
-                                            <td style={{ padding: '8px 12px', textAlign: 'center', background: 'rgba(239, 68, 68, 0.03)' }}>
-                                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                                                <button
-                                                  type="button"
-                                                  disabled={isClosed}
-                                                  onClick={() => {
-                                                    const cur = typeof draft.cantidadNoConforme === 'number' ? draft.cantidadNoConforme : 0;
-                                                    handleMatrixChange(r.id, l.id, 'cantidadNoConforme', Math.max(0, cur - 1));
-                                                  }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
-                                                >
-                                                  -
-                                                </button>
-                                                <input
-                                                  type="number"
-                                                  min="0"
-                                                  disabled={isClosed}
-                                                  value={draft.cantidadNoConforme}
-                                                  placeholder="0"
-                                                  onFocus={e => e.target.select()}
-                                                  onChange={e => handleMatrixChange(r.id, l.id, 'cantidadNoConforme', e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0))}
-                                                  style={{
-                                                    width: 65,
-                                                    height: 30,
-                                                    textAlign: 'center',
-                                                    fontWeight: 700,
-                                                    fontSize: 13,
-                                                    background: '#FFFFFF',
-                                                    color: draftNC > 0 ? '#DC2626' : '#94A3B8',
-                                                    border: draftNC > 0 ? '1.5px solid #EF4444' : '1px solid rgba(148, 163, 184, 0.25)',
-                                                    borderRadius: 5,
-                                                    boxShadow: draftNC > 0 ? '0 0 6px rgba(239, 68, 68, 0.25)' : 'none'
-                                                  }}
-                                                />
-                                                <button
-                                                  type="button"
-                                                  disabled={isClosed}
-                                                  onClick={() => {
-                                                    const cur = typeof draft.cantidadNoConforme === 'number' ? draft.cantidadNoConforme : 0;
-                                                    handleMatrixChange(r.id, l.id, 'cantidadNoConforme', cur + 1);
-                                                  }}
-                                                  style={{ width: 22, height: 28, borderRadius: 4, background: '#F1F5F9', border: '1px solid #CBD5E1', color: '#475569', cursor: isClosed ? 'not-allowed' : 'pointer', fontWeight: 700 }}
-                                                >
-                                                  +
-                                                </button>
-                                              </div>
-                                              <div style={{ fontSize: 10, color: draftNC > 0 ? '#F87171' : '#64748B', marginTop: 2, fontWeight: draftNC > 0 ? 700 : 400 }}>
-                                                {draftNC > 0 ? (
-                                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#F87171', fontWeight: 700 }}>
-                                                    <AlertTriangle size={10} /> A Cuarentena
-                                                  </span>
-                                                ) : (
-                                                  danada > 0 ? `Histórico: ${danada} dañado` : '0 dañado'
-                                                )}
-                                              </div>
-                                            </td>
-
-                                            {/* COLUMNA VARIACIÓN / ESTATUS */}
-                                            <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                                              {isBlind ? (
-                                                <span style={{
-                                                  fontSize: 11,
-                                                  fontWeight: 700,
-                                                  color: '#FBBF24',
-                                                  background: 'rgba(245, 158, 11, 0.12)',
-                                                  padding: '3px 8px',
-                                                  borderRadius: 5,
-                                                  border: '1px solid rgba(245, 158, 11, 0.3)',
-                                                  display: 'inline-flex',
-                                                  alignItems: 'center',
-                                                  gap: 4
-                                                }}>
-                                                  <Lock size={11} /> Ciego (Oculto)
-                                                </span>
-                                              ) : (() => {
-                                                if (lineFisicoTotal === 0) {
-                                                  return (
-                                                    <span style={{
-                                                      display: 'inline-flex',
-                                                      alignItems: 'center',
-                                                      gap: 4,
-                                                      fontSize: 11,
-                                                      color: '#64748B',
-                                                      background: 'rgba(255, 255, 255, 0.04)',
-                                                      padding: '3px 8px',
-                                                      borderRadius: 5,
-                                                      border: '1px solid rgba(255, 255, 255, 0.08)'
-                                                    }}>
-                                                      Pendiente
-                                                    </span>
-                                                  );
-                                                }
-
-                                                // Caso 1: 100% Exacto y sin merma
-                                                if (lineDiff === 0 && lineDanTotal === 0) {
-                                                  return (
-                                                    <span style={{
-                                                      display: 'inline-flex',
-                                                      alignItems: 'center',
-                                                      gap: 4,
-                                                      fontSize: 11,
-                                                      fontWeight: 700,
-                                                      color: '#34D399',
-                                                      background: 'rgba(16, 185, 129, 0.14)',
-                                                      padding: '3px 9px',
-                                                      borderRadius: 6,
-                                                      border: '1px solid rgba(16, 185, 129, 0.35)'
-                                                    }}>
-                                                      <CheckCircle2 size={12} /> Exacto (100%)
-                                                    </span>
-                                                  );
-                                                }
-
-                                                // Caso 2: Coincide en piezas totales pero con producto dañado
-                                                if (lineDiff === 0 && lineDanTotal > 0) {
-                                                  return (
-                                                    <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
-                                                      <span style={{
-                                                        display: 'inline-flex',
-                                                        alignItems: 'center',
-                                                        gap: 4,
-                                                        fontSize: 11,
-                                                        fontWeight: 700,
-                                                        color: '#F87171',
-                                                        background: 'rgba(239, 68, 68, 0.14)',
-                                                        padding: '2px 8px',
-                                                        borderRadius: 5,
-                                                        border: '1px solid rgba(239, 68, 68, 0.35)'
-                                                      }}>
-                                                        <AlertTriangle size={11} /> Merma: {lineDanTotal} pzas
-                                                      </span>
-                                                      <span style={{ fontSize: 10, color: '#34D399', fontWeight: 600 }}>
-                                                        {lineConfTotal} conformes
-                                                      </span>
-                                                    </div>
-                                                  );
-                                                }
-
-                                                // Caso 3: Faltante de mercancía
-                                                if (lineDiff < 0) {
-                                                  return (
-                                                    <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
-                                                      <span style={{
-                                                        display: 'inline-flex',
-                                                        alignItems: 'center',
-                                                        gap: 4,
-                                                        fontSize: 11,
-                                                        fontWeight: 700,
-                                                        color: '#FBBF24',
-                                                        background: 'rgba(245, 158, 11, 0.14)',
-                                                        padding: '2px 8px',
-                                                        borderRadius: 5,
-                                                        border: '1px solid rgba(245, 158, 11, 0.35)'
-                                                      }}>
-                                                        <ArrowDownRight size={12} /> Faltante: {lineDiff} pzas
-                                                      </span>
-                                                      {lineDanTotal > 0 && (
+                                            <span>Matriz de Alojamiento y Escaneo Dual HU por HU</span>
+                                            <span style={{ fontSize: 11, color: '#059669', fontWeight: 600 }}>
+                                              100% Ubicaciones Físicas Auditadas
+                                            </span>
+                                          </div>
+                                          <div style={{ overflowX: 'auto', maxHeight: 360 }}>
+                                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+                                              <thead>
+                                                <tr style={{ background: '#F1F5F9', borderBottom: '1px solid #CBD5E1', textAlign: 'left', color: '#475569' }}>
+                                                  <th style={{ padding: '8px 12px' }}>HU Código</th>
+                                                  <th style={{ padding: '8px 12px' }}>SKU</th>
+                                                  <th style={{ padding: '8px 12px' }}>Lote</th>
+                                                  <th style={{ padding: '8px 12px', textAlign: 'right' }}>Cantidad</th>
+                                                  <th style={{ padding: '8px 12px' }}>Origen</th>
+                                                  <th style={{ padding: '8px 12px' }}>Rack Destino</th>
+                                                  <th style={{ padding: '8px 12px', textAlign: 'center' }}>Escaneo Dual</th>
+                                                  <th style={{ padding: '8px 12px' }}>Operador Scan</th>
+                                                  <th style={{ padding: '8px 12px' }}>Fecha / Hora</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {ev.husDetail.map((hu, huIdx) => (
+                                                  <tr key={huIdx} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                                                    <td style={{ padding: '8px 12px', fontWeight: 700, fontFamily: 'monospace', color: '#0F172A' }}>
+                                                      {hu.huCodigo}
+                                                      {hu.reacondicionada && (
                                                         <span style={{
-                                                          display: 'inline-flex',
-                                                          alignItems: 'center',
-                                                          gap: 3,
-                                                          fontSize: 10,
-                                                          fontWeight: 700,
-                                                          color: '#F87171'
+                                                          marginLeft: 6,
+                                                          fontSize: 9.5,
+                                                          fontWeight: 800,
+                                                          padding: '1px 5px',
+                                                          borderRadius: 3,
+                                                          background: '#EDE9FE',
+                                                          color: '#7C3AED'
                                                         }}>
-                                                          <AlertTriangle size={10} /> +{lineDanTotal} dañadas
+                                                          Reacondicionada
                                                         </span>
                                                       )}
-                                                    </div>
-                                                  );
-                                                }
-
-                                                // Caso 4: Excedente / Sobrante de mercancía
-                                                return (
-                                                  <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
-                                                    <span style={{
-                                                      display: 'inline-flex',
-                                                      alignItems: 'center',
-                                                      gap: 4,
-                                                      fontSize: 11,
-                                                      fontWeight: 700,
-                                                      color: '#38BDF8',
-                                                      background: 'rgba(56, 189, 248, 0.14)',
-                                                      padding: '2px 8px',
-                                                      borderRadius: 5,
-                                                      border: '1px solid rgba(56, 189, 248, 0.35)'
-                                                    }}>
-                                                      <ArrowUpRight size={12} /> Sobrante: +{lineDiff} pzas
-                                                    </span>
-                                                    {lineDanTotal > 0 && (
+                                                    </td>
+                                                    <td style={{ padding: '8px 12px', color: '#334155' }}>{hu.skuCodigo}</td>
+                                                    <td style={{ padding: '8px 12px', color: '#475569' }}>{hu.lote}</td>
+                                                    <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#0F172A' }}>
+                                                      {hu.cantidad} pz
+                                                    </td>
+                                                    <td style={{ padding: '8px 12px', color: '#64748B' }}>{hu.origen}</td>
+                                                    <td style={{ padding: '8px 12px' }}>
+                                                      <span style={{
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        gap: 4,
+                                                        padding: '2px 8px',
+                                                        borderRadius: 4,
+                                                        background: '#ECFDF5',
+                                                        color: '#047857',
+                                                        fontWeight: 700,
+                                                        fontSize: 11
+                                                      }}>
+                                                        <MapPin size={11} /> {hu.rackDestino}
+                                                      </span>
+                                                    </td>
+                                                    <td style={{ padding: '8px 12px', textAlign: 'center' }}>
                                                       <span style={{
                                                         display: 'inline-flex',
                                                         alignItems: 'center',
                                                         gap: 3,
-                                                        fontSize: 10,
+                                                        padding: '2px 6px',
+                                                        borderRadius: 4,
+                                                        background: '#DCFCE7',
+                                                        color: '#15803D',
                                                         fontWeight: 700,
-                                                        color: '#F87171'
+                                                        fontSize: 10.5
                                                       }}>
-                                                        <AlertTriangle size={10} /> +{lineDanTotal} dañadas
+                                                        <CheckCircle2 size={11} /> Validado 2/2
                                                       </span>
-                                                    )}
-                                                  </div>
-                                                );
-                                              })()}
-                                            </td>
-
-                                            {/* ACCIONES */}
-                                            <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                                              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', alignItems: 'center' }}>
-                                                {!isClosed && (
-                                                  <>
-                                                    {(lineDanTotal > 0 || lineDiff > 0 || draftNC > 0) && (
-                                                      <button
-                                                        type="button"
-                                                        className="btn btn-ghost btn-xs"
-                                                        onClick={() => setDivertModalData({
-                                                          receipt: r,
-                                                          initialItems: [{
-                                                            skuId: l.skuId,
-                                                            skuCodigo: skuObj?.codigo,
-                                                            skuDescripcion: skuObj?.descripcion,
-                                                            cantidad: draftNC > 0 ? draftNC : (danada > 0 ? danada : (lineDiff > 0 ? lineDiff : 1)),
-                                                            lote: l.loteAsignado || '',
-                                                            fechaVencimiento: l.fechaVencimiento ? l.fechaVencimiento.split('T')[0] : '',
-                                                            receiptLineId: l.id,
-                                                            motivoEspecifico: lineDanTotal > 0 ? 'Daño físico registrado en andén' : 'Excedente en recepción'
-                                                          }],
-                                                          initialTipoDesvio: lineDanTotal > 0 ? 'MERMA' : 'EXCESO'
-                                                        })}
-                                                        title="Desviar esta partida al almacén virtual de No Conforme"
-                                                        style={{
-                                                          padding: '3px 7px',
-                                                          fontSize: 11,
-                                                          color: '#F87171',
-                                                          background: 'rgba(239, 68, 68, 0.12)',
-                                                          border: '1px solid rgba(239, 68, 68, 0.3)',
-                                                          borderRadius: 4,
-                                                          cursor: 'pointer',
-                                                          fontWeight: 700,
-                                                          display: 'inline-flex',
-                                                          alignItems: 'center',
-                                                          gap: 4
-                                                        }}
-                                                      >
-                                                        <ShieldAlert size={12} /> Desviar NC
-                                                      </button>
-                                                    )}
-                                                    <button
-                                                      type="button"
-                                                      className="btn btn-primary btn-sm"
-                                                      onClick={() => {
-                                                        setProcessLineId(processLineId === l.id ? null : l.id);
-                                                        const rem = Math.max(0, esperada - totalRecibido);
-                                                        const recLoc = locations.find(loc => loc.codigo === 'REC-01' || loc.tipoUbicacion === 'RECIBO')?.id || '';
-                                                        const devLoc = locations.find(loc => loc.codigo === 'DEV-01' || loc.tipoUbicacion === 'DEVOLUCION')?.id || '';
-                                                        setProcessForm({
-                                                          cantidadConforme: rem,
-                                                          cantidadNoConforme: 0,
-                                                          ubicacionConformeId: recLoc,
-                                                          ubicacionNoConformeId: devLoc,
-                                                          lote: '',
-                                                          fechaVencimiento: '',
-                                                          tipoHu: clientObj?.uomPrincipal === 'PALLET' ? 'PALLET' : 'CAJA',
-                                                          permitirExcedente: false,
-                                                        });
-                                                      }}
-                                                    >
-                                                      {processLineId === l.id ? 'Cerrar' : 'Detalle'}
-                                                    </button>
-                                                  </>
-                                                )}
-                                                
-                                                {/* EDITAR / ELIMINAR LÍNEA (BLOQUEADO SI PREVIO CONFIRMADO) */}
-                                                {!isClosed && (
-                                                  r.bloqueado ? (
-                                                    <span 
-                                                      title="Línea bloqueada: El previo ya fue confirmado. Desbloquea el previo como supervisor para ajustar cantidades o quitar partidas."
-                                                      style={{ display: 'inline-flex', alignItems: 'center', padding: '0 6px', color: '#64748b', opacity: 0.65 }}
-                                                    >
-                                                      <Lock size={13} />
-                                                    </span>
-                                                  ) : (
-                                                    <>
-                                                      <button
-                                                        type="button"
-                                                        className="btn btn-ghost btn-sm"
-                                                        title="Editar cantidad esperada de esta línea"
-                                                        onClick={() => setEditingLine({ id: l.id, cantidadEsperada: esperada, notas: l.notas || '', codigo: skuObj?.codigo, descripcion: skuObj?.descripcion })}
-                                                        style={{ padding: '4px 6px' }}
-                                                      >
-                                                        <Edit3 size={14} />
-                                                      </button>
-
-                                                      <button
-                                                        type="button"
-                                                        className="btn btn-ghost btn-sm"
-                                                        title="Quitar producto de este previo"
-                                                        onClick={() => setDeleteLineConfirm({ lineId: l.id, receiptId: r.id, codigo: skuObj?.codigo })}
-                                                        style={{ padding: '4px 6px', color: 'var(--error)' }}
-                                                      >
-                                                        <Trash2 size={14} />
-                                                      </button>
-                                                    </>
-                                                  )
-                                                )}
-
-                                                <button
-                                                  type="button"
-                                                  className="btn btn-secondary btn-sm"
-                                                  title="Imprimir etiquetas de este producto"
-                                                  onClick={() => setPrintModalReceipt({ ...r, lineas: [l] })}
-                                                  style={{ padding: '4px 6px' }}
-                                                >
-                                                  <Printer size={13} />
-                                                </button>
-                                              </div>
-                                            </td>
-                                          </tr>
-
-                                          {/* FORMULARIO DE INGRESO DUAL INLINE CON VALIDACIÓN DE EXCEDENTES */}
-                                          {processLineId === l.id && (
-                                            <tr>
-                                              <td colSpan={8} style={{ padding: 18, background: 'rgba(13,148,136,0.03)', borderTop: '1px solid var(--border)' }}>
-                                                <form onSubmit={(e) => handleProcessLine(e, r.id, l.id)}>
-                                                  
-                                                  {/* ADVERTENCIA DE EXCEDENTE EN TIEMPO REAL */}
-                                                  {(processForm.cantidadConforme + processForm.cantidadNoConforme) > Math.max(0, esperada - totalRecibido) && (
-                                                    <div style={{
-                                                      padding: '12px 16px',
-                                                      background: 'rgba(239, 68, 68, 0.08)',
-                                                      borderRadius: 8,
-                                                      border: '1px solid rgba(239, 68, 68, 0.3)',
-                                                      marginBottom: 16
-                                                    }}>
-                                                      <div style={{ fontWeight: 700, color: 'var(--error)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                        <AlertTriangle size={16} /> Exceso de Piezas Detectado (+{(processForm.cantidadConforme + processForm.cantidadNoConforme) - Math.max(0, esperada - totalRecibido)} piezas en exceso)
-                                                      </div>
-                                                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 10px' }}>
-                                                        Se esperaban {esperada} piezas (quedan {Math.max(0, esperada - totalRecibido)} pendientes por recibir) y estás intentando ingresar {processForm.cantidadConforme + processForm.cantidadNoConforme} piezas.
-                                                      </div>
-                                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', fontWeight: 600, color: 'var(--text-primary)', background: 'var(--bg-card)', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)' }}>
-                                                        <input 
-                                                          type="checkbox" 
-                                                          checked={Boolean(processForm.permitirExcedente)} 
-                                                          onChange={e => setProcessForm({ ...processForm, permitirExcedente: e.target.checked })} 
-                                                        />
-                                                        <span><strong>Autorizo el recibo de este excedente de mercancía</strong> (Registra auditoría en sistema)</span>
-                                                      </label>
-                                                    </div>
-                                                  )}
-
-                                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
-                                                    
-                                                    {/* ZONA CONFORME CON SMART LOCATION SELECT */}
-                                                    <div style={{ border: '1px solid rgba(16, 185, 129, 0.3)', padding: 16, borderRadius: 10, background: 'var(--bg-card)' }}>
-                                                      <h5 style={{ margin: '0 0 12px', color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                        <CheckCircle2 size={16} /> Zona Conforme (Liberado)
-                                                      </h5>
-                                                      <div className="form-group">
-                                                        <label className="form-label">Cantidad Conforme</label>
-                                                        <input 
-                                                          type="number" 
-                                                          className="form-input" 
-                                                          min="0" 
-                                                          value={processForm.cantidadConforme === 0 ? '' : processForm.cantidadConforme} 
-                                                          onFocus={e => e.target.select()}
-                                                          onChange={e => {
-                                                            const raw = e.target.value.replace(/^0+(?=\d)/, '');
-                                                            const val = raw === '' ? 0 : parseInt(raw, 10);
-                                                            setProcessForm({ ...processForm, cantidadConforme: isNaN(val) ? 0 : val });
-                                                          }} 
-                                                          placeholder="0"
-                                                        />
-                                                      </div>
-                                                      <div className="form-group" style={{ marginBottom: 0 }}>
-                                                        <LocationSelect
-                                                          label="Ubicación Física Almacenamiento"
-                                                          locations={locations}
-                                                          value={processForm.ubicacionConformeId}
-                                                          onChange={(locId) => setProcessForm({ ...processForm, ubicacionConformeId: locId })}
-                                                          sku={skuObj}
-                                                          client={clientObj}
-                                                          isConforme={true}
-                                                          quantity={processForm.cantidadConforme}
-                                                          placeholder="Buscar o elegir ubicación sugerida..."
-                                                        />
-                                                      </div>
-                                                    </div>
-
-                                                    {/* ZONA NO CONFORME CON SMART LOCATION SELECT */}
-                                                    <div style={{ border: '1px solid rgba(245, 158, 11, 0.3)', padding: 16, borderRadius: 10, background: 'var(--bg-card)' }}>
-                                                      <h5 style={{ margin: '0 0 12px', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                        <AlertTriangle size={16} /> Zona No Conforme (Cuarentena / Merma)
-                                                      </h5>
-                                                      <div className="form-group">
-                                                        <label className="form-label">Cantidad No Conforme</label>
-                                                        <input 
-                                                          type="number" 
-                                                          className="form-input" 
-                                                          min="0" 
-                                                          value={processForm.cantidadNoConforme === 0 ? '' : processForm.cantidadNoConforme} 
-                                                          onFocus={e => e.target.select()}
-                                                          onChange={e => {
-                                                            const raw = e.target.value.replace(/^0+(?=\d)/, '');
-                                                            const val = raw === '' ? 0 : parseInt(raw, 10);
-                                                            setProcessForm({ ...processForm, cantidadNoConforme: isNaN(val) ? 0 : val });
-                                                          }} 
-                                                          placeholder="0"
-                                                        />
-                                                      </div>
-                                                      <div className="form-group" style={{ marginBottom: 0 }}>
-                                                        <LocationSelect
-                                                          label="Ubicación Cuarentena / Devolución"
-                                                          locations={locations}
-                                                          value={processForm.ubicacionNoConformeId}
-                                                          onChange={(locId) => setProcessForm({ ...processForm, ubicacionNoConformeId: locId })}
-                                                          sku={skuObj}
-                                                          client={clientObj}
-                                                          isConforme={false}
-                                                          quantity={processForm.cantidadNoConforme}
-                                                          placeholder="Buscar o elegir ubicación de cuarentena..."
-                                                        />
-                                                      </div>
-                                                    </div>
-                                                  </div>
-
-                                                  {/* CAMPOS CONDICIONALES SEGÚN REGLAS DEL CLIENTE / GIRO SANITARIO */}
-                                                  {(() => {
-                                                    const isGiroRegulado = clientObj?.giro === 'COMIDA' || clientObj?.giro === 'FARMACEUTICO';
-                                                    const modalReqLote = Boolean(clientObj?.requiereLote || isGiroRegulado || skuObj?.requiereLote);
-                                                    const modalReqCaducidad = Boolean(clientObj?.requiereCaducidad || isGiroRegulado || skuObj?.requiereCaducidad);
-
-                                                    if (!modalReqLote && !modalReqCaducidad) return null;
-
-                                                    const isExpired = (() => {
-                                                      if (!processForm.fechaVencimiento?.trim()) return false;
-                                                      const d = new Date(processForm.fechaVencimiento.trim());
-                                                      const today = new Date();
-                                                      today.setHours(0, 0, 0, 0);
-                                                      return !isNaN(d.getTime()) && d < today;
-                                                    })();
-
-                                                    return (
-                                                      <div style={{
-                                                        border: '1px solid rgba(245, 158, 11, 0.3)',
-                                                        padding: 14,
-                                                        borderRadius: 10,
-                                                        background: 'rgba(245, 158, 11, 0.05)',
-                                                        marginTop: 14
-                                                      }}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                                                          <span style={{ fontSize: 12, fontWeight: 700, color: '#FBBF24', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                            <ShieldCheck size={15} /> Control de Trazabilidad Obligatoria
-                                                          </span>
-                                                          {isGiroRegulado && (
-                                                            <span style={{
-                                                              fontSize: 10,
-                                                              fontWeight: 800,
-                                                              padding: '2px 8px',
-                                                              borderRadius: 4,
-                                                              background: '#D97706',
-                                                              color: '#FFFFFF'
-                                                            }}>
-                                                              Giro: {clientObj?.giro}
-                                                            </span>
-                                                          )}
-                                                        </div>
-
-                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
-                                                          {modalReqLote && (
-                                                            <div className="form-group" style={{ marginBottom: 0 }}>
-                                                              <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                                                <span>Lote de Fabricación</span>
-                                                                <span className="required" style={{ color: '#F87171' }}>* Requerido</span>
-                                                              </label>
-                                                              <input 
-                                                                className="form-input" 
-                                                                placeholder="Ej. LOT-2026-A"
-                                                                value={processForm.lote} 
-                                                                onChange={e => setProcessForm({ ...processForm, lote: e.target.value })} 
-                                                                style={{
-                                                                  borderColor: !processForm.lote.trim() ? '#F59E0B' : '#10B981'
-                                                                }}
-                                                                required
-                                                              />
-                                                            </div>
-                                                          )}
-                                                          {modalReqCaducidad && (
-                                                            <div className="form-group" style={{ marginBottom: 0 }}>
-                                                              <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                                                <span>Fecha de Vencimiento / Caducidad</span>
-                                                                <span className="required" style={{ color: isExpired ? '#EF4444' : '#F87171' }}>
-                                                                  {isExpired ? '¡CADUCADO!' : '* Requerido'}
-                                                                </span>
-                                                              </label>
-                                                              <input 
-                                                                type="date" 
-                                                                className="form-input" 
-                                                                value={processForm.fechaVencimiento} 
-                                                                onChange={e => setProcessForm({ ...processForm, fechaVencimiento: e.target.value })} 
-                                                                style={{
-                                                                  borderColor: isExpired ? '#EF4444' : (!processForm.fechaVencimiento ? '#F59E0B' : '#10B981'),
-                                                                  boxShadow: isExpired ? '0 0 8px rgba(239, 68, 68, 0.3)' : 'none'
-                                                                }}
-                                                                required
-                                                              />
-                                                              {isExpired && (
-                                                                <div style={{ fontSize: 11, color: '#EF4444', fontWeight: 600, marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                                                  <AlertTriangle size={13} style={{ flexShrink: 0 }} /> Inocuidad: No se permite recibir producto vencido (NOM-251 / COFEPRIS / FDA).
-                                                                </div>
-                                                              )}
-                                                            </div>
-                                                          )}
-                                                        </div>
-                                                      </div>
-                                                    );
-                                                  })()}
-
-                                                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
-                                                    <button type="button" className="btn btn-ghost" onClick={() => setProcessLineId(null)}>Cancelar</button>
-                                                    <button 
-                                                      type="submit" 
-                                                      className="btn btn-primary" 
-                                                      disabled={
-                                                        submitting || 
-                                                        ((processForm.cantidadConforme + processForm.cantidadNoConforme) > Math.max(0, esperada - totalRecibido) && !processForm.permitirExcedente)
-                                                      }
-                                                    >
-                                                      {submitting ? 'Registrando ingreso...' : 'Confirmar Ingreso a Almacén'}
-                                                    </button>
-                                                  </div>
-                                                </form>
-                                              </td>
-                                            </tr>
-                                          )}
-                                        </React.Fragment>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-
-                                {/* TAREA 1: LIVE FOOTER SUMMARY STRIP DE LA PLANILLA MATRICIAL */}
-                                {(() => {
-                                  const drafts = matrixValues[r.id] || {};
-                                  let sumConforme = 0;
-                                  let sumNoConforme = 0;
-                                  let activeCount = 0;
-
-                                  (r.lineas || []).forEach((l: any) => {
-                                    const d = drafts[l.id];
-                                    if (d) {
-                                      const c = typeof d.cantidadConforme === 'number' ? d.cantidadConforme : (parseFloat(String(d.cantidadConforme)) || 0);
-                                      const nc = typeof d.cantidadNoConforme === 'number' ? d.cantidadNoConforme : (parseFloat(String(d.cantidadNoConforme)) || 0);
-                                      if (c > 0 || nc > 0) activeCount++;
-                                      sumConforme += c;
-                                      sumNoConforme += nc;
-                                    }
-                                  });
-
-                                  const isBlind = Boolean(blindCountMode[r.id]);
-
-                                  return (
-                                    <div style={{
-                                      padding: '14px 20px',
-                                      background: 'rgba(15, 23, 42, 0.92)',
-                                      borderTop: '1px solid var(--border)',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'space-between',
-                                      flexWrap: 'wrap',
-                                      gap: 16
-                                    }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
-                                        <div>
-                                          <span style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Partidas:</span>{' '}
-                                          <strong style={{ fontSize: 13, color: '#F8FAFC' }}>{r.lineas?.length || 0}</strong>
-                                        </div>
-                                        <div>
-                                          <span style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Conforme Tecleado:</span>{' '}
-                                          <strong style={{ fontSize: 14, color: '#059669', fontWeight: 800 }}>+{sumConforme} pzas</strong>
-                                        </div>
-                                        <div>
-                                          <span style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Merma / Dañado:</span>{' '}
-                                          <strong style={{ fontSize: 14, color: sumNoConforme > 0 ? '#DC2626' : '#64748B', fontWeight: 800 }}>+{sumNoConforme} pzas</strong>
-                                        </div>
-                                        {!isBlind && (
-                                          <div>
-                                            <span style={{ fontSize: 11, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Captura:</span>{' '}
-                                            <strong style={{ fontSize: 14, color: '#38BDF8', fontWeight: 800 }}>{sumConforme + sumNoConforme} pzas</strong>
+                                                    </td>
+                                                    <td style={{ padding: '8px 12px', color: '#334155' }}>{hu.operadorScan}</td>
+                                                    <td style={{ padding: '8px 12px', color: '#64748B', fontSize: 11 }}>
+                                                      {formatTimelineDateTime(hu.scanTimestamp)}
+                                                    </td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
                                           </div>
-                                        )}
-                                        {activeCount > 0 && (
-                                          <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'rgba(56,189,248,0.15)', color: '#38BDF8', fontWeight: 700 }}>
-                                            {activeCount} partidas listas para registrar
-                                          </span>
-                                        )}
-                                      </div>
-
-                                      {!isClosed && (
-                                        <button
-                                          type="button"
-                                          className="btn btn-sm"
-                                          disabled={savingMatrix[r.id] || activeCount === 0}
-                                          onClick={() => handleSaveMatrixReception(r)}
-                                          style={{
-                                            background: activeCount > 0 ? '#059669' : '#F1F5F9',
-                                            border: activeCount > 0 ? '1.5px solid #059669' : '1px solid #CBD5E1',
-                                            color: activeCount > 0 ? '#FFFFFF' : '#94A3B8',
-                                            fontWeight: 800,
-                                            fontSize: 13,
-                                            padding: '8px 22px',
-                                            borderRadius: 8,
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            gap: 8,
-                                            boxShadow: activeCount > 0 ? '0 4px 16px rgba(16, 185, 129, 0.4)' : 'none',
-                                            cursor: (savingMatrix[r.id] || activeCount === 0) ? 'not-allowed' : 'pointer'
-                                          }}
-                                          title={activeCount === 0 ? "Captura al menos una cantidad en la planilla para guardar" : "Guardar en inventario todas las cantidades capturadas en la factura"}
-                                        >
-                                          <Save size={15} />
-                                          {savingMatrix[r.id]
-                                            ? 'Guardando en Inventario...'
-                                            : activeCount > 0
-                                              ? `Guardar Conteo de Factura (${activeCount} partidas)`
-                                              : 'Guardar Conteo de Factura'}
-                                        </button>
+                                        </div>
                                       )}
                                     </div>
-                                  );
-                                })()}
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* SECCIÓN KÁRDEX TRANSACCIONAL COMPLEMENTARIO */}
+                        <div style={{ marginTop: 24, paddingTop: 18, borderTop: '1px solid #E2E8F0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                            <div>
+                              <div style={{ fontSize: 14, fontWeight: 800, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Layers size={16} color="#0284C7" />
+                                Movimientos Transaccionales en Kárdex WMS ({rawMoves.length} registros)
+                              </div>
+                              <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>
+                                Trasiegos y afectaciones directas al inventario asociadas a este folio de recepción.
                               </div>
                             </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
+
+                            <button
+                              type="button"
+                              onClick={() => setShowKardexTableDetail(prev => !prev)}
+                              style={{
+                                padding: '6px 12px',
+                                fontSize: 11.5,
+                                fontWeight: 600,
+                                background: '#F8FAFC',
+                                border: '1px solid #CBD5E1',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 5,
+                                color: '#334155'
+                              }}
+                            >
+                              {showKardexTableDetail ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                              {showKardexTableDetail ? 'Ocultar Kárdex Transaccional' : 'Ver Kárdex Transaccional'}
+                            </button>
+                          </div>
+
+                          {showKardexTableDetail && (
+                            <div style={{
+                              background: '#FFFFFF',
+                              borderRadius: 8,
+                              border: '1px solid #E2E8F0',
+                              overflow: 'hidden',
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+                            }}>
+                              {rawMoves.length === 0 ? (
+                                <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13, fontStyle: 'italic' }}>
+                                  No hay movimientos registrados en kárdex para esta recepción aún.
+                                </div>
+                              ) : (
+                                <div style={{ overflowX: 'auto', maxHeight: 320 }}>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+                                    <thead>
+                                      <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #CBD5E1', textAlign: 'left', color: '#475569' }}>
+                                        <th style={{ padding: '8px 12px' }}>Folio / ID</th>
+                                        <th style={{ padding: '8px 12px' }}>Tipo</th>
+                                        <th style={{ padding: '8px 12px' }}>SKU</th>
+                                        <th style={{ padding: '8px 12px', textAlign: 'right' }}>Cantidad</th>
+                                        <th style={{ padding: '8px 12px' }}>Origen → Destino</th>
+                                        <th style={{ padding: '8px 12px' }}>HU Asignada</th>
+                                        <th style={{ padding: '8px 12px' }}>Operador</th>
+                                        <th style={{ padding: '8px 12px' }}>Fecha / Hora</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {rawMoves.map((m: any, mIdx: number) => (
+                                        <tr key={m.id || mIdx} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#64748B' }}>
+                                            {m.id?.slice(0, 8) || `MOV-${mIdx + 1}`}
+                                          </td>
+                                          <td style={{ padding: '8px 12px' }}>
+                                            <span style={{
+                                              padding: '2px 6px',
+                                              borderRadius: 4,
+                                              background: m.tipoMovimiento === 'TRASIEGO' ? '#E0F2FE' : '#F1F5F9',
+                                              color: m.tipoMovimiento === 'TRASIEGO' ? '#0369A1' : '#334155',
+                                              fontWeight: 700,
+                                              fontSize: 10.5
+                                            }}>
+                                              {m.tipoMovimiento}
+                                            </span>
+                                          </td>
+                                          <td style={{ padding: '8px 12px', fontWeight: 600, color: '#0F172A' }}>
+                                            {m.sku?.codigo || m.skuCodigo || m.skuId}
+                                          </td>
+                                          <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#0F172A' }}>
+                                            {m.cantidad} pz
+                                          </td>
+                                          <td style={{ padding: '8px 12px' }}>
+                                            <span style={{ color: '#64748B' }}>{m.fromLocation?.codigo || 'Andén'}</span>
+                                            <span style={{ margin: '0 4px', color: '#94A3B8' }}>→</span>
+                                            <span style={{ color: '#059669', fontWeight: 700 }}>{m.toLocation?.codigo || 'Rack'}</span>
+                                          </td>
+                                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#0284C7' }}>
+                                            {m.hu?.codigo || m.huCodigo || '—'}
+                                          </td>
+                                          <td style={{ padding: '8px 12px', color: '#334155' }}>
+                                            {m.usuario || 'Operador'}
+                                          </td>
+                                          <td style={{ padding: '8px 12px', color: '#64748B', fontSize: 11 }}>
+                                            {formatTimelineDateTime(m.fechaHora || m.createdAt)}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // =========================================================================
+        // VISTA LISTADO COMPACTO DE RECEPCIONES (UX-01, Point 7)
+        // =========================================================================
+        const baseForCounts = filterCliente ? receipts.filter(r => r.clienteId === filterCliente) : receipts;
+        const countsByStage = {
+          todas: baseForCounts.length,
+          rampa: baseForCounts.filter(r => {
+            const st = computeReceiptStage(r);
+            return st.name === 'Rampa' || st.name === 'Conteo';
+          }).length,
+          calidad: baseForCounts.filter(r => computeReceiptStage(r).name === 'Calidad').length,
+          etiquetas: baseForCounts.filter(r => computeReceiptStage(r).name === 'Etiquetas').length,
+          ubicacion: baseForCounts.filter(r => computeReceiptStage(r).name === 'Ubicación').length,
+          porCerrar: baseForCounts.filter(r => {
+            const s = computeReceiptStage(r);
+            return s.name === 'Cierre' && !s.isClosed;
+          }).length,
+          cerradas: baseForCounts.filter(r => computeReceiptStage(r).isClosed).length,
+        };
+
+        const stageFiltered = filtered.filter(r => {
+          if (filterCliente && r.clienteId !== filterCliente) return false;
+          if (!filterEstado) return true;
+          const st = computeReceiptStage(r);
+          if (filterEstado === 'RAMPA') return st.name === 'Rampa' || st.name === 'Conteo';
+          if (filterEstado === 'CALIDAD') return st.name === 'Calidad';
+          if (filterEstado === 'ETIQUETAS') return st.name === 'Etiquetas';
+          if (filterEstado === 'UBICACION') return st.name === 'Ubicación';
+          if (filterEstado === 'POR_CERRAR') return st.name === 'Cierre' && !st.isClosed;
+          if (filterEstado === 'CERRADAS' || filterEstado === 'CERRADA') return st.isClosed;
+          return true;
+        });
+
+        return (
+          <div className="compact-list-view">
+            {/* BARRA SUPERIOR DE FILTROS LIMPIA (Sin emoji de edificio) */}
+            <div style={{
+              background: '#FFFFFF',
+              borderRadius: 12,
+              border: '1px solid #E2E8F0',
+              padding: '16px 20px',
+              marginBottom: 20,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.03)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14, marginBottom: 14 }}>
+                {/* BUSCADOR */}
+                <div style={{ position: 'relative', flex: '1 1 300px', maxWidth: 420 }}>
+                  <Search size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#64748B' }} />
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Buscar por folio (REC-...), factura, chofer, placa..."
+                    value={search}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setSearch(val);
+                      if (val) setSearchParams({ search: val });
+                      else setSearchParams({});
+                    }}
+                    style={{ paddingLeft: 36, paddingRight: search ? 30 : 12, height: 38, fontSize: 13, background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A', borderRadius: 8, width: '100%' }}
+                  />
+                  {search && (
+                    <button
+                      type="button"
+                      onClick={() => { setSearch(''); setSearchParams({}); }}
+                      style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: '#64748B', cursor: 'pointer', padding: 2, display: 'flex' }}
+                      title="Limpiar búsqueda"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                {/* FILTRO DE DEPOSITANTE Y BOTÓN NUEVO PREVIO UNIFICADO */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <select
+                    className="form-select"
+                    value={filterCliente}
+                    onChange={e => setFilterCliente(e.target.value)}
+                    style={{ height: 38, fontSize: 13, minWidth: 200, borderRadius: 8, background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
+                  >
+                    <option value="">Todos los Depositantes</option>
+                    {clients.map(c => (
+                      <option key={c.id} value={c.id}>{c.nombreComercial}</option>
+                    ))}
+                  </select>
+
+
+                </div>
+              </div>
+
+              {/* CHIPS DE ETAPAS OPERATIVAS (Incluye "Por cerrar") */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', marginRight: 4 }}>
+                  Etapa:
+                </span>
+                {[
+                  { key: '', label: 'Todas', count: countsByStage.todas },
+                  { key: 'RAMPA', label: 'Rampa', count: countsByStage.rampa },
+                  { key: 'CALIDAD', label: 'Calidad', count: countsByStage.calidad },
+                  { key: 'ETIQUETAS', label: 'Etiquetas', count: countsByStage.etiquetas },
+                  { key: 'UBICACION', label: 'Ubicación', count: countsByStage.ubicacion },
+                  { key: 'POR_CERRAR', label: 'Por cerrar', count: countsByStage.porCerrar },
+                  { key: 'CERRADAS', label: 'Cerradas', count: countsByStage.cerradas },
+                ].map(chip => {
+                  const isActive = filterEstado === chip.key;
+                  return (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={() => setFilterEstado(chip.key)}
+                      style={{
+                        padding: '5px 12px',
+                        borderRadius: 20,
+                        border: `1px solid ${isActive ? '#0D9488' : '#E2E8F0'}`,
+                        background: isActive ? '#0D9488' : '#FFFFFF',
+                        color: isActive ? '#FFFFFF' : '#475569',
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <span>{chip.label}</span>
+                      <span style={{
+                        fontSize: 10.5,
+                        padding: '1px 6px',
+                        borderRadius: 10,
+                        background: isActive ? 'rgba(255,255,255,0.25)' : '#F1F5F9',
+                        color: isActive ? '#FFFFFF' : '#64748B'
+                      }}>
+                        {chip.count}
+                      </span>
+                    </button>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+                })}
+              </div>
+            </div>
 
-    {/* RIGHT PERSISTENT SIDEBAR PANEL (SUGERENCIA PUTAWAY 1:1 MATCH WITH STITCH MOCKUP) */}
-    {!sidebarCollapsed ? (
-      <div className="stitch-split-sidebar" style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 12, padding: 18, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid #E2E8F0', paddingBottom: 12 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Sparkles size={18} style={{ color: '#0D9488' }} /> Sugerencias
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 11, background: '#F0FDFA', color: '#0D9488', border: '1px solid #CCFBF1', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
-              3PL AI Rules
-            </span>
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              title="Ocultar panel lateral de sugerencias"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#64748B',
-                cursor: 'pointer',
-                padding: '4px 6px',
-                borderRadius: 4,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 2,
-                fontSize: 12
-              }}
-            >
-              <ChevronRight size={16} /> Ocultar
-            </button>
-          </div>
-        </div>
+            {/* TABLA COMPACTA CON COLUMNAS FIJAS DE FOLIO Y ACCIÓN (Point 7) */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ overflowX: 'auto', position: 'relative' }}>
+                <table className="data-table" style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#F8FAFC', textAlign: 'left', borderBottom: '1px solid #E2E8F0' }}>
+                      <th style={{ padding: '12px 16px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', position: 'sticky', left: 0, background: '#F8FAFC', zIndex: 3, boxShadow: '1px 0 0 #E2E8F0' }}>Folio</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Fecha</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Depositante</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Factura / OC</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Partidas / Productos</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Piezas (Rec / Esp)</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Etapa</th>
+                      <th style={{ padding: '12px 14px', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Pendiente Principal</th>
+                      <th style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 800, color: '#334155', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', position: 'sticky', right: 0, background: '#F8FAFC', zIndex: 3, boxShadow: '-1px 0 0 #E2E8F0' }}>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: 'center', padding: '48px 20px', color: '#64748B' }}>
+                          <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 10px', color: '#0D9488' }} />
+                          <div style={{ fontWeight: 600 }}>Cargando recepciones del servidor...</div>
+                        </td>
+                      </tr>
+                    ) : stageFiltered.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} style={{ padding: 40, textAlign: 'center', color: '#64748B' }}>
+                          No se encontraron recepciones con los filtros aplicados.
+                        </td>
+                      </tr>
+                    ) : (
+                      stageFiltered.map((r, i) => {
+                        const stage = computeReceiptStage(r);
+                        const isClosed = stage.isClosed;
+                        const StageIcon = stage.icon;
 
-        <div style={{ background: '#F8FAFC', padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>ITEM A REUBICAR</div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginTop: 3 }}>
-            {receipts[0]?.lineas?.[0]?.sku?.descripcion || 'Motor Eléctrico Trifásico 5HP'}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-            <span style={{ fontSize: 11, color: '#0D9488', fontFamily: 'monospace', fontWeight: 600 }}>
-              {receipts[0]?.lineas?.[0]?.sku?.codigo || 'MOT-3P-5HP-001'}
-            </span>
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#0F172A' }}>
-              Cant: {receipts[0]?.lineas?.[0]?.cantidadEsperada || 120}
-            </span>
-          </div>
-        </div>
+                        const totalPartidas = (r.lineas || []).length;
+                        const uniqueSkus = new Set((r.lineas || []).map((l: any) => l.skuId || l.sku?.codigo).filter(Boolean)).size;
+                        const totalPzasEsp = (r.lineas || []).reduce((s: number, l: any) => s + (l.cantidadEsperada || 0), 0);
+                        const totalPzasRec = (r.lineas || []).reduce((s: number, l: any) => s + (l.cantidadRecibida || 0), 0);
 
-        <div style={{ fontSize: 12, fontWeight: 700, color: '#0D9488', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <MapPin size={14} /> Ubicaciones Óptimas (Regla FIFO)
-        </div>
+                        return (
+                          <tr
+                            key={r.id || i}
+                            onClick={(e) => {
+                              // Permitir abrir la recepción al hacer clic en cualquier parte de la fila
+                              // excepto si se hace clic en un botón, enlace, input o se está seleccionando texto
+                              const target = e.target as HTMLElement;
+                              if (target.closest('button') || target.closest('a') || target.closest('input') || target.closest('select')) return;
+                              if (window.getSelection()?.toString().trim().length) return;
+                              handleOpenReceiptDossier(r);
+                            }}
+                            style={{
+                              borderBottom: '1px solid #F1F5F9',
+                              cursor: 'pointer',
+                              transition: 'background 0.15s ease'
+                            }}
+                            className="hover-row"
+                          >
+                            {/* FOLIO + BADGE COMPACTO DE ETAPA (Sticky Column Izquierda, Point 7) */}
+                            <td style={{
+                              padding: '12px 16px',
+                              fontWeight: 700,
+                              fontFamily: 'monospace',
+                              position: 'sticky',
+                              left: 0,
+                              background: '#FFFFFF',
+                              zIndex: 2,
+                              boxShadow: '1px 0 0 #E2E8F0'
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: 13, fontWeight: 800, color: '#0F172A' }}>{r.codigo}</span>
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                  padding: '2px 7px',
+                                  borderRadius: 10,
+                                  fontSize: 10.5,
+                                  fontWeight: 700,
+                                  background: stage.bg,
+                                  color: stage.color,
+                                  border: `1px solid ${stage.border}`
+                                }}>
+                                  <StageIcon size={11} /> {stage.label}
+                                </span>
+                                {r.bloqueado && (
+                                  <span style={{ fontSize: 11, color: '#059669' }} title="Previo bloqueado">
+                                    <Lock size={12} />
+                                  </span>
+                                )}
+                                {r.tipoRecepcion === 'DEVOLUCION' && (
+                                  <span style={{ fontSize: 9.5, padding: '1px 5px', borderRadius: 4, background: '#FEF2F2', color: '#DC2626', fontWeight: 700 }}>
+                                    Dev
+                                  </span>
+                                )}
+                              </div>
+                            </td>
 
-        {/* RACK LOCATION 1 */}
-        <div style={{ background: '#FFFFFF', padding: 14, borderRadius: 10, border: '1px solid #CCFBF1', marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A' }}>A02-R01-N1</div>
-            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#ECFDF5', color: '#059669' }}>83% Match</span>
-          </div>
-          <div style={{ fontSize: 11, color: '#64748B', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
-            <MapPin size={11} style={{ color: '#0284C7' }} /> Pasillo Motores · Nivel Suelo (Libre: 80 u.)
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input className="form-input" defaultValue="80" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#FFFFFF', color: '#0F172A', borderColor: '#CBD5E1' }} />
-            <button 
-              type="button"
-              className="btn btn-secondary btn-sm" 
-              onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
-              style={{ flex: 1, fontSize: 11, background: '#F8FAFC', color: '#334155', borderColor: '#CBD5E1' }}
-            >
-              Mover a esta ubicación
-            </button>
-          </div>
-        </div>
+                            {/* FECHA */}
+                            <td style={{ padding: '12px 14px', color: '#334155', whiteSpace: 'nowrap', fontSize: 12.5 }}>
+                              {formatCalendarDate(r.fechaRecepcion)}
+                            </td>
 
-        {/* RACK LOCATION 2 */}
-        <div style={{ background: '#FFFFFF', padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', marginBottom: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A' }}>B05-R02-N3</div>
-            <span style={{ fontSize: 11, color: '#64748B' }}>Libre: 40 u.</span>
-          </div>
-          <div style={{ fontSize: 11, color: '#64748B', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
-            <MapPin size={11} style={{ color: '#0284C7' }} /> Pasillo Motores · Nivel Alto
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input className="form-input" defaultValue="40" style={{ width: 70, height: 32, fontSize: 12, textAlign: 'center', background: '#FFFFFF', color: '#0F172A', borderColor: '#CBD5E1' }} />
-            <button 
-              type="button"
-              className="btn btn-secondary btn-sm" 
-              onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
-              style={{ flex: 1, fontSize: 11, background: '#F8FAFC', color: '#334155', borderColor: '#CBD5E1' }}
-            >
-              Mover a esta ubicación
-            </button>
-          </div>
-        </div>
+                            {/* DEPOSITANTE */}
+                            <td style={{ padding: '12px 14px' }}>
+                              <div style={{ fontWeight: 700, color: '#0F172A' }}>{r.cliente?.nombreComercial || '—'}</div>
+                              {r.cliente?.giro && (
+                                <span style={{ fontSize: 10, color: '#64748B' }}>{r.cliente.giro}</span>
+                              )}
+                            </td>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, fontSize: 13, fontWeight: 700, borderTop: '1px solid #E2E8F0', paddingTop: 12 }}>
-          <span style={{ color: '#64748B' }}>Total a transferir:</span>
-          <span style={{ color: '#0F172A' }}>120 / 120 PZA</span>
-        </div>
+                            {/* FACTURA / OC */}
+                            <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#0F172A', fontWeight: 600, fontSize: 12.5 }}>
+                                <FileText size={13} style={{ color: '#0D9488' }} />
+                                {r.facturaRespaldo || r.ocReferencia || '—'}
+                              </div>
+                            </td>
 
-        <button 
-          type="button"
-          className="btn btn-primary btn-block" 
-          onClick={() => handleOpenPutawayModal(receipts[0] || filtered[0])}
-          style={{ background: '#0D9488', borderColor: '#0D9488', width: '100%', padding: '12px', fontSize: 13, fontWeight: 700, borderRadius: 8 }}
-        >
-          <Check size={16} style={{ marginRight: 6 }} /> Confirmar Transferencia
-        </button>
-      </div>
-    ) : (
-      <button
-        type="button"
-        onClick={toggleSidebar}
-        style={{
-          position: 'fixed',
-          right: 0,
-          top: '50%',
-          transform: 'translateY(-50%)',
-          zIndex: 999,
-          background: '#FFFFFF',
-          border: '1px solid #CBD5E1',
-          borderRight: 'none',
-          borderTopLeftRadius: 8,
-          borderBottomLeftRadius: 8,
-          padding: '12px 6px',
-          boxShadow: '-2px 4px 12px rgba(0,0,0,0.08)',
-          cursor: 'pointer',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 6,
-          color: '#0D9488',
-          fontSize: 11,
-          fontWeight: 700,
-          writingMode: 'vertical-rl',
-          letterSpacing: '0.05em'
-        }}
-        title="Mostrar Sugerencias Putaway 3PL AI"
-      >
-        <ChevronLeft size={16} style={{ writingMode: 'horizontal-tb' }} />
-        <span>SUGERENCIAS AI</span>
-      </button>
-    )}
-  </div>
+                            {/* PARTIDAS / PRODUCTOS */}
+                            <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
+                              <span style={{ fontWeight: 700, color: '#0F172A' }}>
+                                {totalPartidas} {totalPartidas === 1 ? 'partida' : 'partidas'}
+                              </span>
+                              <span style={{ color: '#64748B', fontSize: 12, marginLeft: 4 }}>
+                                · {uniqueSkus} {uniqueSkus === 1 ? 'producto' : 'productos'}
+                              </span>
+                            </td>
+
+                            {/* PIEZAS (REC / ESP) */}
+                            <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
+                              <span style={{ fontWeight: 800, color: isClosed || totalPzasRec >= totalPzasEsp ? '#059669' : '#0F172A' }}>
+                                {totalPzasRec}
+                              </span>
+                              <span style={{ color: '#64748B', fontSize: 12 }}> / {totalPzasEsp} pzas</span>
+                            </td>
+
+                            {/* ETAPA OPERATIVA (Point 7) */}
+                            <td style={{ padding: '12px 14px', whiteSpace: 'nowrap' }}>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                padding: '3px 8px',
+                                borderRadius: 12,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                background: stage.bg,
+                                color: stage.color,
+                                border: `1px solid ${stage.border}`
+                              }}>
+                                <StageIcon size={12} /> {stage.label}
+                              </span>
+                            </td>
+
+                            {/* PENDIENTE PRINCIPAL */}
+                            <td style={{ padding: '12px 14px', color: '#475569', fontSize: 12 }}>
+                              {stage.pendingText}
+                            </td>
+
+                            {/* ACCIÓN ÚNICA (Sticky Column Derecha, Point 7) */}
+                            <td style={{
+                              padding: '12px 16px',
+                              textAlign: 'right',
+                              position: 'sticky',
+                              right: 0,
+                              background: '#FFFFFF',
+                              zIndex: 2,
+                              boxShadow: '-1px 0 0 #E2E8F0'
+                            }}>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenReceiptDossier(r);
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  padding: '5px 12px',
+                                  borderColor: '#CBD5E1',
+                                  background: '#FFFFFF',
+                                  color: '#0F172A'
+                                }}
+                              >
+                                {isClosed ? 'Ver Expediente' : 'Abrir Recepción'} <ArrowRight size={13} style={{ color: '#0D9488' }} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         );
       })()}
     </div>

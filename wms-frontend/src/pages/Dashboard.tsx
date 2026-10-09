@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   Package, Users, ClipboardList, AlertTriangle, TrendingUp,
-  ArrowDownLeft, ArrowUpRight, RefreshCw, BarChart3, Boxes
+  ArrowDownLeft, ArrowUpRight, RefreshCw, BarChart3, Boxes, CheckCircle2
 } from 'lucide-react';
 
 interface DashboardStats {
@@ -251,7 +251,9 @@ export function Dashboard() {
                 </div>
               </div>
             )) : (
-              <p style={{ color: 'var(--text-tertiary)', padding: 20, textAlign: 'center' }}>✅ Sin alertas pendientes</p>
+              <p style={{ color: 'var(--text-tertiary)', padding: 20, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <CheckCircle2 size={16} color="var(--emerald)" /> Sin alertas pendientes
+              </p>
             )}
           </div>
         </div>

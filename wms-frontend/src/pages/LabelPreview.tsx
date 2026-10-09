@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Tag, Printer, Copy, Search, RefreshCw, Layers, Building2, Package, CheckCircle, Filter } from 'lucide-react';
+import { Tag, Printer, Copy, Search, RefreshCw, Layers, Building2, Package, CheckCircle, Filter, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 
@@ -232,14 +232,17 @@ export function LabelPreview() {
 
   const activeLabel = filteredLabels[selectedLabelIdx] || filteredLabels[0] || null;
 
+  const [popupWarning, setPopupWarning] = useState(false);
+
   function handlePrint(copies = 1) {
     if (!activeLabel) return;
 
     const printWindow = window.open('', '_blank', 'width=650,height=750');
     if (!printWindow) {
-      alert('Por favor habilita las ventanas emergentes (popups) en tu navegador para imprimir la etiqueta.');
+      setPopupWarning(true);
       return;
     }
+    setPopupWarning(false);
 
     const pageSize = format === '4x2' ? '4in 2in' : format === '4x3' ? '4in 3in' : '4in 6in';
     const cardWidth = '3.8in';
@@ -410,6 +413,12 @@ export function LabelPreview() {
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Actualizar Inventario
         </button>
       </div>
+      {popupWarning && (
+        <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '12px 16px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#92400E', fontSize: 13 }}>
+          <span><strong>Ventanas emergentes bloqueadas:</strong> Por favor habilita los popups en la barra de tu navegador para que se abra la ventana de impresión térmica.</span>
+          <button type="button" onClick={() => setPopupWarning(false)} style={{ background: 'transparent', border: 'none', color: '#92400E', cursor: 'pointer', fontWeight: 700, marginLeft: 12, display: 'inline-flex', alignItems: 'center' }}><X size={14} /></button>
+        </div>
+      )}
 
       {/* STEP 1: Desplegable Completo de Depositantes */}
       <div className="card" style={{ marginBottom: 16, padding: '16px 20px' }}>
@@ -427,10 +436,10 @@ export function LabelPreview() {
           }}
           style={{ fontSize: 14, fontWeight: 700, padding: '10px 14px', borderRadius: 8 }}
         >
-          <option value="ALL">🏢 Todos los Depositantes ({labels.filter(l => l.cantidad > 0).length} tarimas en inventario)</option>
+          <option value="ALL">Todos los Depositantes ({labels.filter(l => l.cantidad > 0).length} tarimas en inventario)</option>
           {allClientesList.map(c => (
             <option key={c.nombre} value={c.nombre}>
-              📦 {c.nombre} — {c.count > 0 ? `${c.count} tarimas disponibles` : 'Sin inventario disponible en este momento'}
+              {c.nombre} — {c.count > 0 ? `${c.count} tarimas disponibles` : 'Sin inventario disponible en este momento'}
             </option>
           ))}
         </select>
@@ -453,7 +462,7 @@ export function LabelPreview() {
           >
             {activeSkus.length > 0 ? (
               <>
-                <option value="ALL">📦 Todos los productos con stock ({activeSkus.reduce((s, k) => s + k.count, 0)} HUs)</option>
+                <option value="ALL">Todos los productos con stock ({activeSkus.reduce((s, k) => s + k.count, 0)} HUs)</option>
                 {activeSkus.map(s => (
                   <option key={s.sku} value={s.sku}>
                     {s.sku} — {s.desc} ({s.count} HUs)
@@ -461,7 +470,7 @@ export function LabelPreview() {
                 ))}
               </>
             ) : (
-              <option value="ALL">⚠️ Este depositante no tiene productos con inventario</option>
+              <option value="ALL">Este depositante no tiene productos con inventario</option>
             )}
           </select>
 
@@ -500,7 +509,7 @@ export function LabelPreview() {
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                     <span style={{ fontWeight: 800, fontSize: 13, color: 'var(--primary)' }}>{l.huId}</span>
-                    <span className="badge badge-default" style={{ fontSize: 10, fontWeight: 700 }}>📍 {l.ubicacion}</span>
+                    <span className="badge badge-default" style={{ fontSize: 10, fontWeight: 700 }}>{l.ubicacion}</span>
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{l.sku} — {l.desc}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -613,7 +622,7 @@ export function LabelPreview() {
               </div>
             ) : (
               <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', alignSelf: 'center' }}>
-                <div>📦 Selecciona un depositante con inventario para visualizar sus etiquetas.</div>
+                <div>Selecciona un depositante con inventario para visualizar sus etiquetas.</div>
               </div>
             )}
           </div>

@@ -35,7 +35,7 @@ export class AuthController {
     const modulos = [...new Set(user.rol?.permisos?.map(p => p.modulo) || [])];
 
     const token = jwt.sign(
-      { userId: user.id, email: user.email, rol: user.rol?.nombre },
+      { userId: user.id, email: user.email, rol: user.rol?.nombre, clienteId: user.clienteId },
       JWT_SECRET,
       { expiresIn: '24h' },
     );
@@ -114,7 +114,7 @@ export class AuthController {
     const modulos = [...new Set(user.rol?.permisos?.map(p => p.modulo) || [])];
 
     const token = jwt.sign(
-      { userId: user.id, email: user.email, rol: user.rol?.nombre },
+      { userId: user.id, email: user.email, rol: user.rol?.nombre, clienteId: user.clienteId },
       JWT_SECRET,
       { expiresIn: '24h' },
     );

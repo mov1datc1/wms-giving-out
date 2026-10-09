@@ -45,6 +45,7 @@ export function CycleCount() {
   const [submitting, setSubmitting] = useState(false);
   const [msg, setMsg] = useState({ type: '', text: '' });
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Count phase (manual)
   const [activeCount, setActiveCount] = useState<any>(null);
@@ -88,27 +89,28 @@ function formatErrorMessage(err: any): string {
   if (!err) return 'Error de conexión desconocido';
   const msg = typeof err === 'string' ? err : (err.message || String(err));
   if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('fetch failed')) {
-    return '❌ No se pudo conectar con el servidor backend. Verifica que el servidor esté activo.';
+    return 'No se pudo conectar con el servidor backend. Verifica que el servidor esté activo.';
   }
   return msg;
 }
 
   async function handleDeleteCount(id: string) {
-    if (!confirm('¿Estás seguro de que deseas eliminar este conteo cíclico?')) return;
     try {
       const res = await fetch(`${API}/cycle-counts/${id}`, {
         method: 'DELETE',
         headers,
       });
       if (!res.ok) throw new Error((await res.json()).message || 'Error al eliminar');
-      setMsg({ type: 'success', text: '✅ Conteo cíclico eliminado correctamente' });
+      setMsg({ type: 'success', text: 'Conteo cíclico eliminado correctamente' });
       if (activeCount?.id === id) {
         setPhase('list');
         setActiveCount(null);
       }
+      setDeleteConfirmId(null);
       loadData();
     } catch (err: any) {
       setMsg({ type: 'error', text: formatErrorMessage(err) });
+      setDeleteConfirmId(null);
     }
   }
 
@@ -126,7 +128,7 @@ function formatErrorMessage(err: any): string {
       });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
       const result = await res.json();
-      setMsg({ type: 'success', text: `✅ Conteo ${result.codigo} creado con ${result.lineas?.length || 0} líneas` });
+      setMsg({ type: 'success', text: `Conteo ${result.codigo} creado con ${result.lineas?.length || 0} líneas` });
       loadData();
       setTimeout(() => { setPhase('list'); setMsg({ type: '', text: '' }); }, 2000);
     } catch (err: any) { setMsg({ type: 'error', text: formatErrorMessage(err) }); }
@@ -164,7 +166,7 @@ function formatErrorMessage(err: any): string {
     );
 
     if (!line) {
-      setScanError(`❌ SKU "${code}" no encontrado en este conteo`);
+      setScanError(`SKU "${code}" no encontrado en este conteo`);
       playBeep(false);
       vibrate(300);
       setTimeout(() => setScanError(''), 3000);
@@ -213,7 +215,7 @@ function formatErrorMessage(err: any): string {
         body: JSON.stringify({ lineas, usuario: user?.email }),
       });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
-      setMsg({ type: 'success', text: '✅ Conteo físico registrado. Revisa las diferencias.' });
+      setMsg({ type: 'success', text: 'Conteo físico registrado. Revisa las diferencias.' });
       const ccRes = await fetch(`${API}/cycle-counts`, { headers });
       if (ccRes.ok) {
         const all = await ccRes.json();
@@ -238,7 +240,7 @@ function formatErrorMessage(err: any): string {
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
       const result = await res.json();
       setShowConfirmModal(false);
-      setMsg({ type: 'success', text: `✅ ${result.message}` });
+      setMsg({ type: 'success', text: result.message });
       loadData();
       setTimeout(() => { setPhase('list'); setActiveCount(null); setMsg({ type: '', text: '' }); }, 3000);
     } catch (err: any) {
@@ -277,7 +279,7 @@ function formatErrorMessage(err: any): string {
             <div style={{ fontSize: 12, opacity: 0.8 }}>{activeCount.nombre}</div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-sm btn-ghost" style={{ color: 'white', borderColor: 'rgba(255,255,255,0.3)' }} onClick={() => { setPhase('list'); setActiveCount(null); }}>✕</button>
+            <button className="btn btn-sm btn-ghost" style={{ color: 'white', borderColor: 'rgba(255,255,255,0.3)' }} onClick={() => { setPhase('list'); setActiveCount(null); }}><X size={14} /></button>
           </div>
         </div>
 
@@ -310,7 +312,7 @@ function formatErrorMessage(err: any): string {
         {/* Last scan result */}
         {lastScan && (
           <div className="scan-result scan-result-success">
-            <div className="scan-result-icon">✅</div>
+            <div className="scan-result-icon"><CheckCircle size={24} color="var(--emerald)" /></div>
             <div className="scan-result-info">
               <div className="scan-result-sku">{lastScan.sku}</div>
               <div className="scan-result-desc">{lastScan.desc}</div>
@@ -384,7 +386,7 @@ function formatErrorMessage(err: any): string {
             Modo Manual
           </button>
           <button className="btn btn-primary" style={{ flex: 2 }} onClick={savePhysicalCounts} disabled={submitting}>
-            {submitting ? 'Guardando...' : `✅ Finalizar Escaneo (${totalScans} scans)`}
+            {submitting ? 'Guardando...' : `Finalizar Escaneo (${totalScans} scans)`}
           </button>
         </div>
       </div>
@@ -431,7 +433,7 @@ function formatErrorMessage(err: any): string {
                   <option value="">-- Selecciona la zona del almacén --</option>
                   {zones.map(z => (
                     <option key={z.id} value={z.id}>
-                      📍 {z.codigo} — {z.nombre} ({z._count?.locations || 0} ubicaciones)
+                      {z.codigo} — {z.nombre} ({z._count?.locations || 0} ubicaciones)
                     </option>
                   ))}
                 </select>
@@ -445,7 +447,7 @@ function formatErrorMessage(err: any): string {
                   <option value="">-- Selecciona la posición / rack --</option>
                   {locations.map(loc => (
                     <option key={loc.id} value={loc.id}>
-                      📌 {loc.codigo} — Zona: {loc.zona?.codigo || 'General'}
+                      {loc.codigo} — Zona: {loc.zona?.codigo || 'General'}
                     </option>
                   ))}
                 </select>
@@ -459,7 +461,7 @@ function formatErrorMessage(err: any): string {
                   <option value="">-- Todos los SKUs con inventario activo --</option>
                   {skus.map(s => (
                     <option key={s.id} value={s.id}>
-                      📦 {s.codigo} — {s.descripcion}
+                      {s.codigo} — {s.descripcion}
                     </option>
                   ))}
                 </select>
@@ -486,22 +488,22 @@ function formatErrorMessage(err: any): string {
             <div style={{ padding: '12px 16px', background: 'var(--info-soft)', borderRadius: 8, fontSize: 13, color: 'var(--info)', border: '1px solid rgba(14,165,233,0.2)', marginBottom: 16 }}>
               {createForm.tipo === 'ZONA' && (
                 <>
-                  ℹ️ <strong>Conteo por Zona:</strong> Se generarán automáticamente las líneas para todos los productos en stock dentro de la {selectedZone ? <strong>Zona {selectedZone.codigo} ({selectedZone.nombre})</strong> : 'zona seleccionada'}.
+                  <strong>Conteo por Zona:</strong> Se generarán automáticamente las líneas para todos los productos en stock dentro de la {selectedZone ? <strong>Zona {selectedZone.codigo} ({selectedZone.nombre})</strong> : 'zona seleccionada'}.
                 </>
               )}
               {createForm.tipo === 'UBICACION' && (
                 <>
-                  ℹ️ <strong>Conteo por Ubicación:</strong> Se generará la orden de conteo únicamente para la posición {selectedLoc ? <strong>{selectedLoc.codigo}</strong> : 'seleccionada'}.
+                  <strong>Conteo por Ubicación:</strong> Se generará la orden de conteo únicamente para la posición {selectedLoc ? <strong>{selectedLoc.codigo}</strong> : 'seleccionada'}.
                 </>
               )}
               {createForm.tipo === 'SKU' && (
                 <>
-                  ℹ️ <strong>Conteo por SKU:</strong> Se generará el conteo en todo el almacén enfocado en {selectedSkuObj ? <strong>{selectedSkuObj.codigo} ({selectedSkuObj.descripcion})</strong> : 'los SKUs activos'}.
+                  <strong>Conteo por SKU:</strong> Se generará el conteo en todo el almacén enfocado en {selectedSkuObj ? <strong>{selectedSkuObj.codigo} ({selectedSkuObj.descripcion})</strong> : 'los SKUs activos'}.
                 </>
               )}
               {createForm.tipo === 'COMPLETO' && (
                 <>
-                  ℹ️ <strong>Conteo Completo:</strong> Se incluirá la totalidad de zonas, racks y estantes con inventario activo (calidad LIBERADO).
+                  <strong>Conteo Completo:</strong> Se incluirá la totalidad de zonas, racks y estantes con inventario activo (calidad LIBERADO).
                 </>
               )}
             </div>
@@ -592,12 +594,12 @@ function formatErrorMessage(err: any): string {
           <div><h1 className="page-title">Revisión — {activeCount.codigo}</h1><p className="page-subtitle">{totalDiffs} diferencias encontradas · Revisa antes de aplicar ajustes</p></div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" onClick={() => { setPhase('list'); setActiveCount(null); }}>Volver</button>
-            <button className="btn btn-ghost" style={{ color: 'var(--danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => handleDeleteCount(activeCount.id)} title="Eliminar conteo cíclico">
+            <button className="btn btn-ghost" style={{ color: 'var(--danger)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={() => setDeleteConfirmId(activeCount.id)} title="Eliminar conteo cíclico">
               <Trash2 size={16} /> Eliminar
             </button>
             <button className="btn btn-warning" onClick={() => startCounting(activeCount, 'manual')}>Re-contar</button>
             <button className="btn btn-success" onClick={() => setShowConfirmModal(true)} disabled={submitting}>
-              {submitting ? 'Aplicando...' : '✅ Finalizar y Ajustar Inventario'}
+              {submitting ? 'Aplicando...' : 'Finalizar y Ajustar Inventario'}
             </button>
           </div>
         </div>
@@ -647,7 +649,7 @@ function formatErrorMessage(err: any): string {
           </div>
         </div>
         <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--warning-soft)', borderRadius: 8, fontSize: 13, color: 'var(--warning)', border: '1px solid rgba(245,158,11,0.2)' }}>
-          ⚠️ Al finalizar, las diferencias se aplicarán directamente al inventario real: sobrantes se sumarán, faltantes se restarán, y se crearán movimientos de ajuste.
+          Al finalizar, las diferencias se aplicarán directamente al inventario real: sobrantes se sumarán, faltantes se restarán, y se crearán movimientos de ajuste.
         </div>
 
         {/* MODAL CONFIRMAR FINALIZAR CONTEO CÍCLICO */}
@@ -707,7 +709,7 @@ function formatErrorMessage(err: any): string {
                   color: 'var(--text-primary)',
                   lineHeight: 1.5
                 }}>
-                  <strong>⚠️ Acción de ajuste de inventario:</strong><br />
+                  <strong>Acción de ajuste de inventario:</strong><br />
                   Se aplicarán los conteos físicos registrados directamente al stock real. Sobrantes se agregarán y faltantes se descontarán.
                 </div>
 
@@ -822,11 +824,11 @@ function formatErrorMessage(err: any): string {
                       </div>
                       <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>{cc.nombre}</div>
                       <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
-                        <span>📅 {new Date(cc.fechaProgramada).toLocaleDateString('es-MX')}</span>
-                        <span>📦 {totalLineas} líneas</span>
-                        {cc.asignadoA && <span>👤 {cc.asignadoA}</span>}
-                        {totalDiffs > 0 && <span style={{ color: 'var(--danger)', fontWeight: 600 }}>⚠ {totalDiffs} diferencias</span>}
-                        {cc.fechaCierre && <span>✅ Cerrado: {new Date(cc.fechaCierre).toLocaleDateString('es-MX')}</span>}
+                        <span>{new Date(cc.fechaProgramada).toLocaleDateString('es-MX')}</span>
+                        <span>{totalLineas} líneas</span>
+                        {cc.asignadoA && <span>{cc.asignadoA}</span>}
+                        {totalDiffs > 0 && <span style={{ color: 'var(--danger)', fontWeight: 600 }}>{totalDiffs} diferencias</span>}
+                        {cc.fechaCierre && <span>Cerrado: {new Date(cc.fechaCierre).toLocaleDateString('es-MX')}</span>}
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -837,7 +839,7 @@ function formatErrorMessage(err: any): string {
                         </>
                       )}
                       {cc.estado === 'EN_PROGRESO' && <button className="btn btn-sm btn-warning" onClick={() => { setActiveCount(cc); setPhase('review'); setMsg({ type: '', text: '' }); }}>Revisar</button>}
-                      <button className="btn btn-ghost btn-sm" onClick={() => handleDeleteCount(cc.id)} title="Eliminar conteo" style={{ color: 'var(--danger)' }}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmId(cc.id)} title="Eliminar conteo" style={{ color: 'var(--danger)' }}>
                         <Trash2 size={14} />
                       </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setExpanded(expanded === cc.id ? null : cc.id)}>
@@ -869,6 +871,24 @@ function formatErrorMessage(err: any): string {
             );
           })}
           {filtered.length === 0 && <div className="card"><div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>Sin conteos cíclicos. Crea uno para verificar tu inventario.</div></div>}
+        </div>
+      )}
+
+      {deleteConfirmId && (
+        <div className="modal-overlay" onClick={() => setDeleteConfirmId(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Confirmar Eliminación</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmId(null)}><X size={16} /></button>
+            </div>
+            <div className="modal-body" style={{ padding: '16px 0', fontSize: 14, color: 'var(--text-secondary)' }}>
+              ¿Estás seguro de que deseas eliminar este conteo cíclico? Esta acción no se puede deshacer.
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button className="btn btn-secondary" onClick={() => setDeleteConfirmId(null)}>Cancelar</button>
+              <button className="btn btn-danger" onClick={() => handleDeleteCount(deleteConfirmId)}>Eliminar Conteo</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

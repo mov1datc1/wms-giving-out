@@ -41,7 +41,7 @@ export function Suppliers() {
     try {
       const res = await fetch(`${API}/suppliers`, { method: 'POST', headers, body: JSON.stringify(form) });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
-      setFormMsg({ type: 'success', text: '✅ Proveedor creado' });
+      setFormMsg({ type: 'success', text: 'Proveedor creado exitosamente' });
       setForm({ nombre: '', codigo: '', rfc: '', telefono: '', email: '', contacto: '' });
       loadData();
       setTimeout(() => { setShowForm(false); setFormMsg({ type: '', text: '' }); }, 2000);

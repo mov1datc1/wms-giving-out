@@ -4,6 +4,763 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.11] — 2026-10-07
+
+### 🏷️ Corrección Estructural de Etapa 4 (Etiquetas/Doble Etiquetado), Generador General de Correlativos HU y Normalización Oficial
+
+- **1. Corrección Estructural en Cálculo Físico de Doble Etiquetado (`DualLabelModal.tsx`):**
+  - Se erradicó la omisión de cajas sanas conciliadas en andén cuando existen HUs reacondicionadas de Control de Calidad (ej. en VAL1 con 4 cajas sanas + 1 reacondicionada de 10 piezas = 5 conformes).
+  - El desglose físico por partida ahora se construye formalmente a partir de la conciliación persistida en `ReceiptLine` (`cantidadRecibida`, `cantidadDanada`) contrastada con las HUs activas preexistentes de Calidad.
+  - Distinción estricta de los 4 estados físicos por partida:
+    * *Cajas sanas nuevas por materializar:* calculadas como `Math.max(0, cajasSanasAnden - cajasSanasExistentes)`.
+    * *HUs conformes/reacondicionadas de Calidad:* stock activo preexistente que conserva su ID y código único (`BOX-...-0002`).
+    * *HUs dañadas originales:* registros históricos/inactivos (`estadoHu: 'INACTIVO'`) que no generan stock operativo ni etiqueta de tarima.
+    * *Cajas faltantes confirmadas:* no generan HU ni etiqueta física (evitando bultos fantasmas).
+  - Eliminado el prefijo negativo en la columna "Cajas faltantes": ahora muestra el valor absoluto positivo `1 (Sin etiqueta)` en lugar de `-1 (Sin etiqueta)`.
+  - El texto de instrucción superior ahora es reactivo a `isCalidadCompletada`: explica que las HUs dañadas históricas no generan etiqueta operativa y que las HUs reacondicionadas conservan su identidad en la tarima.
+  - El badge de Rampa y el botón de acción reflejan fielmente las cajas nuevas a crear versus el total físico activo: ej. `Generar Doble Etiquetado (13 Cajas Nuevas · 14 Físicas Activas)`.
+
+- **2. Blindaje de Backend e Idempotencia en Generación (`operations.controller.ts`):**
+  - Eliminada la sobreescritura destructiva que ejecutaba `ReceiptLine.update({ cantidadRecibida: cajasConformes * piezasPorCaja })`, protegiendo la integridad de las cantidades recibidas reales (ej. 58 piezas con empaque de 12).
+  - Se eliminó la creación de cajas dañadas artificiales en la Tarima Master; las mermas de Calidad permanecen segregadas fuera de la tarima operativa.
+  - Generación de 1 Tarima Master (`PLT-REC-...-01`) vinculando todas las cajas hijas conformes (`parentHuId = pallet.id`).
+  - Total idempotencia: reintentar la generación cuando las tarimas ya existen retorna las HUs y la tarima existentes (`yaGeneradas: true`) sin duplicar registros.
+  - Cero disponibilidad comercial de inventario en racks antes de Putaway (ubicación fija en `RAMPA_RECEPCION`).
+
+- **3. Corrección General de la Regla de Correlativos para Handling Units:**
+  - Corregida la expresión regular `/BOX-[^-]+-(\d+)/i` que capturaba erróneamente el año del folio (ej. `2026` de `REC-2026-0012`) generando correlativos anómalos `2027..2039`.
+  - Implementada extracción estricta basada en el prefijo de la recepción (`prefix = BOX-${receipt.codigo}-`), garantizando para todas las recepciones actuales y futuras la secuencia oficial continua `0001`, `0002`, `0003`, ..., `0015`.
+
+- **4. Normalización Transaccional de REC-2026-0012 al Estándar Oficial:**
+  - Renumeradas transaccionalmente las 13 HUs nuevas generadas hacia el rango oficial `BOX-REC-2026-0012-0003` hasta `BOX-REC-2026-0012-0015`.
+  - Preservados 100% intactos los IDs internos de BD, relaciones a `ReceiptLine`, cantidades, lotes, fechas de vencimiento y pertenencia a `PLT-REC-2026-0012-01`.
+  - Preservadas intactas `BOX-REC-2026-0012-0001-DANO` (inactiva) y `BOX-REC-2026-0012-0002` (reacondicionada, 10 pzas).
+  - Registrado evento formal de auditoría en `AuditLog` (`NORMALIZACION_CORRELATIVOS_HU`).
+  - Validación completa de los 9 puntos de integridad: 14 cajas activas en tarima (198 pzas), 1 dañada histórica, rango 0002..0015 sin duplicados, distribución exacta (5 VAL2 / 5 VAL1 / 4 VAL3), 0 racks y reintento 100% idempotente.
+
+## [1.9.10] — 2026-10-07
+
+### ⚖️ Remediación General de Balances Recepción → Calidad, Desacoplamiento de Andén y Cuadre de Expediente
+
+- **1. Erradicación del Falso Faltante de 208 Piezas en Expediente:**
+  - En `Receiving.tsx`, se corrigió la lógica de agregación del expediente que convertía automáticamente las partidas no contadas en "faltantes confirmados" tras el dictamen parcial de una caja dañada.
+  - Se desacoplaron matemáticamente los 5 estados del balance:
+    * *Conteo Exterior en Rampa:* 15 bultos declarados, 14 recibidos, 1 bulto con daño exterior, 1 bulto faltante en descarga.
+    * *Dictamen de Calidad Parcial:* 12 piezas inspeccionadas (10 rescatadas en caja reacondicionada + 2 piezas de merma dictaminada).
+    * *Mercancía en Andén Pendiente de Clasificación:* 208 piezas correspondientes a los 13 bultos sanos recibidos aún no abiertos ni contados por partida. Se muestran explícitamente como "Pendiente de conteo en andén", nunca como 0 ni como faltantes confirmados.
+    * *Faltantes Confirmados:* 0 piezas (los faltantes solo se confirman al conciliar formalmente cada partida o al sellar el cierre).
+    * *Disponibilidad de Inventario:* 0 piezas disponibles para pedidos comerciales o picking antes del guardado y confirmación física en racks (Putaway).
+- **2. Siguiente Acción Coherente en el Expediente:**
+  - En `computeReceiptStage`, cuando la inspección de calidad de cajas dañadas está completada pero restan partidas sin clasificar en andén, la tarjeta de siguiente acción guía al operador a: `Clasificar y verificar mercancía en andén` con el botón `Verificar Partidas en Andén` (que dirige a la pestaña "Partidas y Balance"), evitando saltar indebidamente a etiquetas o cierre.
+- **3. Denominación Oficial de Merma Dictaminada:**
+  - En backend, `QualityInspectionModal.tsx`, `Receiving.tsx`, `DualLabelModal.tsx` y `ReceiptReportModal.tsx`, se separó formalmente la merma técnica de la destrucción física, utilizando el concepto oficial `Merma Dictaminada`.
+- **4. Estandarización de Cajas Rescatadas y Formato de Reportes:**
+  - Cajas parciales rearmadas muestran el identificador unificado `Parcial: 10 de 12 piezas · Reacondicionada` en encabezados, tablas de resumen y etiquetas.
+  - Tabla del reporte oficial de calidad calibrada con anchos de columna estrictos (`20%`, `12%`, `11%`, `6%`, `6%`, `6%`, `18%`, `21%`), saltos de línea forzados (`word-break: break-word`) y alineación superior para erradicar cualquier encimamiento de texto o códigos tanto en visualización de pantalla como en impresión PDF Carta.
+- **5. Control de Costeo 3PL sin Cargos Inventados:**
+  - En `QualityInspectionModal.tsx`, las horas de maquila inicializan estrictamente en `0.0` y la tarifa por hora lee la tarifa configurada del cliente (o `0.0` por defecto), asegurando que pruebas o inspecciones estándar no generen cobros ficticios.
+- **6. Blindaje de Botones y Prevención de Duplicados:**
+  - Se diferenciaron con precisión los botones de acción: `Dictaminar Solo Esta Caja` (unitario) y `Confirmar Dictamen y Armar Cajas Conformes` (lote completo), ambos blindados con bloqueo de reintentos (`disabled={submitting}`).
+- **7. Preservación Intacta de Registros de Producción:**
+  - Verificados e intactos en Supabase PostgreSQL: `REC-2026-0012` (AlimNorte, 14 recibidos, 1 dañado, dictamen `INSP-2026-0023` con 10 rescatadas y 2 merma, `BOX-REC-2026-0012-0001-DANO` inactiva, `BOX-REC-2026-0012-0002` activa con 10 pzas), `REC-2026-0009` (COMPLETO), `REC-2026-0011` (CERRADA) y `PED-2026-0007` (DISPATCHED).
+- **8. Suite de Pruebas Aisladas al 100%:**
+  - Ejecutada exitosamente en `scratch/test-isolated-calidad-matrix.js` con las 6 pruebas de la matriz validadas.
+
+## [1.9.9] — 2026-10-06
+
+### 🔬 Rediseño Estructural del Flujo Rampa → Calidad, Identificación Operativa de Bultos Dañados y Estandarización de UI
+
+- **1. Desacoplamiento del Conteo Exterior y Eliminación de HUs Ficticias en Rampa:**
+  - En `operations.controller.ts` (`POST /receipts/:id/rampa-arribo`), el registro de llegada a andén captura estrictamente el conteo físico global (`bultosDeclarados`, `bultosRecibidos`, `bultosDanados`, `diferenciaBultos`), sin inventar SKUs, lotes ni Unidades de Manejo (`HandlingUnit`) ficticias para bultos con daño o faltantes.
+  - La mercancía con daño exterior permanece en estado pendiente de clasificación física y no se confunde con merma definitiva antes de contar con un dictamen técnico formal.
+- **2. Nuevo Paso Operativo: Identificación Física de Bulto con Daño Exterior:**
+  - Implementado DTO `IdentifyDamagedBoxDto` en `previo.dto.ts`.
+  - Creado endpoint `POST /receipts/:id/identify-damaged-box` en `operations.controller.ts` que permite al personal de almacén inspeccionar físicamente la caja con daño exterior, vincularla con su partida correspondiente (`ReceiptLine`: SKU, lote, caducidad, capacidad de empaque) y registrar el motivo visible de daño.
+  - Genera una `HandlingUnit` con `tipoHu: 'CAJA'`, `estadoHu: 'RETENIDA'`, `ubicacionActual: 'AREA_CALIDAD'` y código correlativo seguro (ej. `HU-BX-0012-01-DANO`).
+  - Actualiza el saldo en la partida (`cantidadDanada`) y establece la recepción en `inspeccionCalidadEstado = 'EN_PROCESO'`.
+- **3. Consulta Dinámica y Persistencia en el Módulo de Calidad:**
+  - En `GET /receipts/:id/inspection-pending`, se calculan dinámicamente:
+    * `bultosDanadosDeclarados`: Bultos reportados con daño en Rampa.
+    * `totalPendingBoxes`: Cajas físicas identificadas en estado `RETENIDA` en `AREA_CALIDAD`.
+    * `processedBoxesCount`: Cajas dañadas originales que ya han sido dictaminadas (excluyendo cajas nuevas rearmadas).
+    * `unidentifiedDamagedCount`: Bultos dañados pendientes de clasificación física.
+    * `lineasDisponibles`: Catálogo de partidas con SKUs, lotes esperados, caducidades y capacidades por caja.
+  - El modal de Calidad (`QualityInspectionModal.tsx`) muestra el bloque reactivo **"Identificación Física de Bultos con Daño Exterior"** siempre que existan bultos declarados en rampa pendientes de vinculación.
+  - Persistencia garantizada: Una caja retenida no desaparece de Calidad por recargar la página, cambiar de pestaña, abrir modales o generar etiquetas; permanece visible hasta contar con un dictamen persistido en base de datos.
+- **4. Dictámenes Unitarios, Parciales y Trazabilidad Integral:**
+  - En `POST /receipts/:id/inspection/execute`, se añadió soporte para dictaminar cajas individuales o por lotes parciales mediante la acción "Dictaminar Solo Esta Caja".
+  - Validación matemática estricta: `piezasRescatadas + piezasMerma === piezasTotales`.
+  - La caja dañada original se desactiva (`estadoHu: 'INACTIVO'`, `reacondicionada: true`), se crean las nuevas cajas conformes vinculadas vía `cajaOrigenId`, y se registran asientos formales de kárdex en `InventoryMovement` (`MERMA_DESTRUCTIVA` y `REACONDICIONAMIENTO_MAQUILA`).
+  - El previo permanece en `EN_PROCESO` mientras existan cajas retenidas o bultos sin clasificar; avanza a `COMPLETADA` únicamente cuando la totalidad de las unidades ha sido dictaminada.
+- **5. Deduplicación en Etiquetado:**
+  - En `POST /receipts/:id/generate-labels`, se descuentan las piezas de cajas retenidas identificadas para evitar duplicación de unidades de manejo al generar tarimas y cajas conformes en etapas posteriores.
+- **6. Limpieza y Profesionalización de la UI para Presentación Ejecutiva:**
+  - En `QualityInspectionModal.tsx`, se erradicó la leyenda `Fase 2 (Sin emojis, trazabilidad completa)` sustituyéndola por: `Control de Calidad Giving Out WMS · Inspección Técnica y Trazabilidad Integral`.
+  - En `PutawayModal.tsx`, se sustituyeron referencias informales como `Regla Operativa de Alejandra`, `Fase 4 · Putaway` y `Candado de Seguridad: Fase 3 Requerida` por terminología corporativa estándar: `Protocolo de Flujo Operativo y Trazabilidad (Giving Out WMS)`, `Putaway / Ubicación` y `Candado Operativo: Etiquetado Requerido Antes de Ubicar`.
+  - En `DualLabelModal.tsx` y `Receiving.tsx`, se normalizaron los textos descriptivos y marcadores de tablas a estándares ejecutivos limpios.
+- **7. Suite de Pruebas Aisladas (100% Exitosa):**
+  - Implementada y ejecutada en `scratch/test-isolated-calidad-matrix.js`:
+    * *Prueba 1 (Sin daño):* Flujo limpio sin retención ni bultos pendientes.
+    * *Prueba 2 (1 caja dañada):* Identificación -> HU `RETENIDA` en `AREA_CALIDAD` -> Dictamen -> Rescate/Merma en kárdex -> `COMPLETADA`.
+    * *Prueba 3 (Varias cajas y dictamen parcial):* Dictamen unitario de Caja 1 -> estado `EN_PROCESO` -> Recarga y persistencia de Caja 2 -> Dictamen de Caja 2 -> `COMPLETADA`.
+    * *Prueba 4 (Multi-SKU y lotes distintos):* Vinculación y dictamen multi-partida con balance exacto.
+    * *Prueba 5 (Faltante + Daño simultáneos):* Sin generación de HUs para faltantes; solo el daño físico pasa a identificación y dictamen.
+    * *Prueba 6 (Invariantes históricas):* `REC-2026-0009` y `REC-2026-0011` intactas; `REC-2026-0012` preservada en `EN_PROCESO_CONTEO`, calidad `PENDIENTE` sin dictamen automático ni HUs falsas.
+
+## [1.9.8] — 2026-10-05
+
+### 🖨️ Corrección Integral de Impresión con Anexos, Paginación Real en Navegador y Ajustes de Formato
+
+- **1. Desacoplamiento de Impresión mediante Portal (`createPortal`) y Paginación Completa:**
+  - En `ReceiptReportModal.tsx`, se migró el renderizado del modal a `createPortal(modalContent, document.body)`.
+  - Bajo `@media print`, se oculta de raíz el árbol `#root` de React (`body > #root { display: none !important; }`), erradicando las restricciones de `overflow-y: auto`, `max-height: 94vh` y contenedores con scroll que forzaban a los navegadores basados en Chromium/WebKit a recortar la impresión a 1 sola página.
+  - Reglas de salto de página estrictas: `.report-main-page { page-break-after: always; }` y `.annex-page { page-break-before: always; }`, permitiendo que el reporte principal y cada anexo activo se impriman en hojas Carta continuas sin desbordes ni filas cortadas.
+- **2. Ajuste de Anchos y Prevención de Truncamiento:**
+  - Campos de transporte, placas de unidad (`TEST-001`), operador y responsable de cierre configurados con saltos de línea permitidos (`word-break: break-word`) y anchos proporcionales.
+  - Tabla del Anexo A reestructurada con `table-layout: fixed; width: 100%` y anchos porcentuales estrictos, garantizando que código HU, condición, SKU, saldos y estatus se muestren sin desborde horizontal.
+- **3. Formato Limpio de Impresión:**
+  - Eliminadas sombras (`box-shadow: none`), bordes de ventana y fondos grises en medios impresos.
+  - Encabezados de tabla contrastados (`#0F172A`, `#1E293B`, `#334155`), tipografía unificada y márgenes uniformes de 10mm.
+- **4. Numeración Dinámica Real y Selección de Anexos:**
+  - El botón "Reporte Principal (1 pág)" fue renombrado a **"Reporte principal"**.
+  - Numeración reactiva calculada según los anexos efectivamente seleccionados: `Hoja X de Y` (1 de 1 para Principal solo; 1 de 4, 2 de 4, 3 de 4, 4 de 4 con todos los anexos; y 1 de 3, 2 de 3, 3 de 3 al desmarcar el Anexo B).
+- **5. Merma Dictaminada vs Destrucción:**
+  - En el Anexo B, se sustituyó "Destrucción registrada" por **"Merma dictaminada (2 piezas no aptas por daño físico)"**, reflejando la realidad operativa sin afirmar destrucciones no certificadas.
+- **6. Caja Histórica Inactiva por Reacondicionamiento:**
+  - Sustituida la etiqueta "1 inactiva/merma" por **"1 caja histórica inactiva por reacondicionamiento (10 rescatadas, 2 merma)"**, reflejando que de las 12 piezas originales se rescataron 10 y 2 fueron merma.
+- **7. Cantidades Históricas vs Saldo Actual en Anexo A:**
+  - Las cajas despachadas muestran de forma explícita: `0 pz en almacén (Salida: 12 pz despachadas en PED-2026-0007)` y estatus textual `DESPACHADA (Salida)`, sin depender únicamente del color.
+  - Se mantiene la distinción entre contenido original del bulto y existencia física en almacén.
+- **8. Verificación de Origen de Datos:**
+  - Factura y OC: Si no se capturó orden de compra o es idéntica a la factura, se despliega `—` sin sustituirla.
+  - Horas maquila: Despliega "No registrado" cuando el valor es 0 o nulo.
+  - Responsable del cierre: Despliega el nombre real `Jonathan Palacios`, con correo `admin@givingout.mx` como dato secundario.
+  - Firma de cierre: Se presenta la acreditación del finiquito operativo de sistema sin clonar la firma de rampa del chofer.
+- **9. Verificación en Aplicación Real con Navegador Edge:**
+  - Se ejecutaron pruebas reales sobre la interfaz web con Microsoft Edge automatizado disparando los botones oficiales:
+    * `C:\Users\Mariana\Downloads\Reporte_Cierre_REC-2026-0011_Principal_App.pdf` (1 página)
+    * `C:\Users\Mariana\Downloads\Reporte_Cierre_REC-2026-0011_Con_Anexos_App.pdf` (4 páginas completas)
+    * `C:\Users\Mariana\Downloads\Reporte_Cierre_REC-2026-0011_Anexos_A_y_C_App.pdf` (3 páginas, excluyendo Anexo B)
+    * `C:\Users\Mariana\Downloads\Reporte_Cierre_REC-2026-0009_Principal_App.pdf` (1 página, sin cruce de datos)
+    * `C:\Users\Mariana\Downloads\Reporte_Cierre_REC-2026-0003_Textil_App.pdf` (1 página, formato textil multirrenglón)
+
+## [1.9.7] — 2026-10-05
+
+### 📄 Rediseño de Alta Densidad del Reporte de Recepción (Hoja Carta) y Separación de Anexos
+
+- **1. Rediseño Ejecutivo del Reporte Principal (1 Hoja Carta):**
+  - En `ReceiptReportModal.tsx`, se reestructuró la plantilla hacia un diseño corporativo limpio de alta densidad inspirado en la referencia operativa de Alejandra:
+    * Fondo blanco (`#FFFFFF`), texto negro de alto contraste (`#111827`), líneas divisorias delgadas (`1px solid #D1D5DB`) y encabezados sutiles (`#F8FAFC`).
+    * Erradicadas las tarjetas de colores saturados, textos técnicos redundantes y elementos decorativos innecesarios. Cero emojis genéricos.
+    * Para recepciones estándar como `REC-2026-0011` (3 partidas), el acta de cierre principal cabe holgadamente en **1 sola página Carta** con tipografía nítida y legible.
+    * Para recepciones con múltiples partidas, el flujo permite saltos de página naturales con encabezados de tabla repetidos (`thead { display: table-header-group }`) sin cortar columnas ni firmas.
+
+- **2. Separación Jerárquica de Anexos Opcionales:**
+  - El **Reporte Principal** se enfoca exclusivamente en el acta legal de finiquito e ingreso a inventario al momento del cierre.
+  - Se estructuraron tres **Anexos Opcionales** separados mediante saltos de página forzados:
+    * **Anexo A:** Manifiesto detallado de Cajas y Tarimas (HUs) con trazabilidad de empaque y ubicación.
+    * **Anexo B:** Bitácora técnica de inspección y rescate de calidad (`INSP-2026-0002`).
+    * **Anexo C:** Trazabilidad de salidas posteriores (`PED-2026-0007`) y balance de existencia física actual en racks (con fecha/hora de consulta).
+  - Controles en pantalla: Selector de vista (*Reporte Principal* vs *Con Anexos*) y botones independientes de impresión (*Imprimir Principal (1 pág)* e *Imprimir con Anexos*).
+
+- **3. Corrección del Conteo y Descripción de la Tarima Master:**
+  - Corregida la descripción que indicaba erróneamente "15 cajas recibidas en andén".
+  - En `ReceiptReportModal.tsx` y `Receiving.tsx`, se aclara explícitamente:
+    * **Bultos recibidos en andén:** 14 bultos.
+    * **Cajas resultantes conformes al cierre:** 14 cajas.
+    * **Registros históricos de cajas:** 15 (14 activas/despachadas + 1 inactiva de reacondicionamiento).
+    * **Cajas actualmente en almacén:** 11 activas en racks (3 despachadas).
+  - La tarima master (`PLT-REC-2026-0011-01`) se tipifica como contenedor logístico y no duplica las piezas de sus cajas contenidas.
+
+- **4. Folio Legible en Cajas Reacondicionadas (Erradicación de UUIDs):**
+  - En `operations.controller.ts` y en los componentes visuales, el campo `cajaOrigenId` se enriquece relacionalmente con `cajaOrigenCodigo`.
+  - La caja rescatada `BOX-REC-2026-0011-0015` muestra de forma legible su origen: `Rescate de BOX-REC-2026-0011-0005-DANO` en lugar del identificador UUID técnico.
+
+- **5. Claridad Terminológica en Rampa:**
+  - Se modificó la etiqueta de rampa a **"Bultos sin daño exterior"** (13 bultos), eliminando la confusión con las 14 cajas conformes resultantes al cierre tras el rescate técnico.
+
+- **6. Firmas y Responsabilidades Reales:**
+  - Acreditación formal de cada evento:
+    * **Chofer:** Acredita exclusivamente la entrega física y el estado exterior en rampa.
+    * **Calidad:** Si existe firma manuscrita/digital se despliega; si solo existe el dictamen en base de datos, se presenta formalmente como `DICTAMEN TÉCNICO REGISTRADO (Folio INSP-...)` sin inventar firmas simuladas.
+    * **Almacén:** Acredita la conformidad del finiquito y el ingreso formal a inventario WMS.
+
+- **7. Generación de Muestras PDF Verificadas:**
+  - Generados mediante renderizado headless de alta precisión:
+    * `Reporte_Cierre_REC-2026-0011_Principal.pdf` (Exactamente 1 página Carta).
+    * `Reporte_Cierre_REC-2026-0011_Con_Anexos.pdf` (3 páginas completas con encabezados repetidos).
+    * `Reporte_Cierre_REC-2026-0009_Principal.pdf` (1 página Carta sin discrepancias).
+    * `Reporte_Devolucion_Muestra.pdf` (1 página Carta con datos de sucursal, motivo y guía).
+    * `Reporte_MultiPagina_Textil_REC-2026-0003.pdf` (Recepción con 9 partidas textiles).
+
+## [1.9.6] — 2026-10-05
+
+### 🏆 Corrección Integral de Integridad de Reportes, Balances Históricos, Caja Cerrada y Formato Giving Out
+
+- **1. Erradicación Total de Cruce de Datos entre Recepciones:**
+  - En `ReceiptReportModal.tsx` y `operations.controller.ts`, se eliminaron todos los fallbacks numéricos y literales quemados (`44`, `42`, `2`, `PLT-REC-2026-0009-01`, `INSP-2026-0001`, `BOX-REC-2026-0009-0002-DANO`, etc.).
+  - Los datos desplegados pertenecen estrictamente al `receiptId` y depositante consultados.
+  - Bultos y piezas faltantes se calculan y muestran con exactitud (p. ej. Arroz: 20 piezas faltantes / 1 bulto faltante físico en rampa).
+  - El estatus de conciliación solo muestra *"Conciliado 100%"* si no existen diferencias; de lo contrario muestra *"Finiquitado con Reservas"*.
+
+- **2. Desacoplamiento de Balance Histórico de Cierre vs Existencia Actual en Racks:**
+  - Se separaron claramente en el reporte y en la vista operativa:
+    * **Balance Histórico al Cierre:** 220 esperadas = 200 recibidas en andén + 20 faltantes; 200 recibidas = 198 conformes + 2 merma; 198 conformes = 154 actuales en racks + 44 despachadas en pedidos posteriores (`PED-2026-0007`).
+    * **Existencia Actual en Racks:** Tarjeta diferenciada con fecha/hora de consulta, detallando 154 piezas en 11 cajas activas vs 44 piezas en 3 cajas despachadas.
+  - La tarima master (`PLT-REC-2026-0011-01`) se tipifica como contenedor y no se duplican sus piezas con las cajas contenidas.
+
+- **3. Formato Unificado Giving Out y Adaptación Automática:**
+  - Erradicada cualquier mención o logotipo de PROVA y el selector de plantillas; identidad exclusiva de Giving Out WMS.
+  - El reporte detecta automáticamente el `tipoRecepcion` (`NORMAL` vs `DEVOLUCION`): en devoluciones se despliegan dinámicamente los campos de sucursal/origen, motivo y guía de retorno; en recepciones normales se mantiene la estructura estándar. Sin toggle manual en el visor.
+
+- **4. Trazabilidad de Firmas, Fechas y Responsabilidad:**
+  - La firma de rampa acredita únicamente la entrega física del chofer y revisión exterior de bultos; no se transfiere indebidamente al dictamen de calidad.
+  - Firma de calidad solo se presenta si existió inspección técnica registrada.
+  - Fechas operativas diferenciadas (arribo, liberación de rampa, inspección y cierre). Fechas de caducidad formateadas en fecha calendario sin desfases de huso horario.
+  - Clasificación de *"Faltante en recepción"* sin imputar culpa arbitraria al proveedor.
+
+- **5. Cajas Parciales, Rescate y Registros Históricos:**
+  - Factor de empaque dinámico: `BOX-REC-2026-0011-0015` obtiene la capacidad desde el SKU (`sku.capacidadEmpaque` = 12), mostrando *"Parcial: 10 de 12 piezas · Reacondicionada"*, sin valores fijos en el código.
+  - Caja dañada original (`BOX-REC-2026-0011-0005-DANO`): saldo actual 0 pz, histórico 12 pz (10 rescatadas, 2 merma), inactiva, clasificada como *"Dañado / Retenido Andén (Histórico)"* y etiqueta *"COLOCADA (Histórico)"*.
+  - En resúmenes y tooltips se aclara que los 15 registros corresponden a 11 activos, 3 despachados y 1 histórico de reacondicionamiento.
+
+- **6. Blindaje de Regla de Caja Cerrada en Backend:**
+  - Para clientes con política `CAJA_CERRADA` (p. ej. AlimNorte), la disponibilidad distingue 154 piezas físicas libres vs 144 piezas elegibles para pedidos de caja cerrada (excluyendo la parcial de 10 pz).
+  - En `createOrder`, la validación de inventario opera de forma transaccional atómica: si un pedido exige romper cajas cerradas o no alcanza unidades en cajas estándar, se rechaza de inmediato con error descriptivo y rollback total (0 reservas huérfanas).
+  - Permite cajas reacondicionadas siempre que cumplan con la capacidad estándar completa.
+
+- **7. Pulido Visual y Multi-página en Reportes:**
+  - Encabezados de tabla con sticky headers e identificación de fila fija.
+  - Grid de etapas operativas con ancho responsivo (`minmax(170px, 1fr)`) y auto-wrap, erradicando textos cortados.
+  - Estilos de impresión `@media print` para saltos de página limpios y sin firmas recortadas.
+  - Erradicación total de emojis genéricos y diálogos `window.alert` en favor de componentes SVG vectoriales de Lucide React.
+
+- **8. Preservación Estricta de Datos:**
+  - Registros `REC-2026-0009`, `REC-2026-0011` y `PED-2026-0007` preservados intactos con toda su integridad referencial, HUs y auditorías.
+  - Suite de validación exhaustiva automatizada: **70/70 pruebas superadas al 100%**.
+
+## [1.9.5] — 2026-10-03
+
+### 🎯 Corrección de Filtrado Reactivo por Etapas Operativas en Recepción
+
+- **Desacoplamiento del Buscador de Texto e Integración de Etapas:**
+  - En `Receiving.tsx`, se eliminó la condición residual de estatus del helper de búsqueda por texto (`filtered = receipts.filter(...)`) que comparaba de forma obsoleta `rMeta.key === filterEstado`. Dicha condición vaciaba la lista antes de que las recepciones llegaran a la tabla cuando se seleccionaba cualquier etapa operativa.
+  - `stageFiltered` ahora filtra reactivamente y sin interferencias según la etapa calculada de las 6 fases del WMS:
+    * `Todas`: 11 recepciones totales.
+    * `Rampa`: 6 recepciones en andén pendientes de acta y liberación de chofer.
+    * `Calidad`: Recepciones retenidas por daño exterior con inspección técnica pendiente.
+    * `Etiquetas`: Recepciones pendientes de confirmación de etiquetas HU y tarima QR Master.
+    * `Ubicación`: Recepciones pendientes de putaway en racks.
+    * `Por cerrar`: 1 recepción alojada y lista para finiquito (`REC-2026-0009`).
+    * `Cerradas`: 4 recepciones finiquitadas e inmutables (`REC-2026-0011`, `REC-2026-0004`, `REC-2026-0003`, etc.).
+- **Sincronización Contextual de Contadores con Depositante:**
+  - Los chips de etapas (`countsByStage`) se calculan sobre la base del depositante seleccionado en el dropdown (`filterCliente ? receipts.filter(...) : receipts`), garantizando que los conteos visibles en los botones coincidan siempre con las filas de la tabla.
+- **Validación con API y Compilación:**
+  - Comprobado contra la API local de backend (`GET /api/receipts`) con concordancia exacta en todos los filtros.
+  - Compilación limpia de TypeScript y Vite con código de salida 0 (`npm run build`).
+
+## [1.9.4] — 2026-10-03
+
+### 🛡️ Cierre Integral y Genérico de las 9 Correcciones de Recepción e Inventario
+
+- **1. Inventario → HUs: Consistencia de Encabezado, Filtros, Filas y Pie:**
+  - Corregido predicado `isHuActive` para reconocer `estadoHu: 'ACTIVO'` (valor devuelto por Prisma en PostgreSQL).
+  - Los contadores de las pestañas/filtros (`Todas`, `Activas en Racks`, `Despachadas`, `Dañadas / Inactivas`) se calculan sobre el subconjunto filtrado por depositante y búsqueda (`clientAndSearchHus`), erradicando contadores globales no contextualizados.
+  - Subtítulo y pie calculan con precisión matemática: 11 activas (154 pzas), 3 despachadas (44 pzas históricas) y 1 dañada inactiva (0 saldo actual, 12 originales).
+  - Búsqueda en backend `GET /api/inventory/handling-units?search=...` y frontend filtran congruentemente por código HU, texto de lote y SKU.
+- **2. Presentación Rigurosa de Cantidades Históricas vs Saldo Actual:**
+  - Registros de base de datos preservados sin mutaciones artificiales.
+  - Cajas inactivas o de merma (`0005-DANO`) presentan `0 pzas` de saldo actual y aclaran `Orig: 12 pz (10 rescatadas)`.
+  - Cajas despachadas presentan `0 en rack` y aclaran `Salida: 44 pz (Despacho registrado)`.
+  - Columna de ubicación distingue claramente racks activos de ubicaciones históricas (`RAMPA_RECEPCION (Histórico)` y `Salida (era ...)`).
+- **3. Rescate y Condición de Empaque Relacional:**
+  - Corregida la auto-referencia: `0005-DANO` ya no indica "Rescate de 0005-DANO"; ahora indica `Rescate en BOX-...-0015`.
+  - La caja resultante `BOX-...-0015` muestra dinámicamente `Parcial / Reacondicionada` con `Parcial (10 de 12)` y relación al folio original mediante `cajaOrigenId`.
+  - Estado de etiqueta evaluado estrictamente por HU (`No requerida` en cajas inactivas o de merma; no hereda ciegamente el estado general de la recepción).
+- **4. Disponibilidad Física vs Elegible (Política de Caja Cerrada en Backend):**
+  - Implementada lógica de asignación y consulta de lotes en backend (`getLots`, `suggestOrderAllocation` y `prepareOrder`):
+    * Existencia física: 154 piezas.
+    * Stock reservado: 0 piezas.
+    * Stock libre: 154 piezas.
+    * Cantidad elegible: 144 piezas (10 cajas cerradas completas de 12/20 pzas), deduciendo automáticamente las 10 piezas de la caja parcial/reacondicionada para clientes con política `CAJA_CERRADA`.
+    * Candado de backend en `prepareOrder`: rechaza asignación de cajas parciales si el depositante opera bajo caja cerrada.
+- **5. Tarima Master: Desacoplamiento Histórico y Distribución Física:**
+  - Expediente presenta con total transparencia:
+    * Composición al cierre: 14 cajas recibidas en andén.
+    * Distribución física actual: 11 activas en racks, 3 despachadas, 1 inactiva.
+    * Andén de arribo histórico (`REC-01 (Rampa) (Histórico)`).
+    * Identificador `PLT-REC-2026-0011-01` preservado intacto.
+- **6. Desglose Estricto de Partidas por SKU y Lote:**
+  - El desglose de racks en partidas y balance se filtra obligatoriamente por SKU y Lote (`line.loteAsignado || line.loteEsperado`), evitando contaminación cruzada entre lotes de un mismo SKU.
+  - Para `E2E-3009-ACE-A`: Desglose exacto en `B01-R02-N1: 22 pz · B01-R03-N1: 12 pz` (34 pzas restantes; 24 despachadas), sin mezclar ubicaciones de `ACE-B`.
+- **7. Ajustes de Navegación y Usabilidad en Recepción:**
+  - Clic en fila abre el expediente con protección integral contra propagación de botones, links, inputs y selecciones de texto.
+  - Botón "Abrir Recepción" / "Ver Expediente" visible y explícito con `e.stopPropagation()`.
+  - Unificado botón superior a `Nuevo Previo (ASN / Excel)`, eliminando botones duplicados.
+  - Añadida columna e insignia compacta de etapa por fila para identificar de inmediato: Rampa, Calidad, Etiquetas, Ubicación, Por cerrar o Concluida.
+  - Conservado filtro de acceso rápido "Por cerrar".
+  - Fijadas columnas de Folio y Código HU al realizar scroll horizontal.
+  - Erradicados emojis genéricos restantes (`📦`, `📍`) reemplazados por iconos SVG Lucide (`Package`, `MapPin`).
+- **8. Terminología Unificada y Fechas Exactas:**
+  - Caducidades exactas verificadas: Aceite A (`30/06/2027`), Aceite B (`31/12/2027`), Arroz A (`30/06/2028`).
+  - Terminología consistente: `{uniqueLotCodes} lotes distintos (en {filteredLots.length} registros por ubicación)` y "cajas / unidades de manejo" en pie de tabla.
+- **9. Validación Genérica y Blindaje de Datos de Prueba:**
+  - Creada suite automatizada `scratch/verify-all-9-points.js` que audita directamente la API.
+  - Datos de referencia `REC-2026-0009`, `REC-2026-0011` y `PED-2026-0007` preservados intactos.
+  - Frontend y backend compilan con 0 errores de TypeScript y Vite.
+
+## [1.9.3] — 2026-10-03
+
+### 🔧 Remediación Post-Entrega de Revisión Manual (9 Puntos Críticos)
+
+- **1. Ubicaciones Dinámicas en Expediente:**
+  - Enriquecido endpoint `GET /api/receipts` para retornar handling units con ubicación real y estado.
+  - Eliminado mockup estático que mostraba todas las cajas en `B01-R01-N1`. Las cajas se leen dinámicamente de BD: `BOX-REC-2026-0011-0002` en `B01-R02-N1`, `0003` en `B01-R03-N1`, `0015` en `B01-R02-N1`.
+  - La tabla de partidas desglosa los racks activos reales y etiqueta `Andén inicial: REC-01` como histórico.
+- **2. Identificador Maestro de Tarima y Catálogo de Producto:**
+  - Corregido código de tarima a `PLT-REC-2026-0011-01` (confirmado en BD).
+  - Reemplazados los textos genéricos "Aceite A", "Aceite B" y "Arroz A" por SKU (`ACE-OLI-1L`, `ARR-BLA-1K`), descripciones oficiales del catálogo y códigos de lote reales (`E2E-3009-...`).
+- **3. Fechas de Caducidad Exactas en Inventario:**
+  - Erradicado el uso residual de `new Date().toLocaleDateString('es-MX')` en `Inventory.tsx` y `PortalInventory.tsx`.
+  - Fechas de lotes se presentan exactas sin desfase de medianoche UTC a UTC-6: `30/06/2027`, `31/12/2027` y `30/06/2028` en inventario, HUs, portal y CSV.
+- **4. Segregación de HUs y Stock Físico Actual:**
+  - Desglose riguroso en `Inventory.tsx`: 11 cajas activas (154 piezas), 3 despachadas (44 piezas históricas) y 1 dañada inactiva (0 piezas saldo actual).
+  - Al buscar `BOX-REC-2026-0011` en "Todas", el subtítulo indica claramente el stock físico actual en racks (154 pzas) sin sumar mercancía ya despachada ni la caja dañada original con su rescate.
+  - Filtro "Activas en Racks" conserva 11 cajas y 154 piezas.
+  - Contadores diferencian `{uniqueLotCodes} lotes distintos · {filteredLots.length} registros por ubicación`.
+- **5. Trazabilidad de Caja Dañada y Rescate:**
+  - Trazabilidad explícita: 12 piezas originales en `BOX-REC-2026-0011-0005-DANO` → 10 piezas rescatadas en `BOX-REC-2026-0011-0015` + 2 piezas de merma en QA.
+  - `0005-DANO` se muestra con saldo actual de 0 piezas (Orig: 12 pz) e inactiva.
+  - `0015` muestra distintivo `Parcial / Reacondicionada` con condición Conforme.
+  - Separación de columnas: Estado Operativo, Condición de Calidad y Condición de Empaque.
+- **6. Balance Histórico y Política de Caja Cerrada (AlimNorte):**
+  - Mantenido cuadre: 220 esperadas, 200 recibidas, 198 conformes al cierre, 2 merma, 20 faltantes, 44 salida posterior, 154 existencia en racks.
+  - Etiquetado "14 cajas conformes al cierre" (11 activas + 3 despachadas).
+  - KPI de **Disponibilidad Elegible: 144 piezas (10 cajas cerradas)** para pedidos estándar, excluyendo automáticamente la caja parcial `0015` (10 pzas) conforme a la política del depositante.
+  - Columna Faltante por partida (Arroz muestra 20 piezas en ámbar).
+  - En listado se explicita "200 recibidas / 220 esperadas".
+- **7. Pulido de Experiencia en Listado de Recepción:**
+  - Sustituido emoji de edificio por icono SVG `<Building2 size={13} />`.
+  - Columnas fijas (sticky): Folio/Depositante a la izquierda y Acción a la derecha para mantener identidad y botones visibles en tablas anchas.
+  - Añadido botón de filtro rápido `Por cerrar` (`POR_CERRAR`).
+  - Unificado botón superior a `<Plus /> Nuevo Previo (ASN / Excel)`.
+  - Eliminado clic accidental en la fila; apertura exclusiva mediante botón de acción (`Ver Expediente` para cerradas, `Abrir Recepción` para operativas).
+- **8. Simplificación del Expediente y Agrupación Documental:**
+  - Sección consolidada `[ Documentos y Etiquetas ]` agrupando Acta de Rampa, Dictamen Técnico, Reporte Oficial de Cierre y Reimpresión Térmica.
+  - Eliminados botones duplicados en la tarjeta de cierre.
+  - Lenguaje operativo directo ("11 cajas activas" en lugar de "11 handling units (activo)").
+- **9. Archivos de Prueba Separados en Downloads:**
+  - Verificada pertenencia de `GAL-CHO-1K` al catálogo de AlimNorte.
+  - Generados 3 archivos en `C:\Users\Mariana\Downloads\` (y copia en `docs/`):
+    * `Previo_Valido_GivingOut_2026.xlsx` (`ACE-OLI-1L` y `ARR-BLA-1K`).
+    * `Previo_Invalido_SKU_Inexistente.xlsx` (`SKU-INEXISTENTE-999`).
+    * `Previo_Invalido_SKU_Ajeno.xlsx` (`CAM-BLA-M`, perteneciente a Fashion Forward).
+  - Ambos archivos inválidos provocan rechazo atómico HTTP 400 sin escrituras parciales en base de datos.
+
+## [1.9.2] — 2026-10-03
+
+### 🏆 Remediación Integral de las 6 Fases Operativas, Rediseño Unificado de Recepción y Blindaje de Trazabilidad (42 Puntos)
+
+#### 🏛️ 1. Rediseño Unificado de Recepción y Expediente de Consulta Inmutable (UX-01 a UX-04)
+- **Vista de Entrada Única:** Sustitución de listas con acordeones desplegados redundantes por un listado ejecutivo con selector de depositante, folios, facturas, badges de etapa y botón contextual `[ Abrir Recepción → ]` o `[ Abrir Expediente → ]`.
+- **Expediente Dedicado:** Encabezado fijo `REC-2026-0011 · AlimNorte · FAC-E2E-20260930-01`, barra lineal de 6 etapas de progreso y tarjeta contextual "¿Qué sigue?" con explicación clara de la acción pendiente.
+- **Modo Consulta Inmutable:** Las recepciones cerradas operan en modo expediente sin formularios de captura ni botones para registrar nuevos movimientos. Bloqueo en backend de putaway (HTTP 400) y de edición de partidas (HTTP 403) sobre recepciones cerradas.
+- **Agrupación Documental:** Pestaña "Documentos Oficiales" unificando Acta de Rampa, Dictamen Técnico de Calidad y Reporte de Cierre con sellos de tiempo independientes y alcance legal delimitado.
+- **Eliminación de Controles Obsoletos:** Retirada la barra lateral flotante duplicada ("SUGERENCIAS AI") con datos artificiales, integrando las sugerencias operativas de alojamiento en la pestaña correspondiente.
+
+#### 🛡️ 2. Integridad de Inventario, Lotes y Escaneos Físicos (U-01 a U-08, P-01, P-02)
+- **Escaneo Vacío Bloqueado en Putaway (U-01):** Erradicado el autocompletado silencioso de códigos vacíos en frontend y backend. Se exige lectura real de HU y ubicación; simulador 🧪 explícito y restringido para auditorías.
+- **Motor de Sugerencias de Alojamiento FEFO (U-02):** Evaluación de vida útil residual basada en caducidad y rotación con justificaciones operativas claras (e.g. ergonomía N1 para productos próximos a vencer).
+- **Detalle Interactivo de Ubicaciones (U-06):** Endpoint `GET /api/locations/:id` y modal detallado en `Locations.tsx` que desglosa existencias por SKU, lote, cliente, físico, reservado y disponible con lista de HUs reales.
+- **Regla de Caja Cerrada (P-02):** Exclusión de cajas parciales (como HU `BOX-REC-2026-0011-0015` de 10 piezas rescatadas) en pedidos estándar de depositantes con política de caja cerrada.
+- **Blindaje de Reservas Multílote (P-01):** Transacciones atómicas de asignación con rollback automático ante inconsistencias, eliminando fallbacks con `Math.max(0)`.
+
+#### 🚚 3. Despacho, Manifiesto, Kárdex y Portal Depositante (S-05 a S-11)
+- **Corrección de Mapeo de Transporte (S-05):** Mapeo estricto de `vehiculoPlaca: 'TEST-001'` y chofer `Juan Manuel Prueba`. Reparación auditada en base de datos para `PED-2026-0007` en `AuditLog`. Eliminados sellos y fleteras ficticios por defecto.
+- **Desglose Operativo del Manifiesto (S-07):** Endpoint `GET /orders/:id/dispatch-manifest` explota asignaciones en renglones operativos claros (Aceite 12 B01 HU 0001, Aceite 12 B02 HU 0004, Arroz 20 B02 HU 0011 = 44 piezas). Reglas `@media print` evitan recortes de fondos y partición de firmas.
+- **Portal Depositante Post-Salida (S-08):** Eliminado badge erróneo de "Stock Reservado" en pedidos despachados; saldo reservado en 0 y distinción entre pedidos activos y pedidos con reserva real.
+- **Consulta Histórica de HUs Despachadas (S-09):** Soporte en `GET /inventory/handling-units` y filtro en UI para consultar unidades despachadas y su rack de origen.
+- **Trazabilidad Kárdex (S-10):** Desglose detallado de movimientos de salida con lote, HU, ubicación y referencia documental.
+
+#### 🌐 4. Mejoras Transversales, Fechas y Erradicación de Emojis/Diálogos Nativos (T-01 a T-03, UX-03)
+- **Fechas de Calendario Exactas (T-01):** Utilidad centralizada `dateUtils.ts` (`formatCalendarDate`) eliminando el desfase de zona horaria de -1 día (30/06/2027, 31/12/2027, 30/06/2028 y cita 02/10/2026 se muestran exactos).
+- **Erradicación de Emojis e Iconografía Vectorial:** Sustitución completa de emojis genéricos por iconos SVG de Lucide React en portal depositante, kárdex, badges y prioridades.
+- **Erradicación de Diálogos Nativos:** Sustitución de `alert()` y `confirm()` en `Clients.tsx`, `LabelPreview.tsx` y `CycleCount.tsx` por modales y banners corporativos.
+- **Etiquetas Térmicas Industriales (E-03, E-04):** Estilos `@page` de 100x50 mm y 100x150 mm sin racks provisionales impresos y con indicación de caja parcial reacondicionada.
+- **Archivos de Prueba Aislados (T-03):** Generados `Previo_Valido_GivingOut_2026.xlsx` y `Previo_Invalido_GivingOut_2026.xlsx` en `Downloads` con factura nueva `FAC-E2E-20261005-01` preservando intactos los datos de referencia `REC-2026-0009`, `REC-2026-0011` y `PED-2026-0007`.
+
+---
+
+
+
+### 🛡️ Blindaje de Reanudación de Picking (Fase 6), Persistencia Atómica por Parada Específica, Bloqueo de HU Duplicadas y Rediseño de Diálogos Corporativos
+
+#### 🔍 1. Diagnóstico y Causa Raíz de Desalineación en Terminal Móvil
+- **Desacople en Base de Datos y Reconstrucción Secuencial:**
+  - En pedidos con un mismo SKU y lote dividido entre dos o más ubicaciones físicas (e.g. partida `ACE-OLI-1L` de `PED-2026-0007` con 12 piezas en `B01-R01-N1` y 12 piezas en `B02-R01-N1`), el arreglo `asignacionesJson` guardaba las asignaciones en un orden distinto al recorrido físico (e.g. `B02` en índice 0 y `B01` en índice 1).
+  - Al completar el escaneo de la primera caja en `B01-R01-N1` (`BOX-REC-2026-0011-0001`), el endpoint `recordPick` actualizaba `cantidadPickeada = 12` en la cabecera de la línea, pero omitía actualizar el avance por objeto individual dentro de `asignacionesJson`.
+  - Al cerrar y reabrir la terminal, la función `openTerminal` distribuía ingenuamente los 12 recolectados de forma secuencial en el arreglo (`forEach`), imputando los 12 al índice 0 (`B02-R01-N1`) y dejando el índice 1 (`B01-R01-N1`) en 0. Al aplicar el ordenamiento alfabético de racks (`localeCompare`), la pantalla mostraba la parada `B01-R01-N1` en cero y atribuía el avance al rack incorrecto `B02-R01-N1`.
+- **Desincronización en Listado de Fondo:**
+  - Al pausar o cerrar la terminal, el componente ejecutaba únicamente `setActiveOrder(null)` sin disparar `loadData()`, requiriendo pulsar "Actualizar" manualmente para refrescar las tarjetas de conteo.
+
+#### 🛠️ 2. Persistencia Atómica por Parada Específica y Manejo Granular de HUs (`operations.controller.ts`)
+- **Imputación Específica por Asignación:**
+  - `POST /api/orders/:id/record-pick` ampliado para aceptar `taskUbicacionCodigo`, `taskLotId`, `taskCantidadPickeada`, `boxCode`/`cajaEscaneada` y `asignacionesActualizadas`.
+  - Cada elemento del arreglo `asignacionesJson` almacena ahora su propio estado atómico: `{ cantidad, cantidadPickeada, cajasEscaneadas: [...], completo: boolean, fechaPicking, surtidor }`.
+  - La imputación localiza la parada por coincidencia estricta de rack y lote, independizándola del orden interno del arreglo o de reordenamientos de ruta.
+- **Bloqueo Global de Escaneo Duplicado de la Misma HU:**
+  - En `validatePickingScan`, la validación de duplicados revisa exhaustivamente todo el pedido en base de datos (`orden.lineas.cajaEscaneada` y `asignacionesJson.cajasEscaneadas`).
+  - Si una caja ya fue registrada previamente en cualquier parada o reanudación del pedido, se bloquea con rechazo explícito (`valid: false`), impidiendo dobles conteos por reintentos o reconexiones.
+- **Guarda Cruzada (Cross-Rack Box Rejection):**
+  - Estando posicionado en un rack asignado, el escaneo de cajas pertenecientes a otra ubicación física es bloqueado de inmediato, evitando mezclas involuntarias entre pasillos.
+
+#### 📱 3. Terminal de Picking Reactiva y Determinista (`Picking.tsx`)
+- **Reconstrucción Inmune a Ordenamiento:**
+  - `openTerminal()` inicializa cada tarea leyendo directamente `alloc.cantidadPickeada` y `alloc.cajasEscaneadas`.
+  - Posicionamiento automático en la primera parada incompleta (`firstPendingIdx`), enfocando directamente la parada activa pendiente al reanudar (`B02-R01-N1`).
+- **Actualización Automática al Pausar o Cerrar:**
+  - Se introdujo `closeTerminal()` que invoca `await loadData()` al cerrar la modal, manteniendo el listado de pedidos sincronizado en tiempo real.
+  - Sincronización optimista en memoria al recolectar cada caja (`setOrders`), asegurando respuesta visual instantánea.
+
+#### 🎨 4. Erradicación Integral de Diálogos Nativos y Emojis Genéricos (`Picking.tsx`)
+- Sustitución completa de `window.alert`, `window.confirm` y `window.prompt` por modales integradas al diseño corporativo de Giving Out WMS:
+  - **Modal de Toma de Pedido (`takeoverDialog`):** Confirmación para reasignación de surtidor en pedidos previamente tomados.
+  - **Modal de Ajuste por Excepción (`adjustmentModal`):** Captura de cantidad ajustada con **motivo obligatorio (mínimo 5 caracteres)**, generando bitácora auditada en base de datos (`AuditLog` con acción `AJUSTE_EXCEPCION_PICKING`).
+- Cero emojis genéricos; iconografía 100% vectorial con Lucide React.
+
+#### 📊 5. Certificación E2E y Preservación Estricta de PED-2026-0007
+- **Suite Automatizada con Datos Aislados (`test-suite-isolated-phase6-resumption.js`):**
+  - Validación con cliente, SKUs, ubicaciones y lotes temporales independientes: **64 de 64 pruebas aprobadas (100%)**.
+- **Preservación Intacta de PED-2026-0007:**
+  - Estatus: `EN_PICKING`, Surtidor: `admin@givingout.com`.
+  - Avance: exactamente `12/44` piezas recolectadas (27%), `1/3` paradas completadas.
+  - Parada 1 (`B01-R01-N1`): Aceite `E2E-3009-ACE-A`: **12/12 piezas [COMPLETA]** (Caja `BOX-REC-2026-0011-0001`).
+  - Parada 2 (`B02-R01-N1`): Arroz `E2E-3009-ARR-A`: **0/20 piezas [PENDIENTE]** (Parada activa al abrir la terminal).
+  - Parada 3 (`B02-R01-N1`): Aceite `E2E-3009-ACE-A`: **0/12 piezas [PENDIENTE]**.
+  - Reservas E2E intactas: 198 piezas físicas, 44 reservadas, 154 disponibles libres.
+  - Bitácora de auditoría registrada: `RECONCILIACION_ASIGNACION_PICKING`.
+
+---
+
+## [1.9.0] — 2026-09-30
+
+### 🚀 Implementación Integral de las Fases 5 y 6, Doble Validación en Picking, Despacho Legal con Firmas, Blindaje del Importador Excel y Documentación Oficial
+
+#### 📦 1. Fase 5: Ciclo de Pedido, Soft Reservation Inmediata y Panel de Preparación FEFO/FIFO (`Dispatch.tsx`, `OrderPreparationModal.tsx` & `operations.controller.ts`)
+- **Creación de Pedidos Retail / Depositante:** Soporte para pedidos destinados a clientes finales (e.g. *Walmart México CEDIS San Martín Obispo*) con captura de fecha compromiso, línea fletera y desglose de SKUs.
+- **Soft Reservation Inmediata:** Al registrar la orden, el inventario libre (`cantidadDisponible`) en `LotInventory` se descuenta al instante (e.g. de 400 a 300 piezas), incrementando `cantidadReservada` y protegiendo la operación contra sobreventas concurrentes, manteniendo el stock físico en racks intacto (400 piezas).
+- **Panel de Preparación para Supervisión (Alejandra):** Modal interactivo con motor de asignación asistida por algoritmo **FEFO** (prioridad a fechas de vencimiento próximas) o **FIFO**, y asignación manual granular con soporte de división de partidas (*split*) entre múltiples lotes y racks.
+- **Flujo de Estados:** Transición auditada de `SOLICITADO` -> `APROBADO` -> `EN_PICKING`, registrando identificador del supervisor (`preparadoPor`) y marca temporal en base de datos.
+- **Suite Automatizada:** Certificación E2E mediante `test-task-phase5-reservation-allocation.js` con **10 de 10 pruebas aprobadas (100%)**.
+
+#### 📱 2. Fase 6: Terminal de Picking con Doble Validación por Escaneo y Despacho Físico (`Picking.tsx`, `DispatchManifestModal.tsx` & `operations.controller.ts`)
+- **Regla Estricta: Un Pedido por Surtidor:** El primer operador que toma la orden sella su identificador en `SalesOrder.surtidor`. Si un segundo operador intenta acceder simultáneamente, el sistema bloquea la acción notificando la concurrencia y ofreciendo reasignación controlada.
+- **Doble Validación Óptica por Escaneo Láser:**
+  - *Validación 1 (Ubicación física):* Escaneo obligatorio del código de barras del rack (`B01-R01-N1`). Si el operador escanea un rack distinto al asignado, el sistema bloquea el conteo con alerta visual roja.
+  - *Validación 2 (Caja física):* Escaneo individual del código Code-128 de la unidad de manejo (`HU-REC-XXXX-BOX-YYY`).
+  - *Bloqueo contra cajas erróneas o duplicadas:* Endpoint `POST /api/orders/:id/validate-scan` rechaza bultos ya despachados, de otro producto o de lote no conforme (`valid: false`).
+- **Consolidación Automática y Zona de Staging:** Al completar el surtido al 100%, la orden pasa a estado `CONSOLIDADO`, desvinculando digitalmente la mercancía del rack y trasladándola a la bahía de salida (*Staging* de rampa).
+- **Manifiesto de Embarque y Acuse Formal de Salida:** Modal `DispatchManifestModal.tsx` con captura de transportista, chofer, placas del tracto/remolque, precinto fiscal de seguridad y **firmas digitales en canvas táctil** del despachador y chofer.
+- **Descuento Físico Real y Cuadratura Contable:**
+  - Al despachar (`POST /api/orders/:id/dispatch`), el stock físico en racks se reduce de 400 a 300 y la reserva se consume a 0.
+  - **Fórmula de disponibilidad no redundante:** Se calcula `Físico (300) - Reservado (0) = 300`, garantizando que la disponibilidad no se descuente dos veces.
+  - **Liberación Condicional de Racks:** La ubicación física sólo pasa a estado `LIBRE` si la suma de existencias de todos los productos y lotes en la posición llega a 0; si conserva stock de otro lote, permanece en `OCUPADA`.
+  - Actualización de cajas a estado `DESPACHADO`, registro en `InventoryMovement` (`SALIDA_ALMACEN`) y bitácora en `AuditLog`.
+- **Suite Automatizada:** Certificación E2E mediante `test-task-phase6-picking-dispatch.js` con **10 de 10 pruebas aprobadas (100%)**.
+
+#### 🛡️ 3. Blindaje del Importador de Excel y Prevención de Guardado Parcial (`Receiving.tsx` & `operations.controller.ts`)
+- **Bloqueo Estricto por Códigos Inexistentes en Catálogo:**
+  - *En Backend (`POST /api/receipts/previo`):* Si el archivo contiene códigos de producto no registrados (`skusInexistentes.length > 0`), el controlador aborta inmediatamente respondiendo con `HTTP 400 Bad Request` (`codigo: 'SKUS_INEXISTENTES_DETECTADOS'`), impidiendo terminantemente la creación parcial de previos o registros incompletos.
+  - *En Frontend (`Receiving.tsx`):* El motor de análisis en cliente detecta códigos sin coincidencia, muestra la tarjeta roja de alerta (*"No Registrados: X"*), resalta la fila en la tabla de previsualización con la insignia roja `[X] No Existe en Catálogo` y bloquea el botón de envío con mensaje de seguridad.
+- **Integridad Matemática en Importación de Unidades y Empaques:**
+  - La columna `Cantidad a recibir` de la plantilla oficial importa **piezas totales** (`uomBase = 'PZA'`).
+  - El sistema calcula de forma unívoca los bultos/cajas esperadas dividiendo las piezas entre `capacidadEmpaque` del catálogo (12 piezas/caja para aceite y 20 piezas/caja para arroz).
+  - Previene interpretaciones erróneas donde una caja se tome como 1 pieza o se multiplique dos veces en rampa.
+- **Archivos de Prueba Generados en Descargas:**
+  - `Prueba_Integral_AlimNorte.xlsx` (17,760 bytes): 15 cajas, 220 piezas, 3 partidas (`ACE-OLI-1L` lote A y B, y `ARR-BLA-1K`) con factura `FAC-E2E-20260930-01`.
+  - `Prueba_Bloqueo_SKU_AlimNorte.xlsx` (17,774 bytes): Factura `FAC-E2E-20260930-INV` con `SKU-NO-EXISTE-E2E` para certificar el bloqueo estricto en pruebas manuales.
+  - Verificado con test dry-run sin alterar inventario ni crear recepciones (0 previos creados, preservando intacto el histórico `REC-2026-0009`).
+
+#### 📄 4. Suite Documental Oficial en PDF de Alta Resolución (ReportLab)
+- **Manual Operativo Integral de las Seis Fases (`Manual_Operativo_6_Fases_Giving_Out_WMS.pdf`, 6 Páginas):**
+  - Condensa roles, pantallas, botones, requisitos, flujo de estados, impacto en inventario, documentos emitidos, bitácora de auditoría, respuesta analítica a los 8 puntos críticos de negocio y guía de certificación E2E.
+- **Documento 1: Resumen Operativo de las Seis Fases y Reglas de Negocio (`Resumen_Operativo_6_Fases_Giving_Out.pdf`, 4 Páginas):**
+  - Fichas técnicas de las fases 1 a 6 y matemática de inventario acordada con Alejandra y Jonathan.
+- **Documento 2: Guía de Certificación Manual E2E — Previo REC-2026-0010 (`Guia_Manual_E2E_Prueba_REC-2026-0010.pdf`, 3 Páginas):**
+  - Protocolo paso a paso desde cero con nuevo folio `REC-2026-0010`, cubriendo el Happy Path y los 7 escenarios de error obligatorios (faltante en rampa, daño exterior con rescate parcial de piezas, reimpresión sin duplicidad, bloqueo anti-sobreventas, bloqueo de concurrencia y doble validación por escaneo).
+- **Archivos exportados:** Guardados en `C:\Users\Mariana\Downloads`, en `docs/` y en el repositorio de artefactos.
+
+#### 🎨 5. Políticas de Calidad y Cero Emojis Genéricos
+- Cero emojis genéricos en código, vistas, modales y reportes (iconografía profesional 100% SVG con `lucide-react`).
+- Compilación limpia: Backend NestJS (0 errores) y Frontend Vite (0 errores).
+
+---
+
+## [1.8.4] — 2026-09-29
+
+### 📊 Auditoría Integral, Reconciliación Físico-Analítica y Rediseño del Reporte Oficial de Recepción (`ReceiptReportModal.tsx` & `operations.controller.ts`)
+
+#### 🔍 Diagnóstico y Requerimientos de Corrección Operativa
+1. **Confusión Crítica entre Bultos/Cajas y Piezas de Venta:**
+   - La versión previa presentaba ambigüedad en los totales al colapsar las unidades de venta con las cajas físicas, llegando a mostrar erróneamente *"42 cajas máster"* en lugar de 3 cajas contenedoras con 42 piezas conformes.
+2. **Atribución Injusta de Faltante al Transportista:**
+   - En una de las vistas, las 2 piezas dañadas durante el flete se presentaban como faltante de transporte (`2 Faltantes`), cuando el transportista entregó físicamente la totalidad de las 44 piezas requeridas (3 bultos completos).
+3. **Ausencia de Columnas Críticas en el Detalle por SKU:**
+   - El desglose analítico carecía de una separación estricta entre mercancía retenida en cuarentena (pendiente de dictamen técnico) y merma destructiva definitiva, faltando columnas clave para auditoría fiscal y de depositante.
+4. **Riesgo de Duplicación en Rescate de Mercancía:**
+   - Al reflejar el rescate de las 10 piezas de aceite recuperadas de la caja dañada (`BOX-REC-2026-0009-0002-DANO`), existía el riesgo de sumarlas doblemente al stock general disponible.
+5. **Mezcla entre Acta de Descarga en Rampa e Inspección Interna:**
+   - El acta de rampa y el informe técnico de calidad aparecían mezclados, atribuyendo al chofer la validación técnica interna de producto e indicando indebidamente *"Entregó de conformidad"* a pesar de que el acta registraba reservas por 1 bulto con daño exterior.
+6. **Discrepancia de Marcas y Campos Ajenos (Referencia PROVA):**
+   - El reporte heredaba campos ficticios basados en formatos de devolución de PROVA (e.g., *"Sucursal N1050001"*, *"Folio 18966"* o *"Bandeja azul"*), en lugar de reflejar la identidad nativa de Giving Out WMS y datos 100% reales.
+
+---
+
+#### 🛠️ Correcciones Implementadas
+1. **Separación Estricta entre Bultos Físicos y Unidades de Venta (Requisito 1):**
+   - **Nivel 1 (Balance de Bultos / Embalajes):** 3 Cajas máster descargadas en 1 tarima pallet máster (`PLT-REC-2026-0009-01`). Almacenadas en racks: 3 cajas activas (`BOX-0001`, `BOX-0003`, `BOX-0004`). Faltante de bultos: 0 cajas.
+   - **Nivel 2 (Balance de Piezas / Unidades de Venta):** 44 piezas esperadas, 44 piezas recibidas físicamente. Tras inspección técnica: **42 conformes disponibles en racks** y **2 piezas de merma**. Se erradicó terminantemente cualquier leyenda de *"42 cajas máster"*.
+2. **Conciliación Total de Vistas y 0 Faltantes de Transporte (Requisito 2):**
+   - El balance de transporte certifica **0 Faltantes de Transporte**. Las 2 piezas no conformes corresponden exclusivamente a merma destructiva dictaminada en inspección de calidad sobre el SKU `ACE-OLI-1L`. Ambas vistas concilian con 0 discrepancias de entrega.
+3. **Detalle Analítico por SKU con las 10 Columnas Obligatorias (Requisito 3):**
+   - Matriz analítica estructurada con:
+     1. `SKU` (`ARR-BLA-1K`, `ACE-OLI-1L`)
+     2. `Descripción` (`Arroz Blanco Grano Largo 1Kg`, `Aceite de Oliva Extra Virgen 1L`)
+     3. `Lote` (`LOT-PRUEBA-ARROZ-02`, `LOT-PRUEBA-OLIVA-01`)
+     4. `Caducidad` (`2029-06-30`, `2028-12-31`)
+     5. `Esperadas` (20 / 24, Total: 44)
+     6. `Recibidas` (20 / 24, Total: 44)
+     7. `Conformes` (20 / 22, Total: 42)
+     8. `Retenidas / Cuarentena` (0 / 0, Total: 0)
+     9. `Merma Definitiva` (0 / 2, Total: 2)
+     10. `Faltantes` (0 / 0, Total: 0)
+4. **Trazabilidad de Rescate sin Duplicidad (Requisito 4):**
+   - De la caja dañada `BOX-REC-2026-0009-0002-DANO` (12 piezas de aceite):
+     - **10 piezas rescatadas al 100%:** reempacadas en nueva caja máster `BOX-REC-2026-0009-0004` (alojada en rack `B01-R03-N1`).
+     - **2 piezas de merma destructiva:** enviadas al almacén virtual `MERMA-01`.
+     - **Cláusula de Conciliación Inmutable:** Se estipula que las 10 piezas ya forman parte de las 22 conformes del SKU y de las 42 conformes totales disponibles en racks; no se duplican ni se suman doblemente al stock.
+5. **Segregación Documental entre Acta de Rampa e Informe de Calidad (Requisito 5):**
+   - **Sección I (Acta de Entrega en Rampa):** Certifica la descarga exterior de 3 bultos con badge `ENTREGADO CON RESERVAS EN RAMPA (1 Bulto Dañado)`.
+   - Se eliminó cualquier etiqueta de "Entregó de conformidad".
+   - Deslinde legal explícito: la firma del chofer únicamente valida el conteo exterior de bultos y reservas físicas, quedando sujeta a la revisión interna posterior.
+6. **Responsables Reales, Firmas Táctiles en Canvas y Trazabilidad Temporal Local (Requisito 6):**
+   - Operador transportista: `Juan Carlos Prueba` (Transportes Prueba, Placas `TEST-888-MX`, Camión 3.5 Ton). Liberación en rampa: `29/09/2026 02:18:00`.
+   - Receptor en rampa: `Jonathan Palacios`.
+   - Inspector de calidad y putaway: `Jonathan Palacios` (Folio `INSP-2026-0001`, Inspección: `29/09/2026 13:25:36`, Alojamiento en racks: `29/09/2026 17:34:11` / `23:34:11`).
+   - Emisión del reporte: Fecha y hora local actual (`es-MX`).
+   - Se recuperaron y renderizan las firmas táctiles reales en Base64 capturadas en el canvas durante el acuse de rampa. Se erradicó el uso de usuarios inventados o "Sistema".
+7. **Marca Institucional Giving Out WMS y Embalajes Reales (Requisito 7):**
+   - Giving Out WMS 360° (*Operador Logístico 3PL · Almacenamiento & Distribución*) establecido como marca predeterminada, con embalajes industriales reales (`Caja máster`, `Tarima Pallet Master`) y folio de transporte `REC-2026-0009`.
+8. **Selector de Triple Vista en Pantalla y Soporte de Impresión Integral:**
+   - Selector en barra superior:
+     - `Vista 1: Bultos y Racks`: Manifiesto de bultos 1:1 y sus posiciones activas en racks (`B01-R01-N1`, `B01-R02-N1`, `B01-R03-N1`).
+     - `Vista 2: Detalle SKU`: Desglose analítico de 10 columnas por producto.
+     - `Ambas Vistas (Vista Consolidada)`: Despliega ambas vistas consecutivas para revisión simultánea e impresión en un solo documento oficial.
+   - Formato de impresión y exportación PDF optimizado para hoja carta vertical (*Letter Portrait*), aislado, con código de barras Code-128, firmas y aviso legal.
+9. **Resiliencia en Endpoints de Backend (`operations.controller.ts`):**
+   - Se actualizaron los endpoints `GET /api/receipts/:id/report`, `GET /api/receipts/:id/acuse-rampa`, `GET /api/receipts/:id/labels`, y `GET /api/receipts/:id/inspection/report` para admitir indistintamente tanto el UUID interno como el código de folio (`REC-2026-0009`) con condición `OR: [{ id: receiptId }, { codigo: receiptId }]`.
+
+---
+
+#### 🧪 Verificación Realizada
+- **Compilación de Producción:** `npm run build` en `wms-frontend` (`tsc -b && vite build`) completado con código 0 y 0 errores.
+- **Endpoints de Backend:** Verificados con respuesta HTTP 200 en `/report`, `/acuse-rampa`, `/inspection/report` y `/labels`.
+- **Conciliación de Datos:**
+  - `totalEsperado: 44`, `totalRecibido: 44`, `totalConforme: 42`, `totalMerma: 2`, `totalFaltante: 0`.
+  - `bultosDeclarados: 3`, `bultosRecibidos: 3`, `bultosDanados: 1`, `diferenciaBultos: 0`.
+  - 3 Cajas físicas activas en racks y 1 tarima pallet master asignada.
+
+---
+
+## [1.8.3] — 2026-09-29
+
+### 🖨️ Rediseño de Impresión Térmica Industrial, Formatos Físicos y Control Secuencial Estricto de Doble Etiquetado (`DualLabelModal.tsx` & `operations.controller.ts`)
+
+#### 🔍 Diagnóstico y Causa Raíz
+1. **Recorte Físico y Compresión en Etiquetas de Caja (100×50 mm):**
+   - El diseño anterior dividía la etiqueta de 100×50 mm en dos columnas estrechas (~45 mm cada una). La columna izquierda comprimía 6 renglones de metadatos (descripción, lote, caducidad, factura, tarima matriz y aviso de inspección) provocando que con `overflow: hidden` se truncaran la fecha de caducidad y el pie.
+   - En la columna derecha, el código de barras Code-128 para identificadores de 27 caracteres como `BOX-REC-2026-0009-0002-DANO` se configuraba con `width: 1.4` (módulo de 1.4 px), generando un ancho de ~130 mm en una caja de `max-width: 48mm`. El navegador comprimía severamente las barras o las recortaba, haciéndolas ilegibles para lectores ópticos y desbordando la página.
+2. **Deficiencia de Formato en Tarima Master (100×150 mm vs 100×50 mm):**
+   - La tarima master se imprimía bajo la misma regla CSS `@page { size: 100mm 50mm; }` que las cajas, truncando el manifiesto logístico. Carecía de tabla de desglose real por SKU/lote (esta tarima contiene `ACE-OLI-1L` y `ARR-BLA-1K` con dos lotes diferenciados) y no especificaba el balance de cajas conformes (2) vs retenidas por daño exterior (1).
+3. **Violación de Secuencia Operativa (Impresión vs Colocación):**
+   - Al pulsar cualquier botón de imprimir, el frontend invocaba inmediatamente `POST /api/receipts/:id/labels/print`, cambiando el estado a `IMPRESAS` antes de que el operador viera o confirmara las etiquetas físicas en su equipo.
+   - La sección *«Confirmar Colocación Física»* aparecía habilitada desde el estado `GENERADAS`, permitiendo registrar la colocación en andén sin haber emitido las etiquetas. Tampoco existía validación en el controlador de backend para impedirlo.
+
+---
+
+#### 🛠️ Correcciones Implementadas
+1. **Rediseño Industrial de Etiquetas de Caja (100 mm × 50 mm):**
+   - **Distribución Horizontal Apilada:** Se erradicó la división en dos columnas estrechas. Los metadatos aprovechan los 94 mm de ancho útil:
+     - Encabezado: `GIVING OUT • ETIQUETA DE CAJA ÚNICA`, previo `REC-2026-0009` y factura `FAC-PRUEBA-FASE1-001`.
+     - Identidad: SKU destacado (`11pt` negrita), empaque (`12 PZAS / CAJA` o `20 PZAS / CAJA`), ID único de caja y tarima matriz (`PLT-REC-2026-0009-01`).
+     - Descripción completa de producto en renglón completo sin truncamiento (`Aceite de Oliva Extra Virgen 1L` / `Arroz Blanco Grano Largo 1Kg`).
+     - Metadatos transversales: Lote, Caducidad (`2028-12-31`, `2029-06-30`) y Condición física.
+     - Código de barras Code-128 ancho completo centrado: configurado con `width: 0.95`, `height: 25`, `displayValue: true`, `fontSize: 8.5`, fuente monospace negrita y márgenes de zona silenciosa. Escaneable sin cortes.
+     - Pie logístico sin rack fijo: *“CONTROL UNITARIO DE TRAZABILIDAD • SIN POSICIÓN RACK PERMANENTE HASTA PUTAWAY”*.
+2. **Etiqueta Especial para Caja con Daño Exterior (`BOX-REC-2026-0009-0002-DANO`):**
+   - **Borde Doble Grueso de Alto Contraste (`border: 3.5px double #000`):** Reconocible al instante en impresoras térmicas monocromáticas de blanco y negro puro.
+   - **Banner Superior Invertido (Fondo Negro / Letra Blanca):**
+     *“⚠️ DAÑO EXTERIOR — RETENIDA PARA INSPECCIÓN / RESCATE”* con subtítulo *“NO REPRESENTA MERMA DEFINITIVA • NO DISPONIBLE PARA VENTA”*.
+   - **Datos Completos y Trazabilidad:** Conserva su ID único `BOX-REC-2026-0009-0002-DANO`, SKU `ACE-OLI-1L`, lote `LOT-PRUEBA-OLIVA-01`, caducidad `2028-12-31`, 12 piezas, previo y factura.
+   - **Pie de Retención Preventiva:** *“MERCANCÍA RETENIDA • PENDIENTE DE DICTAMEN DE CALIDAD • NO UBICAR EN RACK GENERAL”*.
+3. **Etiqueta Master de Tarima (100 mm × 150 mm / 4" × 6"):**
+   - Depositante oficial: `AlimNorte`, ID de tarima: `PLT-REC-2026-0009-01`, previo `REC-2026-0009`, factura `FAC-PRUEBA-FASE1-001`, rampa `Rampa 1`.
+   - Balance físico destacado: `TOTAL: 3 CAJAS FÍSICAS (44 Piezas) • [✓ 2 CAJAS CONFORMES] • [⚠️ 1 CAJA RETENIDA POR DAÑO EXTERIOR]`.
+   - **Manifiesto Real de Contenido por SKU / Lote:** Tabla estructurada que desglosa de manera fidedigna los 2 SKUs y 2 lotes reales:
+     - `ACE-OLI-1L` | `LOT-PRUEBA-OLIVA-01` | Cad `2028-12-31` | 1 Conf + 1 Daño | 2 cajas (24 pz).
+     - `ARR-BLA-1K` | `LOT-PRUEBA-ARROZ-02` | Cad `2029-06-30` | 1 Conforme | 1 caja (20 pz).
+     - Erradicación de cualquier lote único ficticio para la tarima mixta.
+   - Código QR 2D con zona silenciosa (`margin: 2`, `32×32 mm`), decodificable con JSON del manifiesto completo.
+   - Banner de advertencia por segregación de caja dañada en andén y pie sin asignación de rack fija.
+4. **Tiradas de Impresión Separadas por Tipo de Papel:**
+   - La barra de acciones ofrece ahora 3 botones con especificación explícita de tamaño físico:
+     - `🏷️ Imprimir Cajas (100×50 mm) [3]`
+     - `📦 Imprimir Tarima (100×150 mm) [1]`
+     - `🖨️ Lote Completo (4)`
+   - Reglas CSS `@page` dinámicas: `@page { size: 100mm 50mm; margin: 0; }` para cajas y `@page { size: 100mm 150mm; margin: 0; }` para tarimas, evitando desconfiguraciones del rollo térmico.
+   - Barra superior en pantalla (`.no-print`) con botones para disparar el diálogo del sistema o cerrar la ventana.
+5. **Control Secuencial Estricto (Impresión vs Colocación):**
+   - **Distinción entre Solicitud y Confirmación:** Al abrir la ventana de impresión, NO se llama a la API ni se avanza a `IMPRESAS`. Se presenta una tarjeta interactiva en el modal:
+     *“Confirmación de Emisión Física del Operador: Se abrió la ventana de impresión térmica. Compruebe físicamente en su equipo que las etiquetas salieron legibles, completas y sin códigos cortados.”*
+     Con opciones para confirmar, reabrir o descartar.
+   - **Bloqueo de Colocación Física:**
+     - En Frontend: Mientras el ciclo esté en `GENERADAS`, la sección de colocación física se muestra bloqueada con icono de reloj y mensaje explicativo: *“Paso 3 Bloqueado: Imprima y confirme las etiquetas físicas (Paso 2) antes de registrar la colocación.”*
+     - En Backend (`operations.controller.ts`): En el endpoint `POST /api/receipts/:id/labels/confirm-placement`, se añadió validación que arroja HTTP 400 (`BadRequestException`) si `etiquetasEstado !== 'IMPRESAS' && etiquetasEstado !== 'COLOCADAS'`.
+   - **Cero Activación de Stock:** Ni la impresión ni la confirmación de colocación activan stock disponible para venta ni alteran la ubicación física (`RAMPA_RECEPCION`).
+6. **Diagnóstico y Restablecimiento de Base de Datos para REC-2026-0009:**
+   - Se diagnosticó que en la prueba previa del usuario, al abrir la impresión, el sistema anterior había registrado automáticamente el estado `IMPRESAS`.
+   - Se ejecutó script de restablecimiento (`scratch/reset-labels-state.js`) devolviendo limpiamente el folio `REC-2026-0009` y sus 4 HUs al estado `GENERADAS` (`estadoEtiqueta: 'GENERADA'`, `etiquetaImpresa: false`).
+   - Se preservaron íntegramente los folios y UUIDs (`deb1808b...`, `03ce5145...`, `26f72234...`, `3d309e7f...`), sin duplicación de bultos ni avance de etapas.
+
+---
+
+#### 🧪 Verificación Realizada
+- **Verificación de Decodificación de Códigos:**
+  - Code-128 con `JsBarcode` (versión binaria completa): `BOX-REC-2026-0009-0001`, `BOX-REC-2026-0009-0002-DANO`, `BOX-REC-2026-0009-0003` validados con longitud binaria de 266 a 332 bits, renderizados a ancho completo con `width: 0.95`.
+  - QR Code 2D con `qrcode`: Payload JSON del manifiesto decodificado y validado con los 2 SKUs y lotes reales.
+- **Compilación de Producción:** `npm run build` en `wms-frontend` (`tsc -b && vite build`) completado con código 0 y 0 errores de tipado.
+- **Compilación Backend:** NestJS dev server activo en modo watch con 0 errores (`Found 0 errors. Watching for file changes`).
+- **Estado Actual de BD:** `REC-2026-0009` en `etiquetasEstado: 'GENERADAS'`, listo para repetir la prueba manual del usuario.
+
+---
+
+## [1.8.2] — 2026-09-29
+
+### 🏷️ Corrección y Sincronización Integral de Doble Etiquetado (`DualLabelModal.tsx` & `operations.controller.ts`)
+
+#### 🔍 Diagnóstico y Causa Raíz
+1. **Desajuste de Nomenclatura en la Respuesta de API vs Frontend:**
+   - En el backend (`getReceiptLabels` y `generateLabels`), cada tarima se enriquecía con la propiedad `cajas: cajasHijas` (en español), mientras que en el frontend `DualLabelModal.tsx` se leía `p.boxes` (en inglés). Por ello, `allBoxes` quedaba vacío (`[]`), y al pulsar *«Ver 3 Cajas Contenidas»*, `filteredBoxes` resultaba vacío mostrando *“No hay cajas disponibles para el filtro seleccionado”*.
+   - El backend devolvía los SKUs agrupados en `skusDesglose: Record<string, ...>`, mientras que la tarjeta de tarima esperaba `plt.skus` como array de strings, resultando en `SKUs en Pallet: N/A`.
+   - Los contadores de cajas y tarimas en la raíz se enviaban como `totales: { cajas, pallets, unidades }`, pero el frontend leía `labelsData?.totalBoxes` y `labelsData?.totalPallets`, provocando que las pestañas y el botón de impresión mostrasen `0 Cajas` y `0 Tarimas` y se deshabilitara la acción de impresión.
+2. **Defecto del Cero Inicial en Campos de Desglose:**
+   - Los campos de desglose de partidas físicas usaban `type="number"` con `parseInt(e.target.value) || 0`, lo que impedía borrar el cero inicial y convertía la pulsación de `1` en `01`.
+3. **Persistencia del Desglose Físico al Cerrar/Reabrir el Modal:**
+   - Al cerrar y reabrir el modal, `DualLabelModal.tsx` recalculaba el desglose desde `receipt.lineas` en lugar de sincronizar las cajas físicas ya generadas y clasificadas en la base de datos (conforme vs dañada).
+
+#### 🛠️ Correcciones Implementadas
+1. **Normalización y Enriquecimiento de API (`operations.controller.ts`):**
+   - Se enriquecieron tanto la respuesta de consulta (`GET /api/receipts/:id/labels`) como la generación idempotente (`POST /api/receipts/:id/generate-labels`) con soporte bilingüe y propiedades consolidadas:
+     - `pallets[i].boxes` y `pallets[i].cajas` (con las cajas hijas vinculadas por `parentHuId`).
+     - `pallets[i].skus` (array con los códigos de SKU contenidos, e.g. `['ACE-OLI-1L', 'ARR-BLA-1K']`).
+     - `totalBoxes` y `totalPallets` expuestos en la raíz y en el objeto `totales`.
+     - `boxes` y `cajas` expuestos en la raíz de la respuesta.
+2. **Resiliencia de Filtrado y Contadores en Frontend (`DualLabelModal.tsx`):**
+   - Construcción defensiva de `allBoxes`: extrae cajas de `p.boxes || p.cajas` de cada tarima y tiene fallback a `labelsData.cajas || labelsData.boxes`.
+   - Lectura segura de contadores: `totalBoxesCount` y `totalPalletsCount` unifican `labelsData?.totalBoxes`, `labelsData?.totales?.cajas` y `allBoxes.length`.
+   - La tarjeta de Tarima Master ahora proyecta `SKUs en Pallet: ACE-OLI-1L, ARR-BLA-1K` evaluando tanto `plt.skus` como `Object.keys(plt.skusDesglose)`.
+   - El botón *«Ver 3 Cajas Contenidas»* activa el filtro de tarima matriz y despliega de inmediato la tabla con las 3 cajas asociadas:
+     - `BOX-REC-2026-0009-0001`: Aceite de Oliva 1L, Lote `LOT-PRUEBA-OLIVA-01`, Caducidad `2028-12-31`, 12 piezas, Condición Conforme.
+     - `BOX-REC-2026-0009-0002-DANO`: Aceite de Oliva 1L, Lote `LOT-PRUEBA-OLIVA-01`, Caducidad `2028-12-31`, 12 piezas, Condición Daño Exterior (retenida en empaque, pendiente de inspección y rescate técnico en Fase 2, sin merma definitiva ni disponibilidad para venta).
+     - `BOX-REC-2026-0009-0003`: Arroz Blanco 1Kg, Lote `LOT-PRUEBA-ARROZ-02`, Caducidad `2029-06-30`, 20 piezas, Condición Conforme.
+3. **Solución a la Edición Numérica (Cero Inicial):**
+   - Sustitución de `type="number"` por `type="text"` con `inputMode="numeric"`, `onFocus={(e) => e.target.select()}`, `handleBreakdownInputChange` y `handleBreakdownInputBlur`. El usuario puede seleccionar o borrar el cero de inmediato y escribir cantidades limpiamente sin que se forme `01`.
+4. **Sincronización Permanente al Reabrir el Modal:**
+   - En `fetchLabels`, si ya existen cajas generadas en base de datos para el previo, se sincroniza automáticamente el estado de `breakdown` contando las cajas conformes y dañadas reales por partida, manteniendo intacta la clasificación (Aceite: 1 conf + 1 dañ; Arroz: 1 conf + 0 dañ; Total 3 físico, Cuadrado con Acta de Rampa).
+5. **Protección de Mercancía Dañada y Tarima Master:**
+   - La caja averiada mantiene su `estadoHu = 'DAÑADO'`. Al ingresar al inventario queda asignada a `CUARENTENA` con `cantidadBloqueada: 12` y `cantidadDisponible: 0`. Ningún movimiento o reubicación de la tarima padre altera el estatus de la caja dañada ni libera unidades vendibles.
+   - Preservación estricta de registros: se respetaron íntegramente los folios y UUIDs existentes (`deb1808b...`, `03ce5145...`, `26f72234...`, `3d309e7f...`) sin duplicar tarimas ni cajas en reintentos.
+
+#### 🧪 Verificación Realizada
+- **Suite Automatizada (`scratch/test-double-label-verification.js`):**
+  - Consulta `GET /api/receipts/:id/labels`: validado status 200, 3 cajas en raíz y en tarima, 1 tarima, array de SKUs `['ACE-OLI-1L', 'ARR-BLA-1K']`, caja dañada identificada con 12 piezas y `estadoHu: 'DAÑADO'`.
+  - Idempotencia `POST /api/receipts/:id/generate-labels`: validado `yaGeneradas: true`, preservación estricta de IDs existentes sin duplicación.
+- **Compilaciones Limpias:** `npm run build` en `wms-frontend` (código 0, 0 errores) y `wms-backend` (código 0, 0 errores).
+- **Servidores Locales en Vivo:** Backend activo en `http://localhost:3001` y Frontend activo en `http://localhost:5173`.
+
+---
+
+## [1.8.1] — 2026-09-29
+
+### 🚚 Corrección de Integridad de Datos en Acta Oficial de Entrada en Rampa (`RampDocumentModal.tsx` & `operations.controller.ts`)
+
+#### 🔍 Diagnóstico y Causa Raíz
+- **Desalineación de Esquema entre Backend y Frontend:** El endpoint `GET /api/receipts/:id/acuse-rampa` devolvía claves canónicas (`cliente: "AlimNorte"`, `transporte.linea`, `transporte.chofer`, `transporte.unidad`, `conteoExterior.declarados`, `firmas.chofer`, `firmas.leyendaChofer`, `avisoLegal`), mientras que el componente `RampDocumentModal.tsx` intentaba leer propiedades anidadas incompatibles (`data.cliente.nombreComercial`, `transporte.lineaTransporte`, `conteoRampa.bultosDeclarados`, `firmas.firmaChofer`, `estadoRampa.leyendaLegal`).
+- **Consecuencias Detectadas en Prueba Manual (REC-2026-0009):** Varios campos aparecían vacíos, el depositante se mostraba genérico como *"Cliente"*, el balance de bultos caía al fallback `0/0/0` con falso *"Faltante"*, las firmas guardadas aparecían como *"Sin firma digital"*, la cláusula de deslinde estaba en blanco, y las etiquetas de auditoría no recuperaban los valores previos ni rectificados.
+
+#### 🛠️ Correcciones Implementadas
+1. **Enriquecimiento y Alias de Compatibilidad en Backend (`operations.controller.ts`):**
+   - Provisión simultánea de nombres canónicos y alias (`cliente`, `clienteNombre`, `clienteObj`; `linea` y `lineaTransporte`; `chofer` y `nombreChofer`; `unidad` y `capacidadCarga`; `conteoExterior` y `conteoRampa`; `firmas.chofer` y `firmas.firmaChofer`; `avisoLegal` y `alcanceActa`).
+   - Conservación íntegra de la condición `CON_RESERVAS` y leyenda legal del transportista ante presencia de bultos con daño exterior, aun cuando la diferencia cuantitativa neta sea 0.
+2. **Proyección Documental Exhaustiva en Frontend (`RampDocumentModal.tsx`):**
+   - **Datos Generales:** Mapeo directo y visible de AlimNorte, Transportes Prueba, Juan Carlos Prueba, placas TEST-888-MX, capacidad CAMION 3.5 TON, Rampa 1 y receptor Jonathan Palacios.
+   - **Balance Físico de Bultos:** Despliegue fidedigno de 3 declarados, 3 recibidos, 1 con daño exterior y diferencia 0 (`0 · Cuadrado con Daño`). Preservación del banner destacado de condición `CON RESERVAS` por daño físico en descarga. Erradicación de conversión de datos ausentes en ceros ficticios.
+   - **Firmas Digitales y Leyendas:** Renderizado nítido de las 2 firmas en Base64 (`img`), sello legal dinámico del transportista (*«Entregó con reservas y discrepancias asentadas»*), sello del receptor (*«Recibió en andén y atestiguó conteo exterior»*) y nota textual de observaciones de rampa (*“Se recibieron 3 cajas en total; 1 presenta daño exterior en empaque”*).
+   - **Alcance Legal del Acta:** Inclusión de la sección formal *«Alcance del Acta & Dictamen Posterior (Revisión Exterior en Rampa)»* que estipula formalmente que el documento ampara únicamente el conteo físico exterior para la liberación del transporte, quedando sujeto a la inspección interna a detalle pieza por pieza, verificación de lotes, caducidades y dictamen de calidad posterior.
+   - **Fechas e Historial de Auditoría:** Identificación clara y por separado de la *Fecha y Hora de Liberación en Rampa* (fecha real guardada) y la *Fecha de Emisión / Impresión*. Reconstrucción de la bitácora de rectificaciones recuperando `valoresAnteriores` y `valoresNuevos` reales por evento sin etiquetas vacías ni datos inventados.
+   - **Formato y Hoja Carta:** Eliminación del desbordamiento horizontal (`overflow-x: hidden`, `minmax(0, 1fr)` en grids, `table-layout: fixed`), diseño responsivo en vista previa (840px) y calibración para impresión en hoja Carta portrait (`@page { size: letter portrait; margin: 8mm 10mm; }`).
+   - **Control Defensivo de Carga:** Si la llamada al API falla o responde con error, el modal despliega una tarjeta de error descriptiva con botón de reintento y bloquea la opción de impresión para evitar emitir actas incompletas.
+
+#### 🧪 Certificación Automatizada de Regresión
+- **Suite Oficial (`test-regression-acuse-rampa.js`):** **28 de 28 pruebas aprobadas al 100% (0 fallidas)** validando la integridad de datos guardados en Supabase PostgreSQL vs proyección en el acuse de rampa.
+- **Compilaciones:** `wms-frontend` (`built in 38.67s`, 0 errores) y `wms-backend` (0 errores).
+
+---
+
+## [1.8.0] — 2026-09-28
+
+### 🚚 Fase 1: Acta de Entrada en Rampa, Doble Etiquetado Giving Out y Blindaje de Conectividad
+
+#### 📝 Pilar 1: Acta de Entrada en Rampa & Liberación de Chofer Exprés (`RampArrivalModal.tsx` & `RampDocumentModal.tsx`)
+- **Captura de Balance Físico de Bultos en Rampa:**
+  - Balance en tiempo real: *Bultos Declarados*, *Bultos Recibidos* y *Bultos con Daño Exterior*.
+  - Fórmula estricta de variación: `recibidos - declarados`.
+  - Validación rigurosa: los bultos con daño exterior son un subconjunto menor o igual a los recibidos; cantidades obligatorias enteras y no negativas.
+- **Solución al Cero Inicial en Campos de Captura:**
+  - Sustitución de inputs numéricos rígidos por manejo reactivo con `handleBultosChange` (`type="text"` con `inputMode="numeric"`), permitiendo vaciar el campo mientras se edita sin que se anteponga un cero (`01`, `02`).
+- **Firmas Digitales Vectorizadas & Resiliencia de Guardado:**
+  - Captura dual de firmas mediante canvas táctil/mouse para Chofer de la unidad y Receptor de andén.
+  - Sello legal dinámico del transportista: conmuta automáticamente entre *«Entregó carga conforme (revisión exterior)»* y *«Entregó con reservas y discrepancias asentadas»* ante cualquier diferencia o daño.
+  - Incorporado `AbortController` con timeout de 20s para erradicar bloqueos de UI en *"Procesando..."*. En caso de error o lentitud de red, se muestra mensaje claro y **se preservan intactos el 100% de los datos y firmas capturados** para reintentar con 1 clic.
+  - Conmutación automática del modal a estado local reactivo (`activeReceipt`), desplegando la insignia *«Chofer Liberado ✓»* y acceso directo a *«Abrir Acta Imprimible»*.
+- **Historial Inmutable de Auditoría & Modo Corrección Posterior:**
+  - Si un folio liberado requiere rectificación física o documental, el sistema exige justificación obligatoria (`motivoCorreccion >= 5 chars`) y archiva la versión anterior en `historialCorreccionesRampa` con fecha, usuario y valores previos sin sobrescritura destructiva.
+- **Acta Oficial Imprimible de Rampa (`RampDocumentModal.tsx`):**
+  - Generación de acuse formal con código de barras Code-128 del folio de transporte, resumen de bultos, sellos, firmas digitales renderizadas y aviso legal de revisión exterior.
+
+#### 🏷️ Pilar 3: Doble Etiquetado Industrial Giving Out (`DualLabelModal.tsx` & `operations.controller.ts`)
+- **Generación Idempotente de 2 Niveles:**
+  - **Tarima Master (HandlingUnit tipo PALLET):** Código único con código QR 2D que consolida desglose de cajas, SKUs, factura de respaldo y lotes.
+  - **Cajas Únicas (HandlingUnit tipo CAJA):** Código de barras Code-128 individual con ID irrepetible, SKU, descripción, lote, fecha de vencimiento y factura, **sin quemar ubicación física de rack en la etiqueta** para permitir putaway dinámico posterior.
+- **Flujo de Impresión y Confirmación en Andén:**
+  - Registro de auditoría para primera emisión y reimpresión controlada (`POST /api/receipts/:id/labels/print`).
+  - Botón de confirmación de pegado físico en andén (`POST /api/receipts/:id/labels/confirm-placement`), que actualiza el estado a `COLOCADAS` y habilita el candado operativo para la Fase 4 (Putaway).
+
+#### 🛡️ Blindaje de Infraestructura, PostgreSQL y Express (`wms-backend`)
+- **Resiliencia de Pool PostgreSQL en Supabase (`prisma.service.ts`):**
+  - Configuración optimizada de `pg.Pool` con límites (`max: 10`, `idleTimeoutMillis: 30000`, `connectionTimeoutMillis: 10000`) y manejador de eventos `pool.on('error')` para erradicar caídas `DriverAdapterError: ConnectionClosed` ocasionadas por desconexión de sockets TCP inactivos en Supabase.
+- **Límite de Payload en Express (`main.ts`):**
+  - Configuración de parser JSON y URL-encoded a **10 MB** (`json({ limit: '10mb' })`), evitando errores `413 Payload Too Large` y cuelgues al transmitir firmas Base64 de alta resolución.
+- **Sincronización de Compilación NestJS (`nest-cli.json`):**
+  - Declaración explícita de `entryFile: "src/main"` para erradicar errores `MODULE_NOT_FOUND: Cannot find module dist/main` al recompilar en watch mode (`npm run start:dev`).
+
+#### 🧪 Validación Integral de Prueba (Folio `REC-2026-0009`)
+- Previo cargado exitosamente desde `Plantilla_Previo_Prueba_Fase1_GivingOut.xlsx` con cliente *AlimNorte* y factura `FAC-PRUEBA-FASE1-001`.
+- Escenario auditado: 3 bultos declarados, 3 recibidos en total, 1 con daño exterior (Diferencia = 0, Estado de carga: `CON_RESERVAS`, leyenda: «Entregó con reservas y discrepancias asentadas»).
+- Preservación íntegra de 2 entradas de auditoría en la base de datos Supabase.
+
+---
+
 ## [1.7.0] — 2026-09-23
 
 ### 🎨 Unificación Estética Minimalista, Panel IA Colapsable y Hoja de Ruta Operativa 3PL

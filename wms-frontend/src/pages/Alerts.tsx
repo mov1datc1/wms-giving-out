@@ -24,11 +24,11 @@ const PRIORIDAD_CONFIG: Record<string, { color: string; badge: string }> = {
 };
 
 const AREAS = [
-  { value: 'COMPRAS', label: '🛒 Compras', desc: 'Gestión de proveedores y reposición' },
-  { value: 'DESPACHO', label: '🚚 Despacho', desc: 'Preparación y envío de pedidos' },
-  { value: 'INVENTARIO', label: '📦 Inventario', desc: 'Control y verificación de stock' },
-  { value: 'CALIDAD', label: '✅ Calidad', desc: 'Inspección y vencimientos' },
-  { value: 'ALMACEN', label: '🏭 Almacén', desc: 'Operaciones de piso' },
+  { value: 'COMPRAS', label: 'Compras', desc: 'Gestión de proveedores y reposición' },
+  { value: 'DESPACHO', label: 'Despacho', desc: 'Preparación y envío de pedidos' },
+  { value: 'INVENTARIO', label: 'Inventario', desc: 'Control y verificación de stock' },
+  { value: 'CALIDAD', label: 'Calidad', desc: 'Inspección y vencimientos' },
+  { value: 'ALMACEN', label: 'Almacén', desc: 'Operaciones de piso' },
 ];
 
 // Auto-suggest area based on alert type
@@ -92,7 +92,7 @@ export function Alerts() {
       const res = await fetch(`${API}/alerts/generate`, { method: 'POST', headers });
       if (res.ok) {
         const result = await res.json();
-        setMsg(`✅ ${result.message}`);
+        setMsg(result.message);
         loadData();
       }
     } catch (err) { console.error(err); }
@@ -144,7 +144,7 @@ export function Alerts() {
       const res = await fetch(`${API}/tasks`, { method: 'POST', headers, body: JSON.stringify({ ...body, notificarEmail: taskForm.notificarEmail }) });
       if (!res.ok) throw new Error((await res.json()).message || 'Error');
       const task = await res.json();
-      setTaskMsg({ type: 'success', text: `✅ Tarea creada y asignada a ${AREAS.find(a => a.value === taskForm.area)?.label || taskForm.area}${taskForm.asignadoNombre ? ` — ${taskForm.asignadoNombre}` : ''}${taskForm.notificarEmail && taskForm.asignadoA ? ' · 📧 Correo enviado' : ''}` });
+      setTaskMsg({ type: 'success', text: `Tarea creada y asignada a ${AREAS.find(a => a.value === taskForm.area)?.label || taskForm.area}${taskForm.asignadoNombre ? ` — ${taskForm.asignadoNombre}` : ''}${taskForm.notificarEmail && taskForm.asignadoA ? ' · Correo enviado' : ''}` });
       setTimeout(() => { setTaskModal(null); loadData(); }, 2500);
     } catch (err: any) { setTaskMsg({ type: 'error', text: err.message }); }
     setTaskSubmitting(false);
@@ -263,10 +263,10 @@ export function Alerts() {
                   <label className="form-label">Prioridad</label>
                   <select className="form-select form-select-full" value={taskForm.prioridad}
                     onChange={e => setTaskForm(f => ({ ...f, prioridad: e.target.value }))}>
-                    <option value="BAJA">🟢 Baja</option>
-                    <option value="MEDIA">🔵 Media</option>
-                    <option value="ALTA">🟡 Alta</option>
-                    <option value="URGENTE">🔴 Urgente</option>
+                    <option value="BAJA">Baja</option>
+                    <option value="MEDIA">Media</option>
+                    <option value="ALTA">Alta</option>
+                    <option value="URGENTE">Urgente</option>
                   </select>
                 </div>
                 <div className="form-group">
@@ -335,7 +335,7 @@ export function Alerts() {
                       {hasTasks && (
                         <span className="badge badge-info" style={{ fontSize: 10, cursor: 'pointer' }}
                           onClick={() => setExpandedAlert(expandedAlert === a.id ? null : a.id)}>
-                          📋 {a.tasks.length} tarea{a.tasks.length > 1 ? 's' : ''}
+                          {a.tasks.length} tarea{a.tasks.length > 1 ? 's' : ''}
                         </span>
                       )}
                     </div>
@@ -361,7 +361,7 @@ export function Alerts() {
                 {/* Expandable tasks list */}
                 {hasTasks && expandedAlert === a.id && (
                   <div style={{ borderTop: '1px solid var(--border)', padding: '12px 20px', background: 'var(--bg-secondary)' }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text-secondary)' }}>📋 Tareas asignadas</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text-secondary)' }}>Tareas asignadas</div>
                     {a.tasks.map((t: any) => {
                       const areaLabel = AREAS.find(ar => ar.value === t.area)?.label || t.area;
                       const statusColor = t.estado === 'COMPLETADA' ? 'var(--emerald)' : t.estado === 'EN_PROCESO' ? 'var(--info)' : 'var(--orange)';

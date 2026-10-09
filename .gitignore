@@ -5,3 +5,41 @@ dist/
 .DS_Store
 wms_movida_master/
 *.timestamp-*.mjs
+
+# Build info
+*.tsbuildinfo
+
+# Scratch and temporary scripts
+scratch/
+wms-backend/scratch/
+wms-backend/scripts/
+__pycache__/
+*.pdf
+*.xlsx
+docs/
+Reporte_*.md
+Giving_Out_*.md
+
+# Developer test, scratch, audit, and diagnostic scripts
+scratch-*
+test-*
+verify-*
+audit-*
+check-*
+dump-*
+repair-*
+inspect_*
+generate_*
+test_*
+export_*
+create-cleanup-backup.js
+execute-safe-cleanup.js
+generate-and-validate-excel-files.js
+get-catalog.js
+
+# Snapshots and backups
+*.jsonl
+*-snapshot.json
+wms-backend/backup-cleanup-receipts-snapshot.json
+wms-backend/audit-reference-snapshot.json
+

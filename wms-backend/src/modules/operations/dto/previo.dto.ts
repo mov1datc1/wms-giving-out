@@ -488,3 +488,361 @@ export class BatchReceptionDto {
   lineas: BatchReceptionLineItemDto[];
 }
 
+/**
+ * DTO para el registro del Arribo a Rampa y Emisión de Acta de Chofer Exprés (Fase 1)
+ */
+export class RampaArriboDto {
+  @ApiProperty({
+    description: 'Total de bultos/cajas declarados según carta porte o factura de respaldo',
+    example: 400,
+    minimum: 0,
+    required: true,
+  })
+  bultosDeclarados: number;
+
+  @ApiProperty({
+    description: 'Total de bultos/cajas efectivamente descargados y recibidos en rampa',
+    example: 400,
+    minimum: 0,
+    required: true,
+  })
+  bultosRecibidos: number;
+
+  @ApiProperty({
+    description: 'Bultos que presentan daño exterior visible (cajas rotas, aplastadas o abiertas). Es un subconjunto de bultosRecibidos.',
+    example: 10,
+    minimum: 0,
+    required: true,
+  })
+  bultosDanados: number;
+
+  @ApiPropertyOptional({
+    description: 'Observaciones del estado exterior de la carga y empaque en rampa',
+    example: 'Se reciben 10 bultos con rotura visible en cinta y aplastamiento lateral',
+  })
+  observacionesRampa?: string;
+
+  @ApiPropertyOptional({
+    description: 'Andén o bahía de descarga asignada en el CEDIS',
+    example: 'Andén 02',
+  })
+  andenAsignado?: string;
+
+  @ApiPropertyOptional({
+    description: 'Línea de transporte o fletera',
+    example: 'TRANSPORTES CASTORES S.A. DE C.V.',
+  })
+  lineaTransporte?: string;
+
+  @ApiPropertyOptional({
+    description: 'Capacidad o tipo de unidad (ej. Rabón, Camión 3.5 Ton, Tráiler 53 pies)',
+    example: 'CAMION 3.5 TONELADAS',
+  })
+  capacidadCarga?: string;
+
+  @ApiPropertyOptional({
+    description: 'Placas del vehículo de transporte',
+    example: '7851-ZP',
+  })
+  placa?: string;
+
+  @ApiPropertyOptional({
+    description: 'Nombre completo del chofer u operador de transporte',
+    example: 'BRYAN CID ANGELES',
+  })
+  nombreChofer?: string;
+
+  @ApiPropertyOptional({
+    description: 'Folio de carta porte, guía de embarque o remisión',
+    example: '23120690080',
+  })
+  folioTransporte?: string;
+
+  @ApiProperty({
+    description: 'Firma digital en Base64 del chofer/transportista',
+    example: 'data:image/svg+xml;base64,...',
+    required: true,
+  })
+  firmaChofer: string;
+
+  @ApiProperty({
+    description: 'Firma digital en Base64 del receptor / supervisor de andén Giving Out',
+    example: 'data:image/svg+xml;base64,...',
+    required: true,
+  })
+  firmaReceptor: string;
+
+  @ApiPropertyOptional({
+    description: 'Nombre del supervisor o auditor de andén que recibió físicamente',
+    example: 'Alejandra Martínez',
+  })
+  nombreReceptor?: string;
+
+  @ApiPropertyOptional({
+    description: 'Usuario del sistema que ejecuta la operación',
+    example: 'supervisor@givingout.com',
+  })
+  usuario?: string;
+
+  @ApiPropertyOptional({
+    description: 'Motivo de corrección si se está rectificando un acta previamente firmada',
+    example: 'Aclaración de placas por error tipográfico de transportista',
+  })
+  motivoCorreccion?: string;
+}
+
+/**
+ * DTO para la clasificación física de cajas por partida en andén (conforme, daño exterior, faltante)
+ */
+export class LineaClasificacionDto {
+  @ApiProperty({
+    description: 'ID de la partida del previo (ReceiptLine)',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+    required: true,
+  })
+  receiptLineId: string;
+
+  @ApiPropertyOptional({
+    description: 'Cajas físicas recibidas conformes',
+    example: 1,
+    default: 0,
+  })
+  cajasConformes?: number;
+
+  @ApiPropertyOptional({
+    description: 'Cajas físicas recibidas con daño exterior (subconjunto de recibidas)',
+    example: 1,
+    default: 0,
+  })
+  cajasDanadas?: number;
+
+  @ApiPropertyOptional({
+    description: 'Cajas faltantes que no llegaron físicamente en la unidad',
+    example: 1,
+    default: 0,
+  })
+  cajasFaltantes?: number;
+}
+
+/**
+ * DTO para generar el Doble Etiquetado (Tarimas Master + Cajas Únicas)
+ */
+export class GenerateLabelsDto {
+  @ApiPropertyOptional({
+    description: 'Cantidad estimada de cajas que caben en una tarima master estándar',
+    example: 40,
+    default: 40,
+  })
+  cajasPorTarima?: number;
+
+  @ApiPropertyOptional({
+    description: 'Usuario que solicita la generación de etiquetas',
+    example: 'supervisor@givingout.com',
+  })
+  usuario?: string;
+
+  @ApiPropertyOptional({
+    description: 'Forzar regeneración si ya existían etiquetas previas (por defecto false)',
+    example: false,
+    default: false,
+  })
+  forceRegenerate?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Desglose físico por partida para recepciones con faltantes o daños en rampa',
+    type: [LineaClasificacionDto],
+  })
+  lineasClasificacion?: LineaClasificacionDto[];
+}
+
+/**
+ * DTO para confirmar la colocación física de etiquetas en andén
+ */
+export class ConfirmPlacementDto {
+  @ApiPropertyOptional({
+    description: 'Usuario u operador de andén que confirma haber colocado físicamente las etiquetas',
+    example: 'operador@givingout.com',
+  })
+  usuario?: string;
+
+  @ApiPropertyOptional({
+    description: 'Nombre del colocador de etiquetas',
+    example: 'Jonathan Palacios',
+  })
+  colocadoPor?: string;
+
+  @ApiPropertyOptional({
+    description: 'Notas u observaciones del etiquetado físico',
+    example: 'Etiquetas adheridas al 100% en todas las cajas y tarimas master',
+  })
+  notas?: string;
+}
+
+/**
+ * DTO para la identificación física de un bulto/caja con daño exterior (Fase 2 - Paso Operativo)
+ */
+export class IdentifyDamagedBoxDto {
+  @ApiProperty({ description: 'ID de la partida del previo a la que corresponde el bulto dañado', example: 'd3b07384-d113-4a11-9a99-0123456789ab' })
+  receiptLineId: string;
+
+  @ApiPropertyOptional({ description: 'Cantidad total de piezas contenidas en esta caja', example: 12 })
+  piezasTotales?: number;
+
+  @ApiPropertyOptional({ description: 'Lote físico impreso en la caja', example: 'LOTE-2026-A1' })
+  loteTexto?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha de caducidad física de la caja' })
+  fechaVencimiento?: string | Date;
+
+  @ApiPropertyOptional({ description: 'Motivo u observación del daño exterior visible', example: 'Rotura de envase por compresión / estiba pesada' })
+  motivoDano?: string;
+
+  @ApiPropertyOptional({ description: 'Notas adicionales del operador o inspector' })
+  observaciones?: string;
+
+  @ApiPropertyOptional({ description: 'Usuario que identifica físicamente el bulto', example: 'Operador Andén / Calidad' })
+  usuario?: string;
+}
+
+/**
+ * DTO para dictamen unitario por caja en inspección interna
+ */
+export class ItemInspectionDictamenDto {
+  @ApiProperty({ description: 'ID de la HandlingUnit (caja dañada) a inspeccionar', example: '26f72234-272e-47d4-ac1b-a0fd04c58d8f' })
+  huId: string;
+
+  @ApiProperty({ description: 'Cantidad total de piezas dentro de la caja', example: 12 })
+  piezasTotales: number;
+
+  @ApiProperty({ description: 'Cantidad de piezas conformes rescatadas sanas', example: 10 })
+  piezasRescatadas: number;
+
+  @ApiProperty({ description: 'Cantidad de piezas que no se pudieron salvar (merma definitiva)', example: 2 })
+  piezasMerma: number;
+
+  @ApiPropertyOptional({ description: 'Motivo del daño físico en empaque o piezas', example: 'Rotura de envase / fuga de líquido' })
+  motivoDano?: string;
+
+  @ApiPropertyOptional({ description: 'Notas u observaciones del inspector sobre esta caja' })
+  observaciones?: string;
+}
+
+/**
+ * DTO para ejecutar la inspección interna y reacondicionamiento (Fase 2)
+ */
+export class ExecuteQualityInspectionDto {
+  @ApiProperty({ description: 'Nombre del inspector o líder de calidad', example: 'Jonathan Palacios' })
+  inspectorNombre: string;
+
+  @ApiProperty({ description: 'Lista de cajas inspeccionadas con su dictamen pieza por pieza', type: [ItemInspectionDictamenDto] })
+  items: ItemInspectionDictamenDto[];
+
+  @ApiPropertyOptional({ description: 'Indica si se deben armar cajas estándar nuevas con las piezas rescatadas', default: true })
+  armarCajasConformes?: boolean;
+
+  @ApiPropertyOptional({ description: 'Horas hombre dedicadas a la maquila / reacondicionamiento', example: 1.5 })
+  horasMaquila?: number;
+
+  @ApiPropertyOptional({ description: 'Tarifa por hora de servicio de maquila 3PL (en MXN)', example: 250.0 })
+  tarifaMaquilaPorHora?: number;
+
+  @ApiPropertyOptional({ description: 'Notas u observaciones generales del reacondicionamiento' })
+  observacionesGenerales?: string;
+}
+
+/**
+ * DTO para cada movimiento de guardado / putaway a racks
+ */
+export class PutawayMoveItemDto {
+  @ApiPropertyOptional({ description: 'ID de la HandlingUnit (caja o pallet) que se traslada', example: '26f72234-272e-47d4-ac1b-a0fd04c58d8f' })
+  huId?: string;
+
+  @ApiPropertyOptional({ description: 'Código de la HandlingUnit (ej. BOX-REC-2026-0009-0001)', example: 'BOX-REC-2026-0009-0001' })
+  huCodigo?: string;
+
+  @ApiProperty({ description: 'ID del SKU que se está alojando', example: 'c1234567-89ab-cdef-0123-456789abcdef' })
+  skuId: string;
+
+  @ApiProperty({ description: 'Cantidad física en piezas a trasladar al rack', example: 12 })
+  cantidad: number;
+
+  @ApiProperty({ description: 'ID de la ubicación física destino en el rack', example: 'd1234567-89ab-cdef-0123-456789abcdef' })
+  ubicacionDestinoId: string;
+
+  @ApiPropertyOptional({ description: 'Código de la ubicación física destino (ej. B01-R01-N1)', example: 'B01-R01-N1' })
+  ubicacionDestinoCodigo?: string;
+
+  @ApiPropertyOptional({ description: 'Código escaneado por el montacarguista para la caja/tarima', example: 'BOX-REC-2026-0009-0001' })
+  scannedHuCode?: string;
+
+  @ApiPropertyOptional({ description: 'Código escaneado por el montacarguista para el rack físico', example: 'B01-R01-N1' })
+  scannedLocationCode?: string;
+
+  @ApiPropertyOptional({ description: 'Bandera que confirma la validación de escaneo de HU', default: false })
+  huScanValidated?: boolean;
+
+  @ApiPropertyOptional({ description: 'Bandera que confirma la validación de escaneo de rack físico', default: false })
+  rackScanValidated?: boolean;
+}
+
+/**
+ * DTO para la validación individual de Escaneo Dual (HU + Rack) en Putaway
+ */
+export class ValidatePutawayItemDto {
+  @ApiPropertyOptional({ description: 'ID de la HandlingUnit a validar' })
+  huId?: string;
+
+  @ApiPropertyOptional({ description: 'Código de la HandlingUnit' })
+  huCodigo?: string;
+
+  @ApiProperty({ description: 'Código de la HU escaneado físicamente por el operador' })
+  scannedHuCode: string;
+
+  @ApiProperty({ description: 'Bandera de validación exitosa de escaneo de HU' })
+  huScanValidated: boolean;
+
+  @ApiProperty({ description: 'ID de la ubicación física de destino en rack' })
+  ubicacionDestinoId: string;
+
+  @ApiProperty({ description: 'Código del rack escaneado físicamente por el operador' })
+  scannedLocationCode: string;
+
+  @ApiProperty({ description: 'Bandera de validación exitosa de escaneo del rack físico' })
+  rackScanValidated: boolean;
+
+  @ApiPropertyOptional({ description: 'Nombre del operador o montacarguista' })
+  usuario?: string;
+}
+
+/**
+ * DTO para restablecer la validación de una HU y dejarla pendiente de re-escaneo dual
+ */
+export class ResetPutawayItemDto {
+  @ApiPropertyOptional({ description: 'ID de la HandlingUnit a restablecer' })
+  huId?: string;
+
+  @ApiPropertyOptional({ description: 'Código de la HandlingUnit' })
+  huCodigo?: string;
+
+  @ApiPropertyOptional({ description: 'Motivo del restablecimiento de la validación' })
+  motivo?: string;
+
+  @ApiPropertyOptional({ description: 'Nombre del operador o montacarguista' })
+  usuario?: string;
+}
+
+/**
+ * DTO para confirmar el Alojamiento / Putaway y activar el stock a DISPONIBLE (Fase 4)
+ */
+export class ConfirmPutawayDto {
+  @ApiProperty({ description: 'Lista de movimientos de guardado a racks', type: [PutawayMoveItemDto] })
+  movimientos: PutawayMoveItemDto[];
+
+  @ApiPropertyOptional({ description: 'Operador o montacarguista responsable del traslado físico', example: 'Jonathan Palacios (Montacargas 01)' })
+  usuario?: string;
+
+  @ApiPropertyOptional({ description: 'Modo de confirmación utilizado', enum: ['DIRECTO', 'ESCANEADO_HANDHELD'], default: 'ESCANEADO_HANDHELD' })
+  modo?: 'DIRECTO' | 'ESCANEADO_HANDHELD';
+}
+
+

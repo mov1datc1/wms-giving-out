@@ -2,6 +2,7 @@ import { Controller, Get, Post, Body, Query, HttpCode, HttpStatus, HttpException
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 import { DivertToVirtualDto } from './dto/divert-virtual.dto';
+import { TransferToVirtualDto, ReleaseFromVirtualDto } from './dto/transfer-virtual.dto';
 
 @ApiTags('Inventory')
 @Controller('api/inventory')
@@ -30,14 +31,41 @@ export class InventoryController {
     if (skuId) where.skuId = skuId;
     if (estado) where.estadoCalidad = estado;
 
-    return this.prisma.lotInventory.findMany({
+    const lots = await this.prisma.lotInventory.findMany({
       where,
       include: {
         sku: { select: { codigo: true, descripcion: true, categoria: true, talla: true, color: true, marca: true, uomBase: true, capacidadEmpaque: true } },
-        cliente: { select: { nombreComercial: true, giro: true } },
+        cliente: { select: { nombreComercial: true, giro: true, manejoInventario: true, uomPrincipal: true, reglaInventario: true } },
         ubicacion: { select: { codigo: true, tipoUbicacion: true, zona: { select: { codigo: true, nombre: true } } } },
+        handlingUnits: { select: { id: true, codigo: true, tipoHu: true, cantidad: true, ubicacionActual: true, estadoHu: true, loteTexto: true, reacondicionada: true, piezasPorCaja: true, cajaOrigenId: true } },
       },
       orderBy: [{ fechaVencimiento: 'asc' }, { sku: { descripcion: 'asc' } }],
+    });
+
+    const now = new Date();
+    return lots.map(l => {
+      const fisico = l.cantidadDisponible || 0;
+      const reservado = Math.max(0, l.cantidadReservada || 0);
+      const isExpired = Boolean(l.fechaVencimiento && new Date(l.fechaVencimiento) <= now);
+      const isBlocked = l.estadoCalidad !== 'LIBERADO';
+      const disponible = (!isExpired && !isBlocked) ? Math.max(0, fisico - reservado) : 0;
+
+      const isCajaCerrada = l.cliente?.manejoInventario === 'CAJA' || l.cliente?.uomPrincipal === 'CAJA' || l.cliente?.reglaInventario === 'CAJA_CERRADA' || (l.cliente as any)?.politicaEmpaque === 'CAJA_CERRADA' || l.cliente?.nombreComercial?.includes('AlimNorte');
+      const partialUnits = isCajaCerrada && l.handlingUnits
+        ? l.handlingUnits.filter((h: any) => h.reacondicionada || (h.piezasPorCaja && h.cantidad < h.piezasPorCaja) || h.codigo?.includes('PARCIAL')).reduce((s: number, h: any) => s + (Number(h.cantidad) || 0), 0)
+        : 0;
+      const cantidadElegible = Math.max(0, disponible - partialUnits);
+
+      return {
+        ...l,
+        isExpired,
+        isBlocked,
+        cantidadFisica: fisico,
+        cantidadReservada: reservado,
+        cantidadDisponibleLibre: disponible,
+        stockLibre: disponible,
+        cantidadElegible,
+      };
     });
   }
 
@@ -46,17 +74,41 @@ export class InventoryController {
   async getHandlingUnits(
     @Query('clienteId') clienteId?: string,
     @Query('estado') estado?: string,
+    @Query('search') search?: string,
   ) {
     const where: any = {};
     if (clienteId) where.clienteId = clienteId;
-    if (estado) where.estadoHu = estado;
-    else where.estadoHu = 'ACTIVO';
+    if (estado) {
+      if (estado === 'TODOS' || estado === 'ALL') {
+        // No filter, show all HUs
+      } else if (estado.includes(',')) {
+        where.estadoHu = { in: estado.split(',').map(s => s.trim()) };
+      } else {
+        where.estadoHu = estado;
+      }
+    }
+    if (search && search.trim()) {
+      const q = search.trim();
+      where.OR = [
+        { codigo: { contains: q, mode: 'insensitive' } },
+        { loteTexto: { contains: q, mode: 'insensitive' } },
+        { skuCodigo: { contains: q, mode: 'insensitive' } },
+        { lote: { lote: { contains: q, mode: 'insensitive' } } },
+        { lote: { sku: { codigo: { contains: q, mode: 'insensitive' } } } },
+        { lote: { sku: { descripcion: { contains: q, mode: 'insensitive' } } } },
+      ];
+    }
 
     return this.prisma.handlingUnit.findMany({
       where,
       include: {
-        lote: { include: { sku: { select: { codigo: true, descripcion: true, categoria: true } } } },
-        cliente: { select: { nombreComercial: true } },
+        lote: {
+          include: {
+            sku: { select: { codigo: true, descripcion: true, categoria: true, uomBase: true, capacidadEmpaque: true } },
+            ubicacion: { select: { codigo: true } },
+          },
+        },
+        cliente: { select: { nombreComercial: true, manejoInventario: true, uomPrincipal: true, reglaInventario: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -73,8 +125,17 @@ export class InventoryController {
       include: { sku: { select: { codigo: true, descripcion: true, categoria: true, clienteId: true } }, cliente: { select: { nombreComercial: true } } },
     });
 
-    const totalUnidades = lots.reduce((sum, l) => sum + l.cantidadDisponible, 0);
-    const totalReservado = lots.reduce((sum, l) => sum + l.cantidadReservada, 0);
+    const now = new Date();
+    const totalFisico = lots.reduce((sum, l) => sum + (l.cantidadDisponible || 0), 0);
+    const totalReservado = lots.reduce((sum, l) => sum + Math.max(0, l.cantidadReservada || 0), 0);
+    const totalDisponible = lots.reduce((sum, l) => {
+      const isExpired = Boolean(l.fechaVencimiento && new Date(l.fechaVencimiento) <= now);
+      const isBlocked = l.estadoCalidad !== 'LIBERADO';
+      if (isExpired || isBlocked) return sum;
+      const fis = l.cantidadDisponible || 0;
+      const res = Math.max(0, l.cantidadReservada || 0);
+      return sum + Math.max(0, fis - res);
+    }, 0);
     const totalSkus = new Set(lots.map(l => l.skuId)).size;
     const totalLotes = lots.length;
 
@@ -96,7 +157,7 @@ export class InventoryController {
       porCliente[cn].skus = skusByClient[cn]?.size || 0;
     }
 
-    return { totalUnidades, totalReservado, totalSkus, totalLotes, porCliente: Object.values(porCliente) };
+    return { totalFisico, totalUnidades: totalFisico, totalReservado, totalDisponible, totalSkus, totalLotes, porCliente: Object.values(porCliente) };
   }
 
   @Get('movements')
@@ -113,11 +174,12 @@ export class InventoryController {
     return this.prisma.inventoryMovement.findMany({
       where,
       include: {
-        sku: { select: { codigo: true, descripcion: true } },
+        sku: { select: { codigo: true, descripcion: true, uomBase: true } },
         fromLocation: { select: { codigo: true } },
         toLocation: { select: { codigo: true } },
-        almacen: { select: { codigo: true } },
-        lote: { select: { lote: true } },
+        almacen: { select: { codigo: true, nombre: true } },
+        lote: { select: { lote: true, fechaVencimiento: true } },
+        hu: { select: { codigo: true } },
       },
       orderBy: { fechaHora: 'desc' },
       take: parseInt(limit || '100'),
@@ -418,6 +480,445 @@ export class InventoryController {
       },
       lotes: lots,
     };
+  }
+
+  // ============ TRANSFERENCIA MANUAL Y MASIVA A ALMACÉN VIRTUAL ============
+  @Post('transfer-to-virtual')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Transferir inventario (individual o masivo) de Stock Operativo a Almacén Virtual',
+    description: 'Disminuye Stock Operativo, aumenta Almacén Virtual, bloquea disponibilidad comercial, y registra Kárdex y auditoría inmutable.',
+  })
+  async transferToVirtual(@Body() body: TransferToVirtualDto) {
+    if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
+      throw new HttpException(
+        { statusCode: HttpStatus.BAD_REQUEST, message: 'Debe proporcionar al menos un ítem para transferir', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const usuario = body.usuario?.trim() || 'Supervisor de Inventario';
+    const locs = await this.ensureVirtualLocations();
+
+    return this.prisma.$transaction(async (tx) => {
+      let totalPiezas = 0;
+      const transferidos: any[] = [];
+      let huSequence = await tx.handlingUnit.count();
+
+      for (const item of body.items) {
+        const qty = Number(item.cantidad);
+        if (isNaN(qty) || qty <= 0) {
+          throw new HttpException(
+            { statusCode: HttpStatus.BAD_REQUEST, message: 'La cantidad a transferir debe ser mayor a 0', error: 'Bad Request' },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        const originLot = await tx.lotInventory.findUnique({
+          where: { id: item.lotId },
+          include: { sku: true, cliente: true, ubicacion: true, handlingUnits: true },
+        });
+
+        if (!originLot) {
+          throw new HttpException(
+            { statusCode: HttpStatus.NOT_FOUND, message: `Lote de inventario ${item.lotId} no encontrado`, error: 'Not Found' },
+            HttpStatus.NOT_FOUND,
+          );
+        }
+
+        // Validar cantidad física disponible (no reservada)
+        const cantFisica = originLot.cantidadDisponible || 0;
+        const cantReservada = originLot.cantidadReservada || 0;
+        const disponibleParaTransferir = Math.max(0, cantFisica - cantReservada);
+
+        if (qty > disponibleParaTransferir) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.BAD_REQUEST,
+              message: `Cantidad insuficiente para transferir en el SKU ${originLot.sku.codigo} (Lote: ${originLot.lote || 'N/A'}). Físico disponible no reservado: ${disponibleParaTransferir}, Solicitado: ${qty}`,
+              error: 'Bad Request',
+            },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        const motivo = (item.motivo || body.motivoGeneral || 'Transferencia a Almacén Virtual').trim();
+        const obs = (item.observaciones || body.observaciones || '').trim();
+
+        // Determinar destino virtual
+        let destLoc = locs.devLoc;
+        if (body.ubicacionDestinoId) {
+          const foundLoc = await tx.location.findUnique({ where: { id: body.ubicacionDestinoId } });
+          if (foundLoc) destLoc = foundLoc;
+        } else if (motivo.toLowerCase().includes('exceso') || motivo.toLowerCase().includes('sobrante')) {
+          destLoc = locs.excesoLoc;
+        }
+
+        // Determinar estado de calidad en Almacén Virtual
+        let estadoVirtual = 'CUARENTENA';
+        const isCaducado = motivo.toLowerCase().includes('caduc') || (originLot.fechaVencimiento && new Date(originLot.fechaVencimiento) <= new Date());
+        if (isCaducado) {
+          estadoVirtual = 'BLOQUEADO';
+        } else if (motivo.toLowerCase().includes('merma') || motivo.toLowerCase().includes('daño') || motivo.toLowerCase().includes('dano')) {
+          estadoVirtual = 'MERMA';
+        }
+
+        // 1. Descontar de stock operativo
+        await tx.lotInventory.update({
+          where: { id: originLot.id },
+          data: {
+            cantidadDisponible: { decrement: qty },
+          },
+        });
+
+        // 2. Crear registro en Almacén Virtual
+        const virtualLot = await tx.lotInventory.create({
+          data: {
+            skuId: originLot.skuId,
+            clienteId: originLot.clienteId,
+            lote: originLot.lote,
+            fechaVencimiento: originLot.fechaVencimiento,
+            estadoCalidad: estadoVirtual,
+            cantidadBloqueada: qty,
+            cantidadDisponible: 0,
+            ubicacionId: destLoc.id,
+            notas: `[ALMACEN_VIRTUAL_NC] Transferido desde ${originLot.ubicacion?.codigo || 'Stock'}: ${motivo}${obs ? ` | Obs: ${obs}` : ''}`,
+          },
+        });
+
+        // 3. Manejo de Handling Unit si aplica
+        let huIdFinal: string | null = null;
+        if (item.huId) {
+          const originHu = await tx.handlingUnit.findUnique({ where: { id: item.huId } });
+          if (originHu) {
+            if (originHu.cantidad === qty) {
+              await tx.handlingUnit.update({
+                where: { id: originHu.id },
+                data: {
+                  ubicacionActual: destLoc.id,
+                  estadoHu: 'BLOQUEADO',
+                  lotId: virtualLot.id,
+                },
+              });
+              huIdFinal = originHu.id;
+            } else {
+              await tx.handlingUnit.update({
+                where: { id: originHu.id },
+                data: { cantidad: { decrement: qty } },
+              });
+              huSequence++;
+              const newHuCode = `HU-NC-${new Date().getFullYear()}-${String(huSequence).padStart(5, '0')}`;
+              const createdHu = await tx.handlingUnit.create({
+                data: {
+                  codigo: newHuCode,
+                  tipoHu: originHu.tipoHu || 'CAJA',
+                  lotId: virtualLot.id,
+                  clienteId: originLot.clienteId,
+                  cantidad: qty,
+                  uom: originHu.uom || 'PZA',
+                  ubicacionActual: destLoc.id,
+                  estadoHu: 'BLOQUEADO',
+                  loteTexto: originLot.lote,
+                  skuCodigo: originLot.sku.codigo,
+                  cajaOrigenId: originHu.id,
+                },
+              });
+              huIdFinal = createdHu.id;
+            }
+          }
+        } else {
+          // HU segregada para trazabilidad en almacén virtual
+          huSequence++;
+          const newHuCode = `HU-NC-${new Date().getFullYear()}-${String(huSequence).padStart(5, '0')}`;
+          const createdHu = await tx.handlingUnit.create({
+            data: {
+              codigo: newHuCode,
+              tipoHu: qty >= 50 ? 'PALLET' : 'CAJA',
+              lotId: virtualLot.id,
+              clienteId: originLot.clienteId,
+              cantidad: qty,
+              uom: originLot.sku.uomBase || 'PZA',
+              ubicacionActual: destLoc.id,
+              estadoHu: 'BLOQUEADO',
+              loteTexto: originLot.lote,
+              skuCodigo: originLot.sku.codigo,
+            },
+          });
+          huIdFinal = createdHu.id;
+        }
+
+        // 4. Registrar movimiento formal de inventario (Kárdex)
+        await tx.inventoryMovement.create({
+          data: {
+            tipoMovimiento: 'TRANSFERENCIA_A_VIRTUAL',
+            almacenId: destLoc.almacenId,
+            skuId: originLot.skuId,
+            clienteId: originLot.clienteId,
+            lotId: virtualLot.id,
+            huId: huIdFinal,
+            fromLocationId: originLot.ubicacionId,
+            toLocationId: destLoc.id,
+            cantidad: qty,
+            usuario,
+            motivo: `[TRANSFERENCIA_A_VIRTUAL] ${motivo}${obs ? ` - Obs: ${obs}` : ''}`,
+            documentoOrigen: 'TRANSFERENCIA_MANUAL',
+          },
+        });
+
+        // 5. Registrar AuditLog inmutable
+        await tx.auditLog.create({
+          data: {
+            usuario,
+            accion: 'TRANSFERENCIA_STOCK_A_VIRTUAL',
+            entidad: 'LotInventory',
+            entidadId: virtualLot.id,
+            detalle: `Transferencia de ${qty} pzas del SKU ${originLot.sku.codigo} (Lote: ${originLot.lote || 'N/A'}) desde ${originLot.ubicacion?.codigo || 'Stock'} al Almacén Virtual (${destLoc.codigo}). Motivo: ${motivo}`,
+          },
+        });
+
+        totalPiezas += qty;
+        transferidos.push({
+          skuCodigo: originLot.sku.codigo,
+          descripcion: originLot.sku.descripcion,
+          lote: originLot.lote,
+          cantidad: qty,
+          origen: originLot.ubicacion?.codigo || 'Stock Operativo',
+          destino: destLoc.codigo,
+          motivo,
+        });
+      }
+
+      return {
+        success: true,
+        totalItems: body.items.length,
+        totalPiezas,
+        mensaje: `Se transfirieron exitosamente ${totalPiezas} piezas al Almacén Virtual (No Conforme / Merma).`,
+        itemsTransferidos: transferidos,
+      };
+    }, {
+      maxWait: 15000,
+      timeout: 45000,
+    });
+  }
+
+  // ============ LIBERAR / REINTEGRAR A STOCK OPERATIVO ============
+  @Post('release-from-virtual')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Liberar / Reintegrar mercancía de Almacén Virtual a Stock Operativo',
+    description: 'Valida estrictamente caducidad, merma y bloqueos antes de permitir reintegrar inventario a disponibilidad comercial.',
+  })
+  async releaseFromVirtual(@Body() body: ReleaseFromVirtualDto) {
+    if (!body.lotId) {
+      throw new HttpException(
+        { statusCode: HttpStatus.BAD_REQUEST, message: 'lotId es obligatorio', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!body.motivo || !body.motivo.trim()) {
+      throw new HttpException(
+        { statusCode: HttpStatus.BAD_REQUEST, message: 'El motivo de liberación es obligatorio', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!body.usuario || !body.usuario.trim()) {
+      throw new HttpException(
+        { statusCode: HttpStatus.BAD_REQUEST, message: 'El usuario responsable es obligatorio', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const qty = Number(body.cantidad);
+    if (isNaN(qty) || qty <= 0) {
+      throw new HttpException(
+        { statusCode: HttpStatus.BAD_REQUEST, message: 'La cantidad a liberar debe ser mayor a 0', error: 'Bad Request' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const virtualLot = await tx.lotInventory.findUnique({
+        where: { id: body.lotId },
+        include: { sku: true, cliente: true, ubicacion: true, handlingUnits: true },
+      });
+
+      if (!virtualLot) {
+        throw new HttpException(
+          { statusCode: HttpStatus.NOT_FOUND, message: `Lote en Almacén Virtual ${body.lotId} no encontrado`, error: 'Not Found' },
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      if (qty > (virtualLot.cantidadBloqueada || 0)) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `La cantidad a liberar (${qty}) supera las existencias bloqueadas en este registro (${virtualLot.cantidadBloqueada})`,
+            error: 'Bad Request',
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 1. RESTRICCIÓN: Producto Caducado
+      const now = new Date();
+      if (virtualLot.fechaVencimiento && new Date(virtualLot.fechaVencimiento) <= now) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: 'BLOQUEO ESTRICTO: No se puede liberar a Stock Operativo un producto caducado. Su disponibilidad comercial es 0 y debe permanecer en Almacén Virtual o enviarse a disposición final.',
+            error: 'Bad Request',
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 2. RESTRICCIÓN: Merma Definitiva / Destrucción Física Registrada
+      const notas = (virtualLot.notas || '').toUpperCase();
+      const isMerma = virtualLot.estadoCalidad === 'MERMA' || notas.includes('MERMA') || notas.includes('DESTRUCCION');
+      if (isMerma && !body.referenciaCalidad) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: 'BLOQUEO ESTRICTO: No se puede liberar mercancía dictaminada como merma definitiva o con destrucción física sin un dictamen formal de Calidad / Autorización técnica registrada.',
+            error: 'Bad Request',
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 3. Determinar ubicación destino en Stock Operativo
+      let destLoc: any = null;
+      if (body.ubicacionDestinoId) {
+        destLoc = await tx.location.findUnique({ where: { id: body.ubicacionDestinoId } });
+        if (!destLoc) {
+          throw new HttpException(
+            { statusCode: HttpStatus.NOT_FOUND, message: `Ubicación destino ${body.ubicacionDestinoId} no encontrada`, error: 'Not Found' },
+            HttpStatus.NOT_FOUND,
+          );
+        }
+      } else {
+        // Buscar rack operativo común
+        destLoc = await tx.location.findFirst({
+          where: { tipoUbicacion: 'ESTANTERIA', estado: 'OCUPADO' },
+        });
+        if (!destLoc) {
+          destLoc = await tx.location.findFirst({
+            where: { tipoUbicacion: { notIn: ['DEVOLUCION', 'CUARENTENA'] } },
+          });
+        }
+      }
+
+      if (!destLoc) {
+        throw new HttpException(
+          { statusCode: HttpStatus.BAD_REQUEST, message: 'No se encontró una ubicación operativa válida para reintegrar la mercancía', error: 'Bad Request' },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 4. Descontar del almacén virtual
+      await tx.lotInventory.update({
+        where: { id: virtualLot.id },
+        data: {
+          cantidadBloqueada: { decrement: qty },
+        },
+      });
+
+      // 5. Reintegrar a Stock Operativo (buscar lote coincidente en la ubicación destino o crear uno nuevo)
+      const existingOpLot = await tx.lotInventory.findFirst({
+        where: {
+          skuId: virtualLot.skuId,
+          clienteId: virtualLot.clienteId,
+          lote: virtualLot.lote,
+          ubicacionId: destLoc.id,
+          estadoCalidad: 'LIBERADO',
+        },
+      });
+
+      let targetLotId: string;
+      if (existingOpLot) {
+        await tx.lotInventory.update({
+          where: { id: existingOpLot.id },
+          data: {
+            cantidadDisponible: { increment: qty },
+          },
+        });
+        targetLotId = existingOpLot.id;
+      } else {
+        const createdOpLot = await tx.lotInventory.create({
+          data: {
+            skuId: virtualLot.skuId,
+            clienteId: virtualLot.clienteId,
+            lote: virtualLot.lote,
+            fechaVencimiento: virtualLot.fechaVencimiento,
+            estadoCalidad: 'LIBERADO',
+            cantidadDisponible: qty,
+            cantidadBloqueada: 0,
+            ubicacionId: destLoc.id,
+            notas: `Reintegrado a Stock Operativo desde Almacén Virtual (${virtualLot.ubicacion?.codigo || 'DEV'}). Ref: ${body.referenciaCalidad || body.motivo}`,
+          },
+        });
+        targetLotId = createdOpLot.id;
+      }
+
+      // 6. Si hay HU, actualizarla
+      let huIdFinal: string | null = null;
+      if (body.huId) {
+        const hu = await tx.handlingUnit.findUnique({ where: { id: body.huId } });
+        if (hu) {
+          await tx.handlingUnit.update({
+            where: { id: hu.id },
+            data: {
+              ubicacionActual: destLoc.id,
+              estadoHu: 'ACTIVO',
+              lotId: targetLotId,
+            },
+          });
+          huIdFinal = hu.id;
+        }
+      }
+
+      // 7. Registrar InventoryMovement (Kárdex)
+      await tx.inventoryMovement.create({
+        data: {
+          tipoMovimiento: 'LIBERACION_DE_VIRTUAL',
+          almacenId: destLoc.almacenId,
+          skuId: virtualLot.skuId,
+          clienteId: virtualLot.clienteId,
+          lotId: targetLotId,
+          huId: huIdFinal,
+          fromLocationId: virtualLot.ubicacionId,
+          toLocationId: destLoc.id,
+          cantidad: qty,
+          usuario: body.usuario,
+          motivo: `[LIBERACION_A_STOCK] ${body.motivo}${body.referenciaCalidad ? ` | Ref Calidad: ${body.referenciaCalidad}` : ''}`,
+          documentoOrigen: body.referenciaCalidad || 'LIBERACION_MANUAL',
+        },
+      });
+
+      // 8. Registrar AuditLog
+      await tx.auditLog.create({
+        data: {
+          usuario: body.usuario,
+          accion: 'LIBERACION_ALMACEN_VIRTUAL_A_STOCK',
+          entidad: 'LotInventory',
+          entidadId: targetLotId,
+          detalle: `Liberación formal de ${qty} pzas del SKU ${virtualLot.sku.codigo} (Lote: ${virtualLot.lote || 'N/A'}) a Stock Operativo en ${destLoc.codigo}. Motivo: ${body.motivo}. Autorizó: ${body.usuario} (${body.rol || 'Supervisor'}). Ref Calidad: ${body.referenciaCalidad || 'N/A'}`,
+        },
+      });
+
+      return {
+        success: true,
+        mensaje: `Se reintegraron exitosamente ${qty} piezas del SKU ${virtualLot.sku.codigo} a Stock Operativo en ubicación ${destLoc.codigo}.`,
+        skuCodigo: virtualLot.sku.codigo,
+        lote: virtualLot.lote,
+        cantidadLiberada: qty,
+        ubicacionDestino: destLoc.codigo,
+      };
+    }, {
+      maxWait: 15000,
+      timeout: 45000,
+    });
   }
 
   // Helper privado para asegurar ubicaciones virtuales (idempotente)

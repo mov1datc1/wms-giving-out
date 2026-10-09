@@ -367,7 +367,7 @@ export function LocationSelect({
               {/* Barra de ocupación y razón */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, fontSize: 11, color: 'var(--text-tertiary)' }}>
                 <span style={{ fontWeight: 500, color: (selectedObj.ocupacion || 0) === 0 ? 'var(--emerald)' : 'var(--text-secondary)' }}>
-                  {(selectedObj.ocupacion || 0) === 0 ? '🟢 100% Libre' : `Ocupación: ${selectedObj.ocupacion}/${selectedObj.capacidadUnits || 50} uds`}
+                  {(selectedObj.ocupacion || 0) === 0 ? '100% Libre' : `Ocupación: ${selectedObj.ocupacion}/${selectedObj.capacidadUnits || 50} uds`}
                 </span>
                 {selectedScored?.reasons && selectedScored.reasons.length > 0 && (
                   <span style={{ color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -447,10 +447,10 @@ export function LocationSelect({
             {/* PESTAÑAS DE FILTRO */}
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
               {[
-                { id: 'SUGGESTED', label: '⭐ Sugeridas' },
-                { id: 'ZONE', label: isConforme ? '📍 Misma Zona' : '⚠️ Cuarentena' },
-                { id: 'FREE', label: '🟢 100% Libres' },
-                { id: 'ALL', label: '📦 Todas' },
+                { id: 'SUGGESTED', label: 'Sugeridas' },
+                { id: 'ZONE', label: isConforme ? 'Misma Zona' : 'Cuarentena' },
+                { id: 'FREE', label: '100% Libres' },
+                { id: 'ALL', label: 'Todas' },
               ].map(tab => (
                 <button
                   key={tab.id}
@@ -598,7 +598,7 @@ export function LocationSelect({
             color: 'var(--text-tertiary)'
           }}>
             <span>{filteredOptions.length} ubicaciones disponibles</span>
-            <span>💡 Algoritmo Putaway {client?.reglaInventario || 'FIFO'}</span>
+            <span>Algoritmo Putaway {client?.reglaInventario || 'FIFO'}</span>
           </div>
         </div>
       )}

@@ -4,13 +4,19 @@ import { API } from '../config/api';
 import {
   Truck, RefreshCw, CheckCircle, Clock, Send, MapPin, Package, Store, Hash,
   ThumbsUp, ThumbsDown, X, Eye, ChevronDown, Plane, Navigation, UserCheck,
-  PackageCheck, AlertTriangle, BarChart3, ArrowRight, FileText
+  PackageCheck, AlertTriangle, BarChart3, ArrowRight, FileText, Plus, Sliders,
+  Calendar, Layers, Lock, CheckCircle2, Zap
 } from 'lucide-react';
+import { OrderPreparationModal } from '../components/OrderPreparationModal';
+import { NewOrderModal } from '../components/NewOrderModal';
+import { DispatchManifestModal } from '../components/DispatchManifestModal';
+import { useNavigate } from 'react-router-dom';
 
 type TabKey = 'approvals' | 'ready' | 'transit' | 'delivered';
 
 export function Dispatch() {
   const { token, user } = useAuth();
+  const navigate = useNavigate();
   const [allOrders, setAllOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>('approvals');
@@ -21,6 +27,14 @@ export function Dispatch() {
   const [deliveryModal, setDeliveryModal] = useState<any>(null);
   const [deliveryForm, setDeliveryForm] = useState({ nombreReceptor: '', notasEntrega: '' });
   const [detailModal, setDetailModal] = useState<any>(null);
+
+  // Fase 5: Modales de Preparación y Nuevo Pedido
+  const [preparationOrder, setPreparationOrder] = useState<any>(null);
+  const [newOrderModalOpen, setNewOrderModalOpen] = useState(false);
+
+  // Fase 6: Modal de Manifiesto Formal de Salida y Firmas de Transporte
+  const [manifestOrder, setManifestOrder] = useState<any>(null);
+
   const headers: any = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   useEffect(() => { loadData(); }, []);
@@ -35,7 +49,7 @@ export function Dispatch() {
   }
 
   // --- Computed lists ---
-  const pendingApprovals = allOrders.filter(o => ['SOLICITADO', 'PENDIENTE_APROBACION'].includes(o.estado));
+  const pendingApprovals = allOrders.filter(o => ['SOLICITADO', 'PENDIENTE_APROBACION', 'EN_PREPARACION'].includes(o.estado));
   const readyOrders = allOrders.filter(o => ['APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado));
   const transitOrders = allOrders.filter(o => o.estado === 'DESPACHADO');
   const deliveredOrders = allOrders.filter(o => o.estado === 'ENTREGADO');
@@ -97,6 +111,7 @@ export function Dispatch() {
   const estadoBadge = (estado: string) => {
     const map: any = {
       SOLICITADO: { cls: 'info', icon: <Clock size={11} />, label: 'Solicitado' },
+      EN_PREPARACION: { cls: 'warning', icon: <Sliders size={11} />, label: 'En Preparación' },
       APROBADO: { cls: 'success', icon: <ThumbsUp size={11} />, label: 'Aprobado' },
       EN_PICKING: { cls: 'warning', icon: <Package size={11} />, label: 'En Picking' },
       CONSOLIDADO: { cls: 'info', icon: <PackageCheck size={11} />, label: 'Consolidado' },
@@ -112,22 +127,33 @@ export function Dispatch() {
   const daysSinceDespacho = (o: any) => o.fechaDespacho ? Math.floor((Date.now() - new Date(o.fechaDespacho).getTime()) / 86400000) : 0;
 
   const tabConfig: { key: TabKey; icon: any; label: string; count: number }[] = [
-    { key: 'approvals', icon: <ThumbsUp size={15} />, label: 'Aprobaciones', count: pendingApprovals.length },
-    { key: 'ready', icon: <PackageCheck size={15} />, label: 'Por Enviar', count: readyOrders.filter(o => o.estado === 'CONSOLIDADO').length },
+    { key: 'approvals', icon: <ThumbsUp size={15} />, label: 'Por Preparar / Aprobar', count: pendingApprovals.length },
+    { key: 'ready', icon: <PackageCheck size={15} />, label: 'En Surtido & Salida', count: readyOrders.length },
     { key: 'transit', icon: <Truck size={15} />, label: 'En Tránsito', count: transitOrders.length },
     { key: 'delivered', icon: <CheckCircle size={15} />, label: 'Entregados', count: deliveredOrders.length },
   ];
 
   return (
     <div className="page-container">
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1 className="page-title">Despacho & Envíos</h1>
           <p className="page-subtitle">
-            {pendingApprovals.length} por aprobar · {readyOrders.filter(o => o.estado === 'CONSOLIDADO').length} por enviar · {transitOrders.length} en tránsito · {deliveredOrders.length} entregados
+            {pendingApprovals.length} por preparar/aprobar · {readyOrders.length} en surtido/salida · {transitOrders.length} en tránsito · {deliveredOrders.length} entregados
           </p>
         </div>
-        <button className="btn btn-secondary" onClick={loadData}><RefreshCw size={16} /> Actualizar</button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button className="btn btn-secondary" onClick={loadData}>
+            <RefreshCw size={16} /> Actualizar
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => setNewOrderModalOpen(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <Plus size={16} /> Nuevo Pedido (Cliente Final)
+          </button>
+        </div>
       </div>
 
       {/* KPI Ribbon */}
@@ -170,32 +196,73 @@ export function Dispatch() {
         <div style={{ display: 'grid', gap: 14 }}>
 
           {/* =============================== */}
-          {/* TAB: APPROVALS                  */}
+          {/* TAB: APPROVALS & PREPARATION    */}
           {/* =============================== */}
           {tab === 'approvals' && (
             <>
-              {pendingApprovals.length === 0 && <EmptyState text="No hay pedidos pendientes de aprobación" />}
+              {pendingApprovals.length === 0 && <EmptyState text="No hay pedidos pendientes de preparación o aprobación" />}
               {pendingApprovals.map((o, i) => (
-                <div key={o.id} className="card animate-fade-in" style={{ animationDelay: `${i * 0.04}s`, borderLeft: '4px solid var(--orange)' }}>
+                <div key={o.id} className="card animate-fade-in" style={{ animationDelay: `${i * 0.04}s`, borderLeft: '4px solid #F59E0B' }}>
                   <div style={{ padding: '18px 22px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
                       <div>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                           <span style={{ fontWeight: 700, fontSize: 16 }}>{o.codigo}</span>
                           {estadoBadge(o.estado)}
+                          {o.asignacionModo && (
+                            <span style={{ backgroundColor: '#F1F5F9', color: '#475569', fontSize: 11, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
+                              {o.asignacionModo}
+                            </span>
+                          )}
                         </div>
                         <div style={{ display: 'flex', gap: 16, fontSize: 13, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
-                          <span><Package size={13} /> {o.cliente?.nombreComercial}</span>
-                          {o.endCustomer && <span><Store size={13} /> {o.endCustomer.nombre}</span>}
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Package size={13} /> {o.cliente?.nombreComercial}
+                          </span>
+                          {o.endCustomer && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--primary)', fontWeight: 600 }}>
+                              <Store size={13} /> Destino: {o.endCustomer.nombre}
+                            </span>
+                          )}
                           {o.endCustomer?.ciudad && <span><MapPin size={13} /> {o.endCustomer.ciudad}</span>}
-                          <span>{o.lineas?.length} líneas · {totalUds(o)} uds</span>
+                          <span>{o.lineas?.length} líneas · {totalUds(o)} uds solicitadas</span>
                         </div>
-                        {o.notas && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>📝 {o.notas}</div>}
-                        {o.solicitadoPor && <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>Solicitado por: {o.solicitadoPor}</div>}
+                        {o.notas && (
+                          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <FileText size={12} /> {o.notas}
+                          </div>
+                        )}
+                        {o.solicitadoPor && (
+                          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>
+                            Solicitado por: {o.solicitadoPor}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button className="btn btn-primary" onClick={() => approveOrder(o.id)}><ThumbsUp size={16} /> Aprobar</button>
-                        <button className="btn" style={{ background: 'var(--error)', color: 'white' }} onClick={() => setRejectModal(o)}><ThumbsDown size={16} /> Rechazar</button>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => setPreparationOrder(o)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            backgroundColor: '#0D9488',
+                            color: '#FFFFFF',
+                            fontWeight: 700,
+                          }}
+                        >
+                          <Sliders size={16} /> Panel de Preparación
+                        </button>
+                        <button className="btn btn-secondary" onClick={() => setDetailModal(o)}>
+                          <Eye size={14} /> Detalle
+                        </button>
+                        <button
+                          className="btn"
+                          style={{ background: 'var(--error)', color: 'white' }}
+                          onClick={() => setRejectModal(o)}
+                        >
+                          <ThumbsDown size={15} /> Rechazar
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -235,11 +302,34 @@ export function Dispatch() {
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
                         {o.estado === 'CONSOLIDADO' ? (
-                          <button className="btn btn-primary" onClick={() => setDispatchModal(o)}><Send size={16} /> Despachar</button>
+                          <button className="btn btn-primary" onClick={() => setManifestOrder(o)}>
+                            <FileText size={16} /> Manifiesto & Salida
+                          </button>
                         ) : o.estado === 'EN_PICKING' ? (
-                          <span style={{ fontSize: 12, color: 'var(--orange)', fontWeight: 600 }}>⏳ Esperando picking...</span>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setPreparationOrder(o)}
+                              style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                            >
+                              <Sliders size={13} /> Ajustar Lotes
+                            </button>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={() => navigate('/picking')}
+                              style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                            >
+                              <Package size={13} /> Terminal Surtidor
+                            </button>
+                          </div>
                         ) : (
-                          <span style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 600 }}>⏳ Pendiente picking</span>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setPreparationOrder(o)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            <Sliders size={13} /> Panel de Preparación
+                          </button>
                         )}
                         <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Detalle</button>
                       </div>
@@ -273,12 +363,36 @@ export function Dispatch() {
                         </div>
                         {/* Shipping details */}
                         <div style={{ marginTop: 10, display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
-                          {o.tipoTransporte && <span>📦 {o.tipoTransporte.replace('_', ' ')}</span>}
-                          {o.paqueteria && <span>🚚 {o.paqueteria}</span>}
-                          {o.numeroGuia && <span>📋 Guía: <strong>{o.numeroGuia}</strong></span>}
-                          {o.vehiculoPlaca && <span>🚛 Placa: {o.vehiculoPlaca}</span>}
-                          {o.fechaDespacho && <span>📅 Despachado: {new Date(o.fechaDespacho).toLocaleDateString('es-MX')}</span>}
-                          {o.despachador && <span>👤 {o.despachador.split('@')[0]}</span>}
+                          {o.tipoTransporte && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Package size={12} /> {o.tipoTransporte.replace('_', ' ')}
+                            </span>
+                          )}
+                          {o.paqueteria && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Truck size={12} /> {o.paqueteria}
+                            </span>
+                          )}
+                          {o.numeroGuia && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Hash size={12} /> Guía: <strong>{o.numeroGuia}</strong>
+                            </span>
+                          )}
+                          {o.vehiculoPlaca && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Truck size={12} /> Placa: {o.vehiculoPlaca}
+                            </span>
+                          )}
+                          {o.fechaDespacho && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Calendar size={12} /> Despachado: {new Date(o.fechaDespacho).toLocaleDateString('es-MX')}
+                            </span>
+                          )}
+                          {o.despachador && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <UserCheck size={12} /> {o.despachador.split('@')[0]}
+                            </span>
+                          )}
                         </div>
 
                         {/* Transit progress */}
@@ -289,6 +403,9 @@ export function Dispatch() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         <button className="btn btn-success" onClick={() => setDeliveryModal(o)}>
                           <UserCheck size={16} /> Confirmar Entrega
+                        </button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
+                          <FileText size={14} /> Manifiesto
                         </button>
                         <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Ver Detalle</button>
                       </div>
@@ -320,17 +437,42 @@ export function Dispatch() {
                           <span>{totalUds(o)} uds</span>
                         </div>
                         <div style={{ marginTop: 8, display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
-                          {o.nombreReceptor && <span>✍️ Recibió: <strong>{o.nombreReceptor}</strong></span>}
-                          {o.fechaEntrega && <span>📅 Entrega: {new Date(o.fechaEntrega).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>}
-                          {o.paqueteria && <span>🚚 {o.paqueteria}</span>}
-                          {o.numeroGuia && <span>📋 Guía: {o.numeroGuia}</span>}
-                          {o.notasEntrega && <span>📝 {o.notasEntrega}</span>}
+                          {o.nombreReceptor && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <UserCheck size={12} /> Recibió: <strong>{o.nombreReceptor}</strong>
+                            </span>
+                          )}
+                          {o.fechaEntrega && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Calendar size={12} /> Entrega: {new Date(o.fechaEntrega).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                          {o.paqueteria && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Truck size={12} /> {o.paqueteria}
+                            </span>
+                          )}
+                          {o.numeroGuia && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Hash size={12} /> Guía: {o.numeroGuia}
+                            </span>
+                          )}
+                          {o.notasEntrega && (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <FileText size={12} /> {o.notasEntrega}
+                            </span>
+                          )}
                         </div>
                         <div style={{ marginTop: 10 }}>
                           <TransitTimeline despachado={true} enRuta={true} entregado={true} />
                         </div>
                       </div>
-                      <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Ver Detalle</button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
+                          <FileText size={14} /> Acuse Salida
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Ver Detalle</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -441,8 +583,8 @@ export function Dispatch() {
               )}
               {deliveryModal.paqueteria && (
                 <div style={{ marginBottom: 16, display: 'flex', gap: 12, fontSize: 13, color: 'var(--text-secondary)' }}>
-                  <span>🚚 {deliveryModal.paqueteria}</span>
-                  {deliveryModal.numeroGuia && <span>📋 Guía: <strong>{deliveryModal.numeroGuia}</strong></span>}
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Truck size={13} /> {deliveryModal.paqueteria}</span>
+                  {deliveryModal.numeroGuia && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Hash size={13} /> Guía: <strong>{deliveryModal.numeroGuia}</strong></span>}
                 </div>
               )}
               <div className="form-group">
@@ -549,7 +691,9 @@ export function Dispatch() {
 
               {detailModal.notas && (
                 <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-secondary)', borderRadius: 8, fontSize: 13 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>📝 Notas</div>
+                  <div style={{ fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <FileText size={14} /> Notas
+                  </div>
                   {detailModal.notas}
                 </div>
               )}
@@ -559,6 +703,47 @@ export function Dispatch() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ===== ORDER PREPARATION MODAL (ALEJANDRA / SUPERVISOR) ===== */}
+      {preparationOrder && (
+        <OrderPreparationModal
+          orderId={preparationOrder.id}
+          token={token || ''}
+          currentUser={user?.email || 'Alejandra (Supervisor)'}
+          onClose={() => setPreparationOrder(null)}
+          onSuccess={() => {
+            loadData();
+          }}
+        />
+      )}
+
+      {/* ===== NEW ORDER MODAL ===== */}
+      {newOrderModalOpen && (
+        <NewOrderModal
+          token={token || ''}
+          currentUser={user?.email || 'Supervisor'}
+          onClose={() => setNewOrderModalOpen(false)}
+          onSuccess={(createdOrder, openPreparation) => {
+            loadData();
+            if (openPreparation) {
+              setPreparationOrder(createdOrder);
+            }
+          }}
+        />
+      )}
+
+      {/* ===== DISPATCH MANIFEST & LEGAL EXIT MODAL ===== */}
+      {manifestOrder && (
+        <DispatchManifestModal
+          orderId={manifestOrder.id}
+          token={token || ''}
+          currentUser={user?.email || 'Despachador'}
+          onClose={() => setManifestOrder(null)}
+          onSuccess={() => {
+            loadData();
+          }}
+        />
       )}
     </div>
   );

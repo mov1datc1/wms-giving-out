@@ -214,7 +214,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
             <span>${extras}</span>
             ${item.lote ? `<span class="location-badge" style="background:#fef3c7;color:#92400e;border:1px solid #d97706;">Lote: <strong>${item.lote}</strong></span>` : ''}
             ${item.fechaVencimiento ? `<span class="location-badge" style="background:#e0f2fe;color:#0369a1;border:1px solid #0284c7;">Cad: <strong>${item.fechaVencimiento}</strong></span>` : ''}
-            <span class="location-badge">📍 Ubic Destino: <strong>${ubicacion}</strong></span>
+            <span class="location-badge">Ubic Destino: <strong>${ubicacion}</strong></span>
           </div>
           <div class="barcode-container">
             <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
@@ -482,7 +482,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                 <span>${extras}</span>
                 ${item.lote ? `<span class="location-badge" style="background:#fef3c7;color:#92400e;border:1px solid #d97706;">Lote: <strong>${item.lote}</strong></span>` : ''}
                 ${item.fechaVencimiento ? `<span class="location-badge" style="background:#e0f2fe;color:#0369a1;border:1px solid #0284c7;">Cad: <strong>${item.fechaVencimiento}</strong></span>` : ''}
-                <span class="location-badge">📍 Ubic Destino: <strong>${ubicacion}</strong></span>
+                <span class="location-badge">Ubic Destino: <strong>${ubicacion}</strong></span>
               </div>
               <div class="barcode-container">
                 <svg class="barcode-svg" data-code="${barcodeValue}"></svg>
@@ -729,7 +729,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
               justifyContent: 'space-between',
               fontWeight: 500
             }}>
-              <span>⚠️ {modalAlert}</span>
+              <span>{modalAlert}</span>
               <button className="btn btn-ghost btn-sm" onClick={() => setModalAlert(null)} style={{ padding: 4, height: 'auto', minHeight: 0, color: '#ef4444' }}>
                 <X size={16} />
               </button>
@@ -869,7 +869,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                   <div style={{ fontSize: 11, color: '#333', margin: '2px 0', display: 'flex', justifyContent: 'space-between' }}>
                     <span>SKU: <strong>{currentPreviewItem.sku.codigo}</strong></span>
                     <span style={{ background: '#000', color: '#fff', padding: '0 4px', borderRadius: 2, fontWeight: 700 }}>
-                      📍 {currentPreviewItem.ubicacionCodigo || 'A01-R01-N1'}
+                      {currentPreviewItem.ubicacionCodigo || 'A01-R01-N1'}
                     </span>
                   </div>
                   <div style={{ textAlign: 'center', margin: '4px 0' }}>
@@ -958,7 +958,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                       </td>
                       <td style={{ fontFamily: 'monospace', fontWeight: 600, color: item.sku.codigoBarras ? 'var(--primary)' : 'var(--orange)' }}>
                         {item.sku.codigoBarras || (
-                          <span style={{ fontSize: 11, color: 'var(--orange)' }}>⚠️ Sin EAN</span>
+                          <span style={{ fontSize: 11, color: 'var(--orange)' }}>Sin EAN</span>
                         )}
                       </td>
                       <td>
@@ -971,7 +971,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                         >
                           {locations.filter(l => !l.codigo.startsWith('DEV')).map(loc => (
                             <option key={loc.id} value={loc.id}>
-                              📍 {loc.codigo} ({loc.zona?.nombre || loc.pasillo})
+                              {loc.codigo} ({loc.zona?.nombre || loc.pasillo})
                             </option>
                           ))}
                         </select>
@@ -1023,7 +1023,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
         {/* MODAL FOOTER */}
         <div className="modal-footer" style={{ padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            💡 Las etiquetas incluirán la <strong>Ubicación Física</strong> seleccionada para el guardado directo con handheld.
+            Las etiquetas incluirán la <strong>Ubicación Física</strong> seleccionada para el guardado directo con handheld.
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <button type="button" className="btn btn-ghost" onClick={onClose}>Cerrar</button>
@@ -1103,7 +1103,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                 </div>
 
                 <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 8, fontSize: 12 }}>
-                  <div style={{ color: '#475569', marginBottom: 4 }}>📍 <strong>Ubicaciones Asignadas a Imprimir:</strong></div>
+                  <div style={{ color: '#475569', marginBottom: 4 }}><strong>Ubicaciones Asignadas a Imprimir:</strong></div>
                   <div style={{ maxHeight: 75, overflowY: 'auto', color: '#0f172a', fontFamily: 'monospace', fontSize: 11 }}>
                     {selectedLines.map(l => (
                       <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>

@@ -10,12 +10,33 @@ export class AdminController {
 
   // ============ USERS ============
   @Get('users')
-  @ApiOperation({ summary: 'Listar usuarios' })
+  @ApiOperation({ summary: 'Listar usuarios con roles y depositantes vinculados' })
   async getUsers() {
-    return this.prisma.user.findMany({
-      include: { rol: { select: { nombre: true, nivel: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
+    const [users, clients] = await Promise.all([
+      this.prisma.user.findMany({
+        include: { rol: { select: { id: true, nombre: true, nivel: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.client.findMany({
+        select: { id: true, nombreComercial: true, codigo: true },
+      }),
+    ]);
+
+    const clientMap = new Map(clients.map(c => [c.id, c]));
+    return users.map(u => ({
+      id: u.id,
+      email: u.email,
+      nombre: u.nombre,
+      rolId: u.rolId,
+      rol: u.rol?.nombre || (u.clienteId ? 'Depositante Portal' : 'Usuario Operativo'),
+      rolObj: u.rol,
+      almacenId: u.almacenId,
+      clienteId: u.clienteId,
+      cliente: u.clienteId ? clientMap.get(u.clienteId) : null,
+      activo: u.activo,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+    }));
   }
 
   @Post('users')

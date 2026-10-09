@@ -303,7 +303,7 @@ export function Clients() {
       loadData();
       setClientToDelete(null);
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      setFormMsg({ type: 'error', text: `Error al desactivar depositante: ${err.message}` });
     }
     setDeleting(false);
   }
@@ -322,7 +322,7 @@ export function Clients() {
       loadData();
       setClientToReactivate(null);
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      setFormMsg({ type: 'error', text: `Error al reactivar depositante: ${err.message}` });
     }
     setReactivating(false);
   }

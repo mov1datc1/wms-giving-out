@@ -1,6 +1,9 @@
-import { Controller, Get, Post, Put, Delete, Param, Query, Body, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Query, Body, Headers, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
+import * as jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 
 @ApiTags('End Customers (Ship-To)')
 @Controller('api/end-customers')
@@ -9,9 +12,28 @@ export class EndCustomersController {
 
   @Get()
   @ApiOperation({ summary: 'Listar clientes finales (Ship-To)' })
-  async getEndCustomers(@Query('clienteId') clienteId?: string, @Query('activo') activo?: string) {
+  async getEndCustomers(
+    @Query('clienteId') clienteId?: string,
+    @Query('activo') activo?: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
     const where: any = {};
-    if (clienteId) where.clienteId = clienteId;
+    let activeClienteId = clienteId;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.split(' ')[1];
+        const decoded: any = jwt.verify(token, JWT_SECRET);
+        if (decoded?.clienteId) {
+          activeClienteId = decoded.clienteId;
+        } else if (decoded?.userId) {
+          const user = await this.prisma.user.findUnique({ where: { id: decoded.userId } });
+          if (user?.clienteId) activeClienteId = user.clienteId;
+        }
+      } catch {}
+    }
+
+    if (activeClienteId) where.clienteId = activeClienteId;
     if (activo !== undefined) where.activo = activo === 'true';
 
     return this.prisma.endCustomer.findMany({

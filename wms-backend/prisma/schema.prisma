@@ -134,6 +134,7 @@ model Client {
   handlingUnits     HandlingUnit[]
   ordenesSalida     SalesOrder[]
   recepciones       Receipt[]
+  inspeccionesCalidad QualityInspection[]
 }
 
 model ClientContact {
@@ -311,10 +312,12 @@ model LotInventory {
 
 model HandlingUnit {
   id              String   @id @default(uuid())
-  codigo          String   @unique @default(uuid())   // HU-2026-0001
+  codigo          String   @unique @default(uuid())   // HU-2026-0001, PLT-REC-..., BOX-REC-...
   tipoHu          String   // PALLET, CAJA, BULTO, PIEZA, PAQUETE
-  lotId           String
+  lotId           String?
   clienteId       String
+  receiptId       String?
+  receiptLineId   String?
   cantidad        Float
   uom             String
   ubicacionActual String
@@ -322,17 +325,34 @@ model HandlingUnit {
   parentHuId      String?                       // Nested HU (boxes in pallet)
   pesoKg          Float?
   etiquetaImpresa Boolean  @default(false)
+  
+  // Fase 1: Ciclo de Etiquetado y Trazabilidad Giving Out
+  estadoEtiqueta   String?  @default("GENERADA") // GENERADA, IMPRESA, COLOCADA
+  loteTexto        String?
+  fechaVencimiento DateTime?
+  skuCodigo        String?
+  skuDescripcion  String?
+  facturaRespaldo  String?
+  piezasPorCaja    Int?
+
+  // Fase 2: Reacondicionamiento y Rescate (Maquila)
+  reacondicionada Boolean   @default(false)
+  cajaOrigenId    String?
+  inspeccionId    String?
+  motivoDano      String?
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  lote            LotInventory @relation(fields: [lotId], references: [id])
-  cliente         Client       @relation(fields: [clienteId], references: [id])
+  lote            LotInventory? @relation(fields: [lotId], references: [id])
+  cliente         Client        @relation(fields: [clienteId], references: [id])
+  recepcion       Receipt?      @relation(fields: [receiptId], references: [id])
   movimientos     InventoryMovement[]
   lineasSalida    SalesOrderLine[]
 
   @@index([clienteId])
   @@index([codigo])
+  @@index([receiptId])
 }
 
 model InventoryMovement {
@@ -395,11 +415,37 @@ model Receipt {
   bloqueadoPor        String?
   fechaBloqueo        DateTime?
 
+  // === Acta de Entrada en Rampa & Control de Transporte (Fase 1) ===
+  bultosDeclarados    Int?                             // Total bultos declarados en carta porte/factura
+  bultosRecibidos     Int?                             // Total bultos físicos recibidos en rampa
+  bultosDanados       Int?                             // Bultos con daño exterior visible (subconjunto de recibidos)
+  diferenciaBultos    Int?                             // bultosRecibidos - bultosDeclarados
+  observacionesRampa  String?                          // Estado exterior del empaque / reservas
+  andenAsignado       String?                          // Andén 01, Andén 02, etc.
+  firmaChofer         String?                          // Base64 de la firma del chofer
+  firmaReceptor       String?                          // Base64 de la firma del supervisor de andén
+  nombreReceptor      String?                          // Nombre de quien recibió en andén
+  fechaLiberacionChofer DateTime?                      // Timestamp exacto de liberación del transporte
+  historialCorreccionesRampa String?                   // JSON con auditoría de cambios post-firma
+
+  // === Doble Etiquetado Giving Out (Fase 1) ===
+  etiquetasEstado          String?   @default("PENDIENTE") // PENDIENTE, GENERADAS, IMPRESAS, COLOCADAS
+  etiquetasColocadasPor    String?
+  fechaColocacionEtiquetas DateTime?
+
+  // === Conteo y Conciliación Física en Andén ===
+  conteoAndenEstado        String?   @default("PENDIENTE") // PENDIENTE, EN_PROCESO, COMPLETADO
+  fechaConteoAnden         DateTime?
+
   notas               String?
   evidenciaUrl        String?                          // Photo evidence URL
   recibidoPor         String?
   cerradoPor          String?
   fechaCierre         DateTime?
+
+  // === Fase 2: Inspección y Reacondicionamiento (Maquila/Rescate) ===
+  inspeccionCalidadEstado  String?   @default("PENDIENTE") // PENDIENTE, EN_PROCESO, COMPLETADA
+  inspecciones            QualityInspection[]
 
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -407,6 +453,7 @@ model Receipt {
   cliente             Client    @relation(fields: [clienteId], references: [id])
   proveedor           Supplier? @relation(fields: [proveedorId], references: [id])
   lineas              ReceiptLine[]
+  handlingUnits       HandlingUnit[]
 }
 
 model ReceiptLine {
@@ -434,6 +481,45 @@ model ReceiptLine {
 
   recepcion          Receipt   @relation(fields: [recepcionId], references: [id])
   sku                SkuMaster @relation(fields: [skuId], references: [id])
+}
+
+// ---------------------------------------------------------
+// 7b. FASE 2: INSPECCIÓN Y REACONDICIONAMIENTO (MAQUILA / RESCATE)
+// ---------------------------------------------------------
+
+model QualityInspection {
+  id                        String    @id @default(uuid())
+  folio                     String    @unique // INSP-2026-0001
+  receiptId                 String
+  clienteId                 String
+  fechaInspeccion           DateTime  @default(now())
+  inspectorNombre           String
+  estado                    String    @default("COMPLETADA") // PENDIENTE, EN_PROCESO, COMPLETADA
+  
+  // Métricas de inspección y rescate pieza por pieza
+  totalCajasInspeccionadas  Int       @default(0)
+  totalPiezasInspeccionadas Int       @default(0)
+  totalPiezasRescatadas     Int       @default(0)
+  totalPiezasMerma          Int       @default(0)
+  totalCajasNuevasArmadas   Int       @default(0)
+  
+  // Costeo de Servicio 3PL (Maquila / Reempaque)
+  horasMaquila              Float?    @default(0)
+  tarifaMaquilaPorHora      Float?    @default(0)
+  costoTotalMaquila         Float?    @default(0)
+  
+  observaciones             String?
+  detallesJson              String?   // JSON completo con desglose por caja
+  firmadoPor                String?
+  
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  receipt                   Receipt   @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  cliente                   Client    @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  @@index([receiptId])
+  @@index([clienteId])
 }
 
 // ---------------------------------------------------------
@@ -467,6 +553,23 @@ model SalesOrder {
   guiaUrl              String?              // URL o ruta al archivo de guía adjunta
   costoEnvio           Float?
 
+  // === Fase 5: Panel de Preparación y Asignación de Lotes (Supervisor) ===
+  preparadoPor         String?
+  fechaPreparacion     DateTime?
+  asignacionModo       String?              @default("AUTO_FEFO") // AUTO_FEFO, AUTO_FIFO, MANUAL
+
+  // === Fase 6: Surtido (Picking) y Manifiesto de Despacho ===
+  surtidor             String?
+  fechaInicioPicking   DateTime?
+  fechaFinPicking      DateTime?
+  choferNombre         String?
+  choferLicencia       String?
+  fletera              String?
+  selloSeguridad       String?
+  firmaDespachador     String?
+  firmaChofer          String?
+  folioManifiesto      String?
+
   // Dispatch tracking
   despachador          String?
   fechaDespacho        DateTime?
@@ -490,18 +593,30 @@ model SalesOrder {
 }
 
 model SalesOrderLine {
-  id                String   @id @default(uuid())
-  orderId           String
-  skuId             String
+  id                 String   @id @default(uuid())
+  orderId            String
+  skuId              String
   cantidadSolicitada Float
   cantidadAsignada   Float    @default(0)
-  lotId             String?
-  huId              String?
+  lotId              String?
+  huId               String?
 
-  orden             SalesOrder    @relation(fields: [orderId], references: [id])
-  sku               SkuMaster     @relation(fields: [skuId], references: [id])
-  lote              LotInventory? @relation(fields: [lotId], references: [id])
-  hu                HandlingUnit? @relation(fields: [huId], references: [id])
+  // === Fase 5: Asignación de Lotes y Ubicaciones ===
+  loteAsignado       String?
+  ubicacionAsignada  String?
+  asignacionesJson   String?
+
+  // === Fase 6: Registro de Picking y Doble Escaneo ===
+  cantidadPickeada   Float    @default(0)
+  ubicacionEscaneada String?
+  cajaEscaneada      String?
+  pickingCompletado  Boolean  @default(false)
+  fechaPicking       DateTime?
+
+  orden              SalesOrder    @relation(fields: [orderId], references: [id])
+  sku                SkuMaster     @relation(fields: [skuId], references: [id])
+  lote               LotInventory? @relation(fields: [lotId], references: [id])
+  hu                 HandlingUnit? @relation(fields: [huId], references: [id])
 }
 
 model DispatchTracking {

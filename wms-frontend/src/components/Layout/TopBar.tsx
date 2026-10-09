@@ -5,7 +5,7 @@ import { API } from '../../config/api';
 import {
   Search, Bell, LogOut, ChevronRight, CheckCheck, Trash2, X,
   ShoppingBag, AlertTriangle, PackageCheck, RefreshCw, CheckCircle2,
-  Building2, Package, ClipboardList, Loader2
+  Building2, Package, ClipboardList, Loader2, Clock
 } from 'lucide-react';
 
 interface NotificationItem {
@@ -124,7 +124,7 @@ export function TopBar() {
 
       const [alertsRes, ordersRes, ccRes] = await Promise.all([
         fetch(`${API}/alerts`, { headers }),
-        fetch(`${API}/orders?estado=EN_PROGRESO`, { headers }),
+        fetch(`${API}/orders?estado=SOLICITADO,PENDIENTE_APROBACION,EN_PICKING,EN_PROGRESO`, { headers }),
         fetch(`${API}/cycle-counts?estado=EN_PROGRESO`, { headers }),
       ]);
 
@@ -132,12 +132,13 @@ export function TopBar() {
 
       if (ordersRes.ok) {
         const orders = await ordersRes.json();
-        orders.slice(0, 5).forEach((o: any) => {
+        orders.slice(0, 8).forEach((o: any) => {
           const id = `order-${o.id}`;
+          const isNewRequest = o.estado === 'SOLICITADO' || o.estado === 'PENDIENTE_APROBACION';
           items.push({
             id,
-            title: `Nuevo Pedido ${o.codigo}`,
-            message: `Cliente: ${o.cliente?.nombreComercial || 'General'} · ${o.lineas?.length || 1} producto(s)`,
+            title: isNewRequest ? `Nuevo Pedido Solicitado ${o.codigo}` : `Pedido en Proceso ${o.codigo}`,
+            message: `Cliente: ${o.cliente?.nombreComercial || 'General'} · ${o.lineas?.length || 1} partida(s) · Destino: ${o.endCustomer?.nombre || 'General'}`,
             type: 'ORDER',
             route: '/despacho',
             timestamp: new Date(o.createdAt || Date.now()).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
@@ -489,7 +490,9 @@ export function TopBar() {
                     <div className="notification-content">
                       <div className="notification-item-title">{item.title}</div>
                       <div className="notification-item-msg">{item.message}</div>
-                      <div className="notification-item-time">🕒 {item.timestamp}</div>
+                      <div className="notification-item-time" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Clock size={11} /> {item.timestamp}
+                      </div>
                     </div>
                     <button
                       className="notification-dismiss-btn"

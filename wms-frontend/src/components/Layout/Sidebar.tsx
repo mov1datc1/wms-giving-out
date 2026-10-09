@@ -82,7 +82,9 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">📦</div>
+          <div className="sidebar-logo-icon">
+            <Package size={22} color="#FFFFFF" />
+          </div>
           <div className="sidebar-logo-text">
             <div className="sidebar-logo-title">Giving Out</div>
             <div className="sidebar-logo-subtitle">Operador Logístico 3PL</div>

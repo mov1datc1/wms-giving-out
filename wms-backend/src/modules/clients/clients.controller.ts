@@ -504,7 +504,27 @@ export class ClientsController {
   // ============ CLIENT INVENTORY SUMMARY ============
   @Get(':id/inventory')
   @ApiOperation({ summary: 'Resumen completo de inventario del depositante con desglose de estados y almacén' })
-  async getClientInventory(@Param('id') clienteId: string) {
+  async getClientInventory(
+    @Param('id') clienteId: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.split(' ')[1];
+        const decoded: any = jwt.verify(token, JWT_SECRET);
+        let userClienteId = decoded?.clienteId;
+        if (!userClienteId && decoded?.userId) {
+          const user = await this.prisma.user.findUnique({ where: { id: decoded.userId } });
+          userClienteId = user?.clienteId;
+        }
+        if (userClienteId && userClienteId !== clienteId) {
+          throw new HttpException('ACCESO_DENEGADO: No tiene autorización para consultar el inventario de otro depositante.', HttpStatus.FORBIDDEN);
+        }
+      } catch (err: any) {
+        if (err instanceof HttpException) throw err;
+      }
+    }
+
     const lots = await this.prisma.lotInventory.findMany({
       where: {
         clienteId,
@@ -535,7 +555,7 @@ export class ClientsController {
 
     for (const lot of lots) {
       const disp = lot.cantidadDisponible || 0;
-      const res = lot.cantidadReservada || 0;
+      const res = Math.max(0, lot.cantidadReservada || 0);
       const bloq = lot.cantidadBloqueada || 0;
       
       totalFisico += (disp + bloq);
@@ -556,7 +576,18 @@ export class ClientsController {
       totalReservado,
       totalCuarentena,
       totalUnidades: totalFisico,
-      lotes: lots,
+      lotes: lots.map(l => {
+        const disp = l.cantidadDisponible || 0;
+        const res = Math.max(0, l.cantidadReservada || 0);
+        const libre = Math.max(0, disp - res);
+        return {
+          ...l,
+          cantidadFisica: disp,
+          cantidadReservada: res,
+          cantidadDisponibleLibre: libre,
+          stockLibre: libre,
+        };
+      }),
     };
   }
 }

@@ -67,7 +67,12 @@ export function PortalNewOrder() {
   function getSkuStockInfo(skuId: string, whId: string) {
     if (!skuId) return { available: 0, reserved: 0, total: 0 };
     
-    let matchingLots = inventoryLots.filter(l => l.skuId === skuId && l.estadoCalidad === 'LIBERADO');
+    const now = new Date();
+    let matchingLots = inventoryLots.filter(l => {
+      if (l.skuId !== skuId || l.estadoCalidad !== 'LIBERADO') return false;
+      if (l.fechaVencimiento && new Date(l.fechaVencimiento) <= now) return false;
+      return true;
+    });
     if (whId) {
       matchingLots = matchingLots.filter(l => l.ubicacion?.almacen?.id === whId || !l.ubicacion?.almacen?.id);
     }
@@ -193,7 +198,7 @@ export function PortalNewOrder() {
         throw new Error(err.message || 'Error al crear pedido');
       }
       const order = await res.json();
-      setSuccess(`✅ Pedido ${order.codigo} creado y stock reservado automáticamente (${lines.length} productos). Giving Out lo revisará de inmediato.`);
+      setSuccess(`Pedido ${order.codigo} creado y stock reservado automáticamente (${lines.length} productos). Giving Out lo revisará de inmediato.`);
       setLines([]); setEndCustomerId(''); setNotas(''); setFechaCompromiso('');
       setTimeout(() => navigate('/portal/pedidos'), 3000);
     } catch (err: any) { setError(err.message); }
@@ -298,9 +303,9 @@ export function PortalNewOrder() {
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">Prioridad de Despacho</label>
                   <select className="form-select form-select-full" value={prioridad} onChange={e => setPrioridad(Number(e.target.value))}>
-                    <option value={1}>🔴 Urgente (Mismo día)</option>
-                    <option value={2}>🟠 Alta (24h)</option>
-                    <option value={3}>🟢 Normal (Ventana programada)</option>
+                    <option value={1}>Urgente (Mismo día)</option>
+                    <option value={2}>Alta (24h)</option>
+                    <option value={3}>Normal (Ventana programada)</option>
                   </select>
                 </div>
               </div>
@@ -409,7 +414,7 @@ export function PortalNewOrder() {
                             />
                             {isOverStock && (
                               <div style={{ fontSize: 11, color: 'var(--error)', fontWeight: 600, marginTop: 4, textAlign: 'center' }}>
-                                ⚠️ Excede disponible (Max: {line.available})
+                                Excede disponible (Max: {line.available})
                               </div>
                             )}
                           </td>

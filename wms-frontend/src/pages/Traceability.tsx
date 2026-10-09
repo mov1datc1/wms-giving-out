@@ -1,18 +1,37 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   GitBranch, Search, RefreshCw, Package, ArrowRight, MapPin,
-  Calendar, User, Filter, ArrowDown, ArrowUp, Truck
+  Calendar, User, Filter, ArrowDown, ArrowUp, Truck, Building2,
+  Tag, Box, FileText, Plus, Minus
 } from 'lucide-react';
 
-const TIPO_ICONS: Record<string, { icon: string; color: string; bg: string }> = {
-  ENTRADA: { icon: '📥', color: 'var(--emerald)', bg: 'rgba(16,185,129,0.1)' },
-  SALIDA: { icon: '📤', color: 'var(--danger)', bg: 'var(--danger-soft)' },
-  TRASIEGO: { icon: '🔄', color: 'var(--info)', bg: 'var(--info-soft)' },
-  AJUSTE_ENTRADA: { icon: '📊+', color: 'var(--teal)', bg: 'rgba(13,148,136,0.1)' },
-  AJUSTE_SALIDA: { icon: '📊−', color: 'var(--orange)', bg: 'var(--warning-soft)' },
-  PICKING: { icon: '📦', color: 'var(--purple)', bg: 'rgba(99,102,241,0.1)' },
+interface MovementTypeConfig {
+  icon: React.ReactNode;
+  color: string;
+  bg: string;
+}
+
+const getTipoConfig = (tipo: string): MovementTypeConfig => {
+  switch (tipo) {
+    case 'ENTRADA':
+      return { icon: <ArrowDown size={14} />, color: 'var(--emerald)', bg: 'rgba(16,185,129,0.1)' };
+    case 'SALIDA':
+    case 'SALIDA_PEDIDO':
+      return { icon: <ArrowUp size={14} />, color: 'var(--danger)', bg: 'var(--danger-soft)' };
+    case 'TRASIEGO':
+    case 'TRANSFERENCIA':
+      return { icon: <RefreshCw size={14} />, color: 'var(--info)', bg: 'var(--info-soft)' };
+    case 'AJUSTE_ENTRADA':
+      return { icon: <Plus size={14} />, color: 'var(--teal)', bg: 'rgba(13,148,136,0.1)' };
+    case 'AJUSTE_SALIDA':
+      return { icon: <Minus size={14} />, color: 'var(--orange)', bg: 'var(--warning-soft)' };
+    case 'PICKING':
+      return { icon: <Package size={14} />, color: 'var(--purple)', bg: 'rgba(99,102,241,0.1)' };
+    default:
+      return { icon: <ArrowRight size={14} />, color: 'var(--text-secondary)', bg: 'var(--bg-secondary)' };
+  }
 };
 
 export function Traceability() {
@@ -32,7 +51,7 @@ export function Traceability() {
     setLoading(true);
     try {
       const [movRes, cliRes, skuRes] = await Promise.all([
-        fetch(`${API}/inventory/movements`, { headers }),
+        fetch(`${API}/inventory/movements?limit=200`, { headers }),
         fetch(`${API}/clients`, { headers }),
         fetch(`${API}/skus`, { headers }),
       ]);
@@ -46,6 +65,10 @@ export function Traceability() {
   const filtered = movements.filter(m => {
     const matchSearch = !search ||
       m.sku?.descripcion?.toLowerCase().includes(search.toLowerCase()) ||
+      m.sku?.codigo?.toLowerCase().includes(search.toLowerCase()) ||
+      m.lote?.lote?.toLowerCase().includes(search.toLowerCase()) ||
+      m.hu?.codigo?.toLowerCase().includes(search.toLowerCase()) ||
+      m.documentoOrigen?.toLowerCase().includes(search.toLowerCase()) ||
       m.motivo?.toLowerCase().includes(search.toLowerCase()) ||
       m.usuario?.toLowerCase().includes(search.toLowerCase());
     const matchTipo = !filterTipo || m.tipoMovimiento === filterTipo;
@@ -63,14 +86,15 @@ export function Traceability() {
 
   const tipos = [...new Set(movements.map(m => m.tipoMovimiento))];
   const totalEntradas = movements.filter(m => m.tipoMovimiento === 'ENTRADA' || m.tipoMovimiento === 'AJUSTE_ENTRADA').reduce((s, m) => s + m.cantidad, 0);
-  const totalSalidas = movements.filter(m => m.tipoMovimiento === 'SALIDA' || m.tipoMovimiento === 'AJUSTE_SALIDA').reduce((s, m) => s + m.cantidad, 0);
+  const totalSalidas = movements.filter(m => m.tipoMovimiento === 'SALIDA' || m.tipoMovimiento === 'SALIDA_PEDIDO' || m.tipoMovimiento === 'AJUSTE_SALIDA').reduce((s, m) => s + m.cantidad, 0);
+  const totalTrasiegos = movements.filter(m => m.tipoMovimiento === 'TRASIEGO' || m.tipoMovimiento === 'TRANSFERENCIA').reduce((s, m) => s + m.cantidad, 0);
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Trazabilidad</h1>
-          <p className="page-subtitle">{movements.length} movimientos · Historial completo de operaciones</p>
+          <h1 className="page-title">Trazabilidad & Kárdex</h1>
+          <p className="page-subtitle">{movements.length} movimientos registrados · Historial completo y auditable de operaciones</p>
         </div>
         <button className="btn btn-secondary" onClick={loadData}><RefreshCw size={16} /> Actualizar</button>
       </div>
@@ -86,27 +110,27 @@ export function Traceability() {
           <div className="stat-info"><span className="stat-value">{totalSalidas.toLocaleString()}</span><span className="stat-label">Uds Despachadas</span></div>
         </div>
         <div className="stat-card">
-          <div className="stat-icon" style={{ background: 'var(--info-soft)', color: 'var(--info)' }}><GitBranch size={20} /></div>
-          <div className="stat-info"><span className="stat-value">{movements.length}</span><span className="stat-label">Movimientos</span></div>
+          <div className="stat-icon" style={{ background: 'var(--info-soft)', color: 'var(--info)' }}><RefreshCw size={20} /></div>
+          <div className="stat-info"><span className="stat-value">{totalTrasiegos.toLocaleString()}</span><span className="stat-label">Uds Trasiegos Internos</span></div>
         </div>
         <div className="stat-card">
           <div className="stat-icon" style={{ background: 'rgba(99,102,241,0.1)', color: 'var(--purple)' }}><User size={20} /></div>
-          <div className="stat-info"><span className="stat-value">{new Set(movements.map(m => m.usuario)).size}</span><span className="stat-label">Operadores</span></div>
+          <div className="stat-info"><span className="stat-value">{new Set(movements.map(m => m.usuario)).size}</span><span className="stat-label">Operadores Activos</span></div>
         </div>
       </div>
 
       {/* Filters */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, padding: '16px 20px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <div className="search-box" style={{ flex: 1, minWidth: 200 }}>
+          <div className="search-box" style={{ flex: 1, minWidth: 220 }}>
             <Search size={16} />
-            <input placeholder="Buscar por producto, motivo, usuario..." value={search} onChange={e => setSearch(e.target.value)} />
+            <input placeholder="Buscar por producto, lote, HU, folio documento, motivo..." value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <select className="form-select" style={{ minWidth: 150 }} value={filterTipo} onChange={e => setFilterTipo(e.target.value)}>
+          <select className="form-select" style={{ minWidth: 160 }} value={filterTipo} onChange={e => setFilterTipo(e.target.value)}>
             <option value="">Todos los tipos</option>
             {tipos.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
-          <select className="form-select" style={{ minWidth: 150 }} value={filterCliente} onChange={e => setFilterCliente(e.target.value)}>
+          <select className="form-select" style={{ minWidth: 160 }} value={filterCliente} onChange={e => setFilterCliente(e.target.value)}>
             <option value="">Todos los clientes</option>
             {clients.map(c => <option key={c.id} value={c.id}>{c.nombreComercial}</option>)}
           </select>
@@ -114,7 +138,7 @@ export function Traceability() {
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-secondary)' }}><RefreshCw className="animate-spin" size={24} /> Cargando...</div>
+        <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-secondary)' }}><RefreshCw className="animate-spin" size={24} /> Cargando kárdex...</div>
       ) : (
         <div className="traceability-timeline">
           {Object.entries(grouped).map(([date, items]) => (
@@ -126,20 +150,22 @@ export function Traceability() {
               </div>
               <div className="timeline-items">
                 {items.map((m: any, i: number) => {
-                  const cfg = TIPO_ICONS[m.tipoMovimiento] || TIPO_ICONS.ENTRADA;
+                  const cfg = getTipoConfig(m.tipoMovimiento);
                   const client = clients.find(c => c.id === m.clienteId);
+                  const isSalida = m.tipoMovimiento.includes('SALIDA');
+                  const uom = m.sku?.uomBase || 'uds';
                   return (
-                    <div key={m.id} className="timeline-item animate-fade-in" style={{ animationDelay: `${i * 0.03}s` }}>
+                    <div key={m.id} className="timeline-item animate-fade-in" style={{ animationDelay: `${i * 0.02}s` }}>
                       <div className="timeline-dot" style={{ background: cfg.bg, color: cfg.color }}>
-                        <span style={{ fontSize: 16 }}>{cfg.icon}</span>
+                        {cfg.icon}
                       </div>
                       <div className="timeline-content">
                         <div className="timeline-header">
-                          <span className={`badge badge-${m.tipoMovimiento.includes('ENTRADA') ? 'success' : m.tipoMovimiento.includes('SALIDA') ? 'danger' : m.tipoMovimiento === 'TRASIEGO' ? 'info' : 'warning'}`}>
+                          <span className={`badge badge-${m.tipoMovimiento.includes('ENTRADA') ? 'success' : isSalida ? 'danger' : m.tipoMovimiento.includes('TRASIEGO') ? 'info' : 'warning'}`}>
                             {m.tipoMovimiento}
                           </span>
-                          <span className="timeline-qty" style={{ color: m.tipoMovimiento.includes('SALIDA') ? 'var(--danger)' : 'var(--emerald)' }}>
-                            {m.tipoMovimiento.includes('SALIDA') ? '−' : '+'}{m.cantidad} uds
+                          <span className="timeline-qty" style={{ color: isSalida ? 'var(--danger)' : 'var(--emerald)', fontWeight: 800 }}>
+                            {isSalida ? '−' : '+'}{m.cantidad} {uom}
                           </span>
                           <span className="timeline-time">
                             {new Date(m.fechaHora).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
@@ -147,15 +173,40 @@ export function Traceability() {
                         </div>
                         <div className="timeline-product">
                           <Package size={13} />
-                          <strong>{m.sku?.descripcion || 'Producto'}</strong>
+                          <strong>{m.sku?.descripcion || m.sku?.codigo || 'Producto'}</strong>
+                          {m.sku?.codigo && <code style={{ fontSize: 11, marginLeft: 6, color: 'var(--primary)' }}>{m.sku.codigo}</code>}
                         </div>
+                        
+                        {/* Lot, HU, and Rack tags */}
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4, marginBottom: 4 }}>
+                          {m.lote?.lote && (
+                            <span className="badge badge-default" style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Tag size={10} /> Lote: {m.lote.lote}
+                            </span>
+                          )}
+                          {m.hu?.codigo && (
+                            <span className="badge badge-default" style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Box size={10} /> HU: {m.hu.codigo}
+                            </span>
+                          )}
+                          {(m.fromLocation?.codigo || m.toLocation?.codigo) && (
+                            <span className="badge badge-info" style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <MapPin size={10} /> {m.fromLocation?.codigo || 'RAMPA'} <ArrowRight size={10} /> {m.toLocation?.codigo || 'CLIENTE'}
+                            </span>
+                          )}
+                          {m.documentoOrigen && (
+                            <span className="badge badge-default" style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <FileText size={10} /> Folio: {m.documentoOrigen}
+                            </span>
+                          )}
+                        </div>
+
                         <div className="timeline-details">
                           {m.motivo && <span className="timeline-detail">{m.motivo}</span>}
                         </div>
-                        <div className="timeline-meta">
+                        <div className="timeline-meta" style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                           <span><User size={11} /> {m.usuario}</span>
-                          {client && <span>🏢 {client.nombreComercial}</span>}
-                          {m.toLocationId && <span><MapPin size={11} /> Ubicación asignada</span>}
+                          {client && <span><Building2 size={11} /> {client.nombreComercial}</span>}
                         </div>
                       </div>
                     </div>

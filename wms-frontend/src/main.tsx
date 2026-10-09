@@ -18,6 +18,7 @@ import { Clients } from './pages/Clients';
 import { EndCustomers } from './pages/EndCustomers';
 import { Suppliers } from './pages/Suppliers';
 import { CycleCount } from './pages/CycleCount';
+import { Package } from 'lucide-react';
 import { Alerts } from './pages/Alerts';
 import { Traceability } from './pages/Traceability';
 import { PortalDashboard } from './pages/portal/PortalDashboard';
@@ -38,7 +39,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
         fontFamily: 'var(--font-family)',
       }}>
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>📦</div>
+          <Package size={36} color="#0D9488" style={{ marginBottom: 12, display: 'inline-block' }} />
           <div>Verificando sesión...</div>
         </div>
       </div>

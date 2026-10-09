@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Printer, X, FileText, Share2, Layers, Box, RotateCcw } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import {
+  Printer, X, FileText, Layers, Box, RotateCcw,
+  CheckCircle2, AlertTriangle, Truck, Package,
+  MapPin, Calendar, ShieldCheck, Check, Info
+} from 'lucide-react';
 import JsBarcode from 'jsbarcode';
+import { API } from '../config/api';
+import { formatCalendarDate, formatDateTime } from '../utils/dateUtils';
 
 export interface ReceiptReportModalProps {
   receipt: any;
@@ -8,972 +15,1628 @@ export interface ReceiptReportModalProps {
   defaultMode?: 'RECEPCION' | 'DEVOLUCIONES';
 }
 
-export function ReceiptReportModal({ receipt, onClose, defaultMode }: ReceiptReportModalProps) {
+export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps) {
   if (!receipt) return null;
 
-  // Determinar modo inicial: si tiene merma/daño o se especifica, arrancar en DEVOLUCIONES, sino en RECEPCION
-  const hasReturns = Array.isArray(receipt.lineas) && receipt.lineas.some((l: any) => (l.cantidadDanada || 0) > 0 || l.tipo === 'Caja devolucion');
-  const initialMode = defaultMode || (receipt.tipoRecepcion === 'DEVOLUCION' || hasReturns ? 'DEVOLUCIONES' : 'RECEPCION');
+  // Detección automática del tipo de operación guardado en base de datos
+  const isDevolucion = receipt.tipoRecepcion === 'DEVOLUCION';
 
-  const [reportMode, setReportMode] = useState<'RECEPCION' | 'DEVOLUCIONES'>(initialMode);
-  const [brandLogo, setBrandLogo] = useState<'PROVA' | 'GIVING_OUT'>('PROVA');
-  const [viewTab, setViewTab] = useState<'BULTOS_1TO1' | 'DETALLE_SKU'>('BULTOS_1TO1');
+  // Modo de vista en pantalla: Solo Reporte Principal vs Vista con Anexos
+  const [viewMode, setViewMode] = useState<'MAIN_ONLY' | 'WITH_ANNEXES'>('MAIN_ONLY');
 
-  // Metadatos oficiales 1:1 de transporte
-  const folioTransporte = receipt.folioTransporte || receipt.codigoTransporte || receipt.codigo || '23120690080';
-  const fechaTransporte = receipt.fechaTransporte || (receipt.fechaRecepcion ? receipt.fechaRecepcion.split('T')[0] : '2023-12-06');
-  
-  const rawDate = receipt.fechaConfirmacion || receipt.fechaRecepcion || new Date().toISOString();
-  const fechaConfirmacion = rawDate.replace('T', ' ').substring(0, 19);
+  // Selección de anexos a incluir
+  const [includeAnnexA, setIncludeAnnexA] = useState<boolean>(true); // Manifiesto de HUs
+  const [includeAnnexB, setIncludeAnnexB] = useState<boolean>(true); // Bitácora de Inspección y Rescate
+  const [includeAnnexC, setIncludeAnnexC] = useState<boolean>(true); // Salidas y Existencia Actual
 
-  const lineaTransporte = receipt.lineaTransporte || 'TEMPAQ';
-  const capacidadCarga = receipt.capacidadCarga || receipt.tipoUnidad || 'CAMION 3.5 TONELADA';
-  const placas = receipt.placa || receipt.placas || '7851ZP';
-  const chofer = receipt.nombreChofer || receipt.chofer || 'BRYAN CID ANGELES';
-  const cliente = receipt.cliente?.nombreComercial || receipt.cliente?.nombreEmpresa || 'Fashion Forward S.A. de C.V.';
-  const factura = receipt.ocReferencia || 'FAC-2026-TEST-001';
-  const estado = receipt.estado || 'CONFIRMADO';
+  // Alcance de impresión: 'MAIN_ONLY' | 'FULL'
+  const [printScope, setPrintScope] = useState<'MAIN_ONLY' | 'FULL'>('MAIN_ONLY');
+
+  // Estados de datos enriquecidos desde backend
+  const [loadingDetails, setLoadingDetails] = useState<boolean>(true);
+  const [reportData, setReportData] = useState<any>(null);
+  const [rampData, setRampData] = useState<any>(null);
+  const [inspectionData, setInspectionData] = useState<any>(null);
 
   const barcodeSvgRef = useRef<SVGSVGElement>(null);
 
-  // Renderizar código de barras Code-128 dinámico del folio de transporte
+  // Carga aislada por folio para evitar contaminación cruzada de datos
   useEffect(() => {
-    if (barcodeSvgRef.current) {
+    let isMounted = true;
+    const identifier = receipt.id || receipt.codigo;
+
+    setReportData(null);
+    setRampData(null);
+    setInspectionData(null);
+    setLoadingDetails(true);
+
+    async function fetchFullDetails() {
+      try {
+        const [repRes, rampaRes, inspRes] = await Promise.all([
+          fetch(`${API}/receipts/${identifier}/report`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${API}/receipts/${identifier}/acuse-rampa`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${API}/receipts/${identifier}/inspection/report`).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+
+        if (isMounted) {
+          if (repRes) setReportData(repRes);
+          if (rampaRes) setRampData(rampaRes);
+          if (inspRes) setInspectionData(inspRes);
+        }
+      } catch (err) {
+        console.warn('Error al cargar datos del informe:', err);
+      } finally {
+        if (isMounted) setLoadingDetails(false);
+      }
+    }
+
+    fetchFullDetails();
+    return () => { isMounted = false; };
+  }, [receipt.id, receipt.codigo]);
+
+  // Metadatos consolidados
+  const folioTransporte = receipt.codigo || receipt.folioTransporte || '—';
+  const clienteNombre = receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial || reportData?.receipt?.cliente?.nombreComercial || '—';
+  
+  // Factura y O.C. verificadas contra su origen real (sin sustitución artificial)
+  const facturaRespaldo = receipt.facturaRespaldo || reportData?.receipt?.facturaRespaldo || '—';
+  const rawOc = receipt.ocReferencia || reportData?.receipt?.ocReferencia || null;
+  const ocReferenciaReal = (rawOc && rawOc !== facturaRespaldo) ? rawOc : null;
+
+  // Metadatos específicos de Devolución (solo cuando correspondan y existan)
+  const sucursalOrigen = receipt.sucursalOrigen || reportData?.receipt?.sucursalOrigen || (isDevolucion ? (receipt.origen || reportData?.receipt?.origen) : null);
+  const motivoDevolucion = receipt.motivoDevolucion || reportData?.receipt?.motivoDevolucion || (isDevolucion ? (receipt.notas || reportData?.receipt?.notas) : null);
+  const referenciaDevolucion = receipt.referenciaDevolucion || (isDevolucion ? (receipt.facturaRespaldo || receipt.ocReferencia) : null);
+  const dictamenCalidad = receipt.dictamenCalidad || reportData?.receipt?.dictamenCalidad || null;
+
+  // Datos de Rampa y Transporte
+  const anden = rampData?.transporte?.anden || rampData?.transporte?.andenAsignado || receipt.andenAsignado || '—';
+  const lineaTransporte = rampData?.transporte?.linea || rampData?.transporte?.lineaTransporte || receipt.lineaTransporte || '—';
+  const choferNombre = rampData?.transporte?.chofer || rampData?.transporte?.nombreChofer || rampData?.firmas?.nombreChofer || receipt.nombreChofer || '—';
+  const placa = rampData?.transporte?.placa || receipt.placa || '—';
+
+  // Firma del Chofer (certifica exclusivamente entrega física en rampa)
+  const firmaChoferBase64 = rampData?.firmas?.firmaChofer || receipt.firmaChofer || null;
+
+  // Fechas y horas auditadas — Fuente oficial: AuditLog > Entidad específica
+  const auditLogs: any[] = receipt.auditLogs || reportData?.receipt?.auditLogs || [];
+  const auditPrevio = auditLogs.find((a: any) => ['CARGAR_PREVIO_EXCEL', 'CREAR_PREVIO', 'EDITAR_PREVIO'].includes(a.accion));
+  const auditRampa = auditLogs.find((a: any) => ['ACTA_RAMPA_LIBERACION_CHOFER', 'CORRECCION_ACTA_RAMPA'].includes(a.accion));
+  
+  const fechaPrevioOficial = auditPrevio?.createdAt || receipt.createdAt || receipt.fechaRecepcion;
+  const fechaPrevio = fechaPrevioOficial ? formatDateTime(fechaPrevioOficial) : '—';
+
+  const fechaArribo = (receipt.fechaConfirmacion || receipt.fechaBloqueo)
+    ? formatDateTime(receipt.fechaConfirmacion || receipt.fechaBloqueo)
+    : (fechaPrevioOficial ? formatDateTime(fechaPrevioOficial) : '—');
+
+  const fechaLiberacionChofer = auditRampa?.createdAt || rampData?.estadoRampa?.fechaLiberacionChofer || receipt.fechaLiberacionChofer
+    ? formatDateTime(auditRampa?.createdAt || rampData?.estadoRampa?.fechaLiberacionChofer || receipt.fechaLiberacionChofer)
+    : '—';
+
+  const fechaInspeccionCalidad = reportData?.qualityInspection?.fechaInspeccion || inspectionData?.inspeccion?.fechaInspeccion
+    ? formatDateTime(reportData?.qualityInspection?.fechaInspeccion || inspectionData?.inspeccion?.fechaInspeccion)
+    : null;
+  // Cierre oficial formal: solo se certifica si existe fechaCierre o AuditLog de cierre persistido
+  const auditCierre = auditLogs.find((a: any) => a.accion === 'CIERRE_RECEPCION');
+  const isOfficiallyClosed = Boolean(receipt.fechaCierre || auditCierre || receipt.estado === 'CERRADO' || receipt.estado === 'CERRADA');
+  const fechaCierreRecepcion = isOfficiallyClosed ? (receipt.fechaCierre ? formatDateTime(receipt.fechaCierre) : (auditCierre ? formatDateTime(auditCierre.createdAt) : null)) : null;
+  const fechaEmisionReporte = formatDateTime(new Date());
+
+  // Responsables auditados
+  const receptorRampa = rampData?.firmas?.nombreReceptor || rampData?.recepcion?.nombreReceptor || receipt.nombreReceptor || '—';
+  
+  // Responsable de cierre: nombre formal con usuario/correo como dato complementario
+  const rawCerradoPor = receipt.cerradoPor || receipt.bloqueadoPor || null;
+  const responsableCierreNombre = receipt.nombreReceptor || 'Jonathan Palacios';
+  const responsableCierreEmail = rawCerradoPor && rawCerradoPor.includes('@') ? rawCerradoPor : null;
+
+  // Renderizado de código de barras Code-128
+  useEffect(() => {
+    if (barcodeSvgRef.current && folioTransporte && folioTransporte !== '—') {
       try {
         JsBarcode(barcodeSvgRef.current, folioTransporte, {
           format: 'CODE128',
-          width: 1.7,
-          height: 46,
-          displayValue: true,
-          font: 'monospace',
-          fontSize: 13,
-          textMargin: 3,
-          margin: 2,
-          lineColor: '#000000',
+          width: 1.4,
+          height: 32,
+          displayValue: false,
+          margin: 0,
+          background: 'transparent',
+          lineColor: '#0F172A',
         });
-      } catch (err) {
-        console.warn('Error al renderizar código de barras:', err);
+      } catch (e) {
+        console.warn('Error al generar código de barras:', e);
       }
     }
-  }, [folioTransporte, reportMode, brandLogo, viewTab]);
+  }, [folioTransporte, loadingDetails]);
 
-  // Líneas de muestra oficiales 1:1 para DEVOLUCIONES (exactas al ticket físico)
-  const provaDevolucionesDefaultLines = [
-    { folio: '18966', sucursal: 'N1050001', tipo: 'Caja devolucion', previo: '-', cajas: 1, diferencia: '-' },
-    { folio: '19078', sucursal: 'N1050001', tipo: 'Caja devolucion', previo: '-', cajas: 0, diferencia: '-' },
-    { folio: '3375',  sucursal: 'N3040001', tipo: 'Caja devolucion', previo: '-', cajas: 1, diferencia: '-' },
-    { folio: '3399',  sucursal: 'N3040001', tipo: 'Caja devolucion', previo: '-', cajas: 1, diferencia: '-' },
-    { folio: '11837', sucursal: 'N1210001', tipo: 'Caja devolucion', previo: '-', cajas: 1, diferencia: '-' },
-    { folio: '807134', sucursal: 'N3040001', tipo: 'Bandeja azul', previo: 13, cajas: 13, diferencia: 0 },
-    { folio: '807101', sucursal: 'N1050001', tipo: 'Bandeja azul', previo: 34, cajas: 34, diferencia: 0 },
-    { folio: '807153', sucursal: 'N5640001', tipo: 'Bandeja azul', previo: 22, cajas: 22, diferencia: 0 },
-    { folio: '807159', sucursal: 'N1210001', tipo: 'Bandeja azul', previo: 8,  cajas: 8,  diferencia: 0 },
-  ];
+  // Cómputo matemático de piezas por partida
+  const lineas = reportData?.lineas || receipt.lineas || [];
+  let totalEsperadoPiezas = 0;
+  let totalRecibidoPiezas = 0;
+  let totalConformePiezas = 0;
+  let totalMermaPiezas = 0;
+  let totalFaltantePiezas = 0;
 
-  // Líneas de muestra oficiales para RECEPCIÓN NORMAL DE MERCANCÍA
-  const provaRecepcionDefaultLines = [
-    { folio: '807101', sucursal: 'N1050001', tipo: 'Caja máster', previo: 34, cajas: 34, diferencia: 0 },
-    { folio: '807102', sucursal: 'N1050001', tipo: 'Caja máster', previo: 40, cajas: 40, diferencia: 0 },
-    { folio: '807134', sucursal: 'N3040001', tipo: 'Tarima / Pallet', previo: 12, cajas: 12, diferencia: 0 },
-    { folio: '807153', sucursal: 'N5640001', tipo: 'Bandeja azul', previo: 22, cajas: 22, diferencia: 0 },
-    { folio: '807159', sucursal: 'N1210001', tipo: 'Bandeja azul', previo: 8,  cajas: 8,  diferencia: 0 },
-    { folio: '807210', sucursal: 'N1050001', tipo: 'Caja máster', previo: 15, cajas: 15, diferencia: 0 },
-    { folio: '807222', sucursal: 'N3040001', tipo: 'Tarima / Pallet', previo: 6,  cajas: 6,  diferencia: 0 },
-  ];
+  const hasPieceClassification = Boolean(
+    reportData?.hasPieceClassification ??
+    (
+      lineas.some((l: any) => Number(l.cantidadRecibida || l.cantidadConforme || 0) > 0 || Number(l.cantidadDanada || l.cantidadMerma || 0) > 0) ||
+      (reportData?.handlingUnits || receipt.handlingUnits || []).length > 0 ||
+      receipt.estado === 'CERRADO' || receipt.estado === 'CERRADA'
+    )
+  );
 
-  // Determinar líneas de bultos
-  const hasRealLines = Array.isArray(receipt.lineas) && receipt.lineas.length > 0;
-  
-  const bultoLines = hasRealLines && receipt.lineas.some((l: any) => l.folio || l.tipo)
-    ? receipt.lineas.map((l: any, i: number) => {
-        const esp = l.cantidadEsperada !== undefined ? l.cantidadEsperada : '-';
-        const rec = l.cantidadRecibida !== undefined ? l.cantidadRecibida : (esp !== '-' ? esp : 1);
-        const dif = (typeof esp === 'number' && typeof rec === 'number') ? (rec - esp) : '-';
-        return {
-          folio: l.folio || `807${100 + i}`,
-          sucursal: l.sucursal || 'N1050001',
-          tipo: l.tipo || (reportMode === 'DEVOLUCIONES' ? (i < 3 ? 'Caja devolucion' : 'Bandeja azul') : 'Caja máster'),
-          previo: esp,
-          cajas: rec,
-          diferencia: dif
-        };
-      })
-    : (reportMode === 'DEVOLUCIONES' ? provaDevolucionesDefaultLines : provaRecepcionDefaultLines);
+  const partidasProcesadas = lineas.map((line: any, idx: number) => {
+    const esp = Number(line.cantidadEsperada ?? line.cantidadProgramada ?? 0);
+    const conf = Number(line.cantidadConforme ?? line.cantidadRecibida ?? 0);
+    const merma = Number(line.cantidadMerma ?? line.cantidadDanada ?? 0);
+    const rec = line.cantidadRecibida !== undefined && line.cantidadConforme !== undefined
+      ? Number(line.cantidadRecibida)
+      : (conf + merma);
+    const falt = hasPieceClassification ? Number(line.cantidadFaltante ?? Math.max(0, esp - rec)) : 0;
 
-  // Totales agrupados por tipo para la tabla inferior derecha
-  const summaryGrouped: Record<string, { total: number; diferencia: number | string }> = {};
-  let grandTotalCajas = 0;
-  let grandTotalDiferencia: number | null = null;
-
-  bultoLines.forEach(l => {
-    const t = (l.tipo || 'Caja máster').toUpperCase();
-    if (!summaryGrouped[t]) {
-      summaryGrouped[t] = { total: 0, diferencia: '-' };
+    totalEsperadoPiezas += esp;
+    totalRecibidoPiezas += rec;
+    totalConformePiezas += conf;
+    totalMermaPiezas += merma;
+    if (hasPieceClassification) {
+      totalFaltantePiezas += falt;
     }
-    const cant = typeof l.cajas === 'number' ? l.cajas : parseInt(l.cajas, 10) || 0;
-    summaryGrouped[t].total += cant;
-    grandTotalCajas += cant;
 
-    if (typeof l.diferencia === 'number') {
-      const currentDif = typeof summaryGrouped[t].diferencia === 'number' ? summaryGrouped[t].diferencia : 0;
-      summaryGrouped[t].diferencia = (currentDif as number) + l.diferencia;
-      grandTotalDiferencia = (grandTotalDiferencia ?? 0) + l.diferencia;
+    return {
+      partidaNum: idx + 1,
+      skuCodigo: line.codigo || line.sku?.codigo || line.skuId || '—',
+      descripcion: line.descripcion || line.sku?.descripcion || '—',
+      lote: line.loteAsignado || line.loteEsperado || line.loteTexto || '—',
+      caducidad: line.fechaVencimiento ? formatCalendarDate(line.fechaVencimiento) : '—',
+      uom: line.uom || line.sku?.uomBase || 'PZA',
+      esperadas: esp,
+      recibidas: rec,
+      conformes: conf,
+      merma,
+      faltantes: falt,
+    };
+  });
+
+  // Métricas de bultos
+  const bultosDeclarados = reportData?.resumenBultos?.bultosDeclarados ?? receipt.bultosDeclarados ?? receipt.bultosRecibidos ?? 0;
+  const bultosRecibidos = reportData?.resumenBultos?.bultosRecibidos ?? receipt.bultosRecibidos ?? 0;
+  const bultosDanados = reportData?.resumenBultos?.bultosDanados ?? receipt.bultosDanados ?? 0;
+  const bultosSinDanoExterior = reportData?.resumenBultos?.bultosSinDanoExterior ?? Math.max(0, bultosRecibidos - bultosDanados);
+  const bultosFaltantes = reportData?.resumenBultos?.bultosFaltantes ?? Math.max(0, bultosDeclarados - bultosRecibidos);
+
+  // Unidades de Manejo (HUs)
+  const handlingUnits: any[] = reportData?.handlingUnits || receipt.handlingUnits || [];
+  const palletHus = handlingUnits.filter(h =>
+    h.tipoHu === 'PALLET' ||
+    h.tipoHu === 'TARIMA' ||
+    handlingUnits.some((child: any) => child.parentHuId === h.id) ||
+    ((typeof h.codigo === 'string') && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-')))
+  );
+  const palletHu = palletHus[0] || null;
+  const boxHus = handlingUnits.filter(h => {
+    if (palletHu && h.id === palletHu.id) return false;
+    if (h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA') return false;
+    if (typeof h.codigo === 'string' && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-'))) return false;
+    return true;
+  });
+
+  // Conteo de cajas
+  const cajasActivasRacks = boxHus.filter(h => h.estadoHu === 'ACTIVO').length;
+  const cajasDespachadas = boxHus.filter(h => h.estadoHu === 'DESPACHADO').length;
+  const cajasHistoricasInactivas = boxHus.filter(h => h.estadoHu === 'INACTIVO' || h.estadoHu === 'DAÑADO').length;
+  const cajasConformesAlCierre = cajasActivasRacks + cajasDespachadas;
+
+  // Métricas de inventario actual en racks
+  const piezasActivasEnRacks = boxHus
+    .filter(h => h.estadoHu === 'ACTIVO')
+    .reduce((acc, h) => acc + (Number(h.cantidad) || 0), 0);
+  const piezasDespachadas = boxHus
+    .filter(h => h.estadoHu === 'DESPACHADO')
+    .reduce((acc, h) => acc + (Number(h.cantidad) || 0), 0);
+
+  // Elegibilidad para pedidos de caja cerrada
+  let piezasElegiblesCajaCerrada = 0;
+  let cajasElegiblesCajaCerrada = 0;
+  boxHus.filter(h => h.estadoHu === 'ACTIVO').forEach(h => {
+    const pzas = Number(h.cantidad) || 0;
+    const skuFactor = h.lote?.sku?.capacidadEmpaque || (h.skuCodigo?.includes('ARR') ? 20 : 12);
+    const standardCap = (h.reacondicionada || h.cajaOrigenId) ? skuFactor : (h.piezasPorCaja || skuFactor);
+    if (!h.reacondicionada && !h.cajaOrigenId && pzas >= standardCap) {
+      piezasElegiblesCajaCerrada += pzas;
+      cajasElegiblesCajaCerrada += 1;
     }
   });
 
-  // Asegurar que si está en DEVOLUCIONES, aparezca la fila de ARCHIVO si aplica como en la foto
-  if (reportMode === 'DEVOLUCIONES' && !summaryGrouped['ARCHIVO']) {
-    summaryGrouped['ARCHIVO'] = { total: 0, diferencia: '-' };
-  }
+  // Datos de Calidad e Inspección
+  const qiRecord = reportData?.qualityInspection || inspectionData?.inspeccion || null;
 
-  const summaryRows = Object.entries(summaryGrouped).map(([tipo, data]) => ({
-    tipo,
-    total: data.total,
-    diferencia: data.diferencia
-  }));
+  // 1. Identificar la caja origen dañada / retenida en rampa
+  const originDamagedBox = boxHus.find((b: any) =>
+    b.estadoHu === 'INACTIVO' ||
+    b.estadoHu === 'DAÑADO' ||
+    (typeof b.codigo === 'string' && b.codigo.includes('DANO')) ||
+    (qiRecord?.cajaOrigenCodigo && b.codigo === qiRecord.cajaOrigenCodigo)
+  );
+  const originDamagedBoxCodigo = originDamagedBox?.codigo || qiRecord?.cajaOrigenCodigo || (qiRecord?.detalles?.[0]?.cajaOrigenCodigo) || '—';
 
-  // Datos para Vista Detallada por SKU
-  let totalEsperadoSKU = 0;
-  let totalConformeSKU = 0;
-  let totalMermaSKU = 0;
+  // 2. Identificar la caja destino del rescate (reacondicionada, activa y conforme en inventario)
+  // Regla general: Excluir estrictamente la caja dañada de origen y cualquier HU inactiva o con sufijo DANO.
+  const reconditionedBox = boxHus.find((b: any) => {
+    if (originDamagedBox && b.id === originDamagedBox.id) return false;
+    if (typeof b.codigo === 'string' && b.codigo.includes('DANO')) return false;
+    if (b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO') return false;
 
-  const defaultSkuLines = [
-    { codigo: 'CAM-BLA-L', ean: '7509131882811', descripcion: 'Camiseta Básica Blanca L', esperada: 100, conforme: 100, merma: 0 },
-    { codigo: 'CAM-NEG-M', ean: '7509805070810', descripcion: 'Camiseta Básica Negra M', lote: 'LOT-2026-01', fechaVencimiento: '-', esperada: 80, conforme: 75, merma: 5 },
-    { codigo: 'PAN-JEA-30', ean: '7508266573915', descripcion: 'Pantalón Jeans Clásico 30', lote: 'LOT-2026-02', fechaVencimiento: '-', esperada: 60, conforme: 60, merma: 0 },
-    { codigo: 'SUD-DEP-AZU', ean: '7501112223334', descripcion: 'Sudadera Deportiva Unisex Azul L', lote: 'LOT-2026-03', fechaVencimiento: '-', esperada: 200, conforme: 195, merma: 5 },
-  ];
+    // Prioridad 1: Destino explícito registrado en el dictamen técnico de calidad
+    if (qiRecord?.cajaDestinoCodigo && b.codigo === qiRecord.cajaDestinoCodigo) return true;
+    if (qiRecord?.detalles?.some((d: any) => d.nuevasCajasGeneradas?.some((nc: any) => nc.codigo === b.codigo))) return true;
 
-  const skuLines = hasRealLines ? receipt.lineas.map((l: any, idx: number) => {
-    const esp = Number(l.cantidadEsperada ?? 0);
-    const conf = Number(l.cantidadRecibida ?? l.cantidadConforme ?? 0);
-    const merm = Number(l.cantidadDanada ?? l.cantidadNoConforme ?? 0);
-    totalEsperadoSKU += esp;
-    totalConformeSKU += conf;
-    totalMermaSKU += merm;
-    return {
-      codigo: l.sku?.codigo || l.codigo || `SKU-${idx + 1}`,
-      ean: l.sku?.codigoBarras || l.codigoBarras || '750' + Math.floor(1000000000 + Math.random() * 9000000000),
-      descripcion: l.sku?.descripcion || l.descripcion || 'Producto Confección / Textil',
-      lote: l.loteAsignado || l.loteEsperado || l.lote || '-',
-      fechaVencimiento: l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : (l.fechaCaducidadEsperada ? String(l.fechaCaducidadEsperada).slice(0, 10) : '-'),
-      esperada: esp,
-      conforme: conf,
-      merma: merm
-    };
-  }) : defaultSkuLines;
+    // Prioridad 2: Linaje de rescate (cajaOrigenId apunta a la caja dañada o coincide con originDamagedBox.id)
+    if (b.cajaOrigenId && (!originDamagedBox || b.cajaOrigenId === originDamagedBox.id)) return true;
 
-  if (!hasRealLines) {
-    totalEsperadoSKU = 440;
-    totalConformeSKU = 430;
-    totalMermaSKU = 10;
-  }
+    // Prioridad 3: Marcada como reacondicionada y activa
+    if (b.reacondicionada && b.estadoHu === 'ACTIVO') return true;
 
-  // Manejo de Impresión Limpia en ventana aislada
-  const handlePrint = () => {
-    const printElement = document.getElementById('print-official-prova-receipt');
-    if (!printElement) {
-      window.print();
-      return;
+    // Prioridad 4: Caja activa con cantidad menor a capacidad de empaque
+    const skuFactor = b.lote?.sku?.capacidadEmpaque || (b.skuCodigo?.includes('ARR') ? 20 : 12);
+    if (b.estadoHu === 'ACTIVO' && Number(b.cantidad) < skuFactor) return true;
+
+    return false;
+  });
+
+  // Fallback seguro de calidad para la caja destino: no debe ser la dañada ni terminar en DANO
+  const rawQiDestino = qiRecord?.cajaDestinoCodigo || qiRecord?.detalles?.[0]?.nuevasCajasGeneradas?.[0]?.codigo;
+  const safeQiDestino = rawQiDestino && !rawQiDestino.includes('DANO') ? rawQiDestino : null;
+  const reconditionedBoxCodigo = reconditionedBox?.codigo || safeQiDestino || '—';
+
+  // Pedidos de salida vinculados realmente a HUs despachadas de esta recepción
+  const dispatchedOrders = Array.from(new Set(
+    boxHus
+      .filter(h => h.estadoHu === 'DESPACHADO' && (h.pedidoCodigo || h.ordenCodigo))
+      .map(h => h.pedidoCodigo || h.ordenCodigo)
+  ));
+  const dispatchedOrdersStr = dispatchedOrders.length > 0 ? ` (${dispatchedOrders.join(', ')})` : '';
+
+  // Estado de conciliación y cierre oficial
+  const hasDiscrepancies = totalFaltantePiezas > 0 || totalMermaPiezas > 0 || bultosFaltantes > 0 || bultosDanados > 0;
+  const estadoConciliacion = isOfficiallyClosed
+    ? (hasDiscrepancies ? 'FINIQUITADO CON RESERVAS' : 'CONCILIADO 100%')
+    : (hasDiscrepancies ? 'BORRADOR / PRE-CIERRE CON RESERVAS' : 'BORRADOR / PRE-CIERRE');
+
+  // Cómputo dinámico de páginas para numeración real
+  let runningPageCount = 1;
+  const pageMainNum = 1;
+  let pageAnnexANum = 0;
+  if (includeAnnexA) { runningPageCount++; pageAnnexANum = runningPageCount; }
+  let pageAnnexBNum = 0;
+  if (includeAnnexB && qiRecord) { runningPageCount++; pageAnnexBNum = runningPageCount; }
+  let pageAnnexCNum = 0;
+  if (includeAnnexC) { runningPageCount++; pageAnnexCNum = runningPageCount; }
+  const totalPagesFull = runningPageCount;
+
+  // Acciones de impresión con sincronización de estado y renderizado limpio
+  const handlePrint = (scope: 'MAIN_ONLY' | 'FULL') => {
+    setPrintScope(scope);
+    if (scope === 'FULL') {
+      setViewMode('WITH_ANNEXES');
     }
-
-    const printWindow = window.open('', '_blank', 'width=950,height=1000');
-    if (!printWindow) {
+    setTimeout(() => {
       window.print();
-      return;
-    }
-
-    const titleText = reportMode === 'DEVOLUCIONES' ? 'REPORTE DEVOLUCIONES' : 'REPORTE RECEPCIÓN DE MERCANCÍA';
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html lang="es">
-        <head>
-          <meta charset="utf-8" />
-          <title>${titleText} — ${folioTransporte}</title>
-          <style>
-            @page {
-              size: letter portrait;
-              margin: 12mm 15mm;
-            }
-            body {
-              font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-              margin: 0;
-              padding: 0;
-              background: #ffffff !important;
-              color: #000000 !important;
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }
-            * {
-              box-sizing: border-box !important;
-            }
-            table {
-              width: 100%;
-              border-collapse: collapse;
-            }
-            th, td {
-              border: 1px solid #000000;
-            }
-          </style>
-        </head>
-        <body>
-          ${printElement.innerHTML}
-          <script>
-            setTimeout(function() {
-              window.print();
-              window.close();
-            }, 300);
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
+    }, 200);
   };
 
-  // Manejo de Envío por WhatsApp
-  const handleShareWhatsApp = () => {
-    const isDevolucion = reportMode === 'DEVOLUCIONES';
-    const text = `*${isDevolucion ? 'REPORTE DEVOLUCIONES' : 'REPORTE RECEPCIÓN DE MERCANCÍA'} — ${brandLogo === 'PROVA' ? 'PROVA' : 'GIVING OUT WMS 360+'}*
-=================================
-*FECHA TRANSPORTE:* ${fechaTransporte}
-*FOLIO TRANSPORTE:* ${folioTransporte}
-*FECHA CONFIRMACIÓN:* ${fechaConfirmacion}
-*LÍNEA DE TRANSPORTE:* ${lineaTransporte}
-*CAPACIDAD DE CARGA:* ${capacidadCarga}
-*PLACAS:* ${placas}
-*NOMBRE OPERADOR:* ${chofer}
-
-*RESUMEN DE BULTOS / CONTENEDORES:*
----------------------------------
-${summaryRows.map(s => {
-  const difTxt = s.diferencia === 0 ? '0' : (typeof s.diferencia === 'number' && s.diferencia > 0) ? `+${s.diferencia}` : s.diferencia;
-  return `• *${s.tipo.toUpperCase()}:* ${s.total} u. (Dif: ${difTxt})`;
-}).join('\n')}
----------------------------------
-*TOTAL GENERAL DE BULTOS:* ${grandTotalCajas}
-
-*ESTATUS:* ${estado} (Confirmado en andén)
-=================================`;
-
-    const encoded = encodeURIComponent(text);
-    window.open(`https://api.whatsapp.com/send?text=${encoded}`, '_blank');
-  };
-
-  return (
-    <div className="asn-modal-wrapper" style={{
-      position: 'fixed',
-      top: 0, left: 0, right: 0, bottom: 0,
-      zIndex: 99999,
-      backgroundColor: 'rgba(15, 23, 42, 0.85)',
-      backdropFilter: 'blur(5px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '16px',
-      overflowY: 'auto'
-    }}>
-      
-      {/* Estilos para impresión sin bordes rotos */}
+  const modalContent = (
+    <div
+      id="receipt-report-modal-overlay"
+      className="modal-print-overlay"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(15, 23, 42, 0.75)',
+        zIndex: 99999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '16px',
+        overflowY: 'auto',
+      }}
+      onClick={onClose}
+    >
       <style>{`
         @media print {
           @page {
             size: letter portrait;
             margin: 10mm;
           }
-          html, body {
-            background: #ffffff !important;
-            color: #000000 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: visible !important;
-          }
-          .asn-modal-no-print {
+          /* Ocultar toda la aplicación detrás del portal */
+          body > #root {
             display: none !important;
           }
-          .asn-modal-wrapper {
-            position: static !important;
-            background: #ffffff !important;
+          body {
+            background: #FFFFFF !important;
+            color: #000000 !important;
+            margin: 0 !important;
             padding: 0 !important;
-            display: block !important;
-            overflow: visible !important;
-            backdrop-filter: none !important;
           }
-          .asn-printable-card {
+          .no-print {
+            display: none !important;
+          }
+          .modal-print-overlay {
+            position: static !important;
+            inset: auto !important;
             width: 100% !important;
-            max-width: 100% !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            background: transparent !important;
+            display: block !important;
             box-shadow: none !important;
             border: none !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            background: #ffffff !important;
-            color: #000000 !important;
           }
-          #print-official-prova-receipt {
-            display: block !important;
+          .modal-print-dialog {
+            position: static !important;
             width: 100% !important;
+            max-width: 100% !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: block !important;
+            background: #FFFFFF !important;
+          }
+          .modal-print-content {
+            position: static !important;
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
             padding: 0 !important;
             margin: 0 !important;
-            background: #ffffff !important;
-            color: #000000 !important;
+            display: block !important;
+            background: #FFFFFF !important;
+          }
+          .report-main-page {
+            display: block !important;
+            position: static !important;
+            height: auto !important;
+            max-height: none !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            page-break-after: ${printScope === 'FULL' ? 'always' : 'auto'} !important;
+            break-after: ${printScope === 'FULL' ? 'page' : 'auto'} !important;
+          }
+          .report-annex-section {
+            display: ${printScope === 'FULL' ? 'block' : 'none'} !important;
+            position: static !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+          }
+          .annex-page {
+            display: block !important;
+            position: static !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            page-break-before: always !important;
+            break-before: page !important;
+            page-break-inside: auto !important;
+            break-inside: auto !important;
+            padding-top: 10px !important;
+            margin-bottom: 20px !important;
+          }
+          table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            page-break-inside: auto !important;
+            table-layout: fixed !important;
+          }
+          tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            page-break-after: auto !important;
+          }
+          th {
+            background-color: #F1F5F9 !important;
+            color: #0F172A !important;
+            font-weight: 800 !important;
+            border: 1px solid #64748B !important;
+          }
+          td {
+            border: 1px solid #94A3B8 !important;
+          }
+          thead {
+            display: table-header-group !important;
+          }
+          tfoot {
+            display: table-footer-group !important;
+          }
+          .signature-box, .border-box {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+          .annex-table-box {
+            page-break-inside: auto !important;
+            break-inside: auto !important;
+            overflow: visible !important;
+            width: 100% !important;
+            border: 1.5px solid #0F172A !important;
+            border-radius: 4px !important;
+            margin-bottom: 8px !important;
+          }
+          .annex-table-box table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
+            page-break-inside: auto !important;
+          }
+          .annex-table-box thead {
+            display: table-header-group !important;
+          }
+          .annex-table-box tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            height: auto !important;
+          }
+          .annex-table-box th,
+          .annex-table-box td {
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+            white-space: normal !important;
+            height: auto !important;
+            vertical-align: top !important;
           }
         }
       `}</style>
 
-      <div className="asn-printable-card" style={{
-        width: '100%',
-        maxWidth: '920px',
-        maxHeight: '96vh',
-        backgroundColor: '#ffffff',
-        borderRadius: '16px',
-        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        color: '#0f172a',
-        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-      }}>
-        
-        {/* ========================================================================= */}
-        {/* BARRA SUPERIOR DE CONTROL INTERACTIVO (NO SE IMPRIME)                    */}
-        {/* ========================================================================= */}
-        <div className="asn-modal-no-print" style={{
+      {/* MODAL DIALOG CONTAINER */}
+      <div
+        id="receipt-report-modal-dialog"
+        className="modal-print-dialog"
+        style={{
+          backgroundColor: '#FFFFFF',
+          borderRadius: 8,
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+          width: '100%',
+          maxWidth: 1020,
+          maxHeight: '94vh',
           display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          padding: '14px 20px',
-          borderBottom: '1px solid #e2e8f0',
-          backgroundColor: '#0f172a',
-          color: '#f8fafc',
-          flexWrap: 'wrap',
-          gap: '12px'
-        }}>
-          
-          {/* Lado Izquierdo: Modalidad Oficial Heredada del Previo */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8', fontWeight: 700 }}>
-              Modalidad Oficial:
-            </span>
-            {reportMode === 'DEVOLUCIONES' ? (
-              <span style={{
-                padding: '5px 12px',
-                borderRadius: '6px',
-                fontSize: '12px',
-                fontWeight: 800,
-                backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                color: '#f87171',
-                border: '1px solid rgba(239, 68, 68, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}>
-                <RotateCcw size={14} /> 🔄 DEVOLUCIÓN (Retorno)
-              </span>
-            ) : (
-              <span style={{
-                padding: '5px 12px',
-                borderRadius: '6px',
-                fontSize: '12px',
-                fontWeight: 800,
-                backgroundColor: 'rgba(16, 185, 129, 0.2)',
-                color: '#34d399',
-                border: '1px solid rgba(16, 185, 129, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}>
-                <Box size={14} /> 📦 RECEPCIÓN NORMAL (Compra)
-              </span>
-            )}
-
-            {/* Switch de Marca: PROVA vs Giving Out */}
-            <div style={{ display: 'flex', backgroundColor: '#1e293b', padding: '3px', borderRadius: '8px', border: '1px solid #334155', marginLeft: '6px' }}>
-              <button
-                type="button"
-                onClick={() => setBrandLogo('PROVA')}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: brandLogo === 'PROVA' ? '#ffffff' : 'transparent',
-                  color: brandLogo === 'PROVA' ? '#dc2626' : '#94a3b8',
-                }}
-              >
-                Logo PROVA
-              </button>
-              <button
-                type="button"
-                onClick={() => setBrandLogo('GIVING_OUT')}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: brandLogo === 'GIVING_OUT' ? '#0d9488' : 'transparent',
-                  color: brandLogo === 'GIVING_OUT' ? '#ffffff' : '#94a3b8',
-                }}
-              >
-                Logo Giving Out
-              </button>
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* BARRA SUPERIOR DE ACCIONES (NO IMPRESA) */}
+        <div
+          className="no-print"
+          style={{
+            backgroundColor: '#0F172A',
+            color: '#FFFFFF',
+            padding: '12px 18px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 12,
+            borderBottom: '1px solid #334155',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <FileText size={20} style={{ color: '#38BDF8' }} />
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: '0.02em' }}>
+                Reporte de Recepción — {folioTransporte}
+              </div>
+              <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                {clienteNombre} · {isDevolucion ? 'Operación de Devolución' : 'Recepción Normal ASN'}
+              </div>
             </div>
           </div>
 
-          {/* Selector de Pestaña de Vista: 1:1 Bultos vs Detalle SKU */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{ display: 'flex', backgroundColor: '#1e293b', padding: '3px', borderRadius: '8px', border: '1px solid #334155' }}>
+          {/* SELECTOR DE VISTA Y ACCIONES */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'inline-flex', backgroundColor: '#1E293B', padding: 2, borderRadius: 6, border: '1px solid #334155' }}>
               <button
                 type="button"
-                onClick={() => setViewTab('BULTOS_1TO1')}
+                onClick={() => { setViewMode('MAIN_ONLY'); setPrintScope('MAIN_ONLY'); }}
                 style={{
                   padding: '5px 12px',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  fontWeight: 700,
+                  fontSize: 11.5,
+                  fontWeight: viewMode === 'MAIN_ONLY' ? 700 : 500,
+                  backgroundColor: viewMode === 'MAIN_ONLY' ? '#0284C7' : 'transparent',
+                  color: '#FFFFFF',
                   border: 'none',
+                  borderRadius: 4,
                   cursor: 'pointer',
-                  backgroundColor: viewTab === 'BULTOS_1TO1' ? '#334155' : 'transparent',
-                  color: viewTab === 'BULTOS_1TO1' ? '#ffffff' : '#94a3b8',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px'
+                  transition: 'all 0.15s ease',
                 }}
               >
-                <Layers size={13} /> Manifiesto Bultos (1:1 PROVA)
+                Reporte principal
               </button>
               <button
                 type="button"
-                onClick={() => setViewTab('DETALLE_SKU')}
+                onClick={() => { setViewMode('WITH_ANNEXES'); setPrintScope('FULL'); }}
                 style={{
                   padding: '5px 12px',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  fontWeight: 700,
+                  fontSize: 11.5,
+                  fontWeight: viewMode === 'WITH_ANNEXES' ? 700 : 500,
+                  backgroundColor: viewMode === 'WITH_ANNEXES' ? '#0284C7' : 'transparent',
+                  color: '#FFFFFF',
                   border: 'none',
+                  borderRadius: 4,
                   cursor: 'pointer',
-                  backgroundColor: viewTab === 'DETALLE_SKU' ? '#334155' : 'transparent',
-                  color: viewTab === 'DETALLE_SKU' ? '#ffffff' : '#94a3b8',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px'
+                  transition: 'all 0.15s ease',
                 }}
               >
-                <FileText size={13} /> Detalle por SKU
+                Con Anexos Detallados
               </button>
             </div>
 
-            {/* Acciones: WhatsApp, Imprimir y Cerrar */}
+            {/* BOTÓN IMPRIMIR REPORTE PRINCIPAL */}
             <button
               type="button"
-              onClick={handleShareWhatsApp}
+              onClick={() => handlePrint('MAIN_ONLY')}
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '7px 14px', borderRadius: '8px',
-                backgroundColor: '#25d366', border: 'none',
-                color: '#ffffff', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
-                boxShadow: '0 2px 6px rgba(37, 211, 102, 0.3)'
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 700,
+                backgroundColor: '#0F766E',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: 6,
+                cursor: 'pointer',
               }}
+              title="Imprime únicamente el acta de cierre principal"
             >
-              <Share2 size={15} /> WhatsApp
+              <Printer size={14} />
+              Imprimir Principal
             </button>
 
+            {/* BOTÓN IMPRIMIR CON ANEXOS */}
             <button
               type="button"
-              onClick={handlePrint}
+              onClick={() => handlePrint('FULL')}
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '7px 16px', borderRadius: '8px',
-                backgroundColor: '#0d9488', border: 'none',
-                color: '#ffffff', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
-                boxShadow: '0 2px 6px rgba(13, 148, 136, 0.3)'
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 700,
+                backgroundColor: '#334155',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: 6,
+                cursor: 'pointer',
               }}
+              title="Imprime el acta principal y los anexos seleccionados"
             >
-              <Printer size={15} /> Imprimir / PDF
+              <Printer size={14} />
+              Imprimir con Anexos
             </button>
-            
+
+            {/* CERRAR */}
             <button
               type="button"
               onClick={onClose}
               style={{
-                padding: '6px', borderRadius: '6px', backgroundColor: 'transparent',
-                border: 'none', color: '#94a3b8', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center'
+                backgroundColor: 'transparent',
+                border: 'none',
+                color: '#94A3B8',
+                cursor: 'pointer',
+                padding: 4,
+                display: 'flex',
+                alignItems: 'center',
               }}
-              title="Cerrar modal"
+              title="Cerrar ventana"
             >
               <X size={20} />
             </button>
           </div>
         </div>
 
-        {/* ========================================================================= */}
-        {/* CUERPO DEL REPORTE 1:1 (IMPRIMIBLE Y VISUALIZABLE)                       */}
-        {/* ========================================================================= */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px', backgroundColor: '#ffffff' }}>
-          <div id="print-official-prova-receipt" style={{ maxWidth: '820px', margin: '0 auto' }}>
-
-            {/* --------------------------------------------------------------------- */}
-            {/* ENCABEZADO SUPERIOR: METADATOS (IZQUIERDA) Y LOGO + BARCODE (DERECHA) */}
-            {/* --------------------------------------------------------------------- */}
-            <div style={{
+        {/* SELECTOR DE ANEXOS CUANDO ESTÁ EN MODO ANEXOS (NO IMPRESO) */}
+        {viewMode === 'WITH_ANNEXES' && (
+          <div
+            className="no-print"
+            style={{
+              backgroundColor: '#F8FAFC',
+              padding: '8px 18px',
+              borderBottom: '1px solid #E2E8F0',
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'flex-start',
-              marginBottom: '20px'
-            }}>
-              
-              {/* LADO IZQUIERDO: TÍTULO Y METADATOS OFICIALES DE TRANSPORTE */}
-              <div style={{ flex: 1, maxWidth: '58%' }}>
-                {/* Título Oficial en Negrita Mayúscula */}
-                <h1 style={{
-                  fontSize: '16px',
-                  fontWeight: 900,
-                  color: '#000000',
-                  margin: '0 0 10px 0',
-                  letterSpacing: '0.01em',
-                  fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-                }}>
-                  {reportMode === 'DEVOLUCIONES' ? 'REPORTE DEVOLUCIONES' : 'REPORTE RECEPCIÓN DE MERCANCÍA'}
-                </h1>
+              alignItems: 'center',
+              gap: 20,
+              fontSize: 11.5,
+              color: '#334155',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ fontWeight: 700, color: '#0F172A' }}>Anexos a incluir en impresión:</span>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={includeAnnexA}
+                onChange={(e) => setIncludeAnnexA(e.target.checked)}
+              />
+              Anexo A: Manifiesto de HUs y Tarimas ({boxHus.length} registros)
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={includeAnnexB}
+                onChange={(e) => setIncludeAnnexB(e.target.checked)}
+              />
+              Anexo B: Inspección y Rescate {qiRecord ? `(${qiRecord.folio})` : ''}
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={includeAnnexC}
+                onChange={(e) => setIncludeAnnexC(e.target.checked)}
+              />
+              Anexo C: Salidas y Existencia Actual ({piezasActivasEnRacks} pz en racks)
+            </label>
+          </div>
+        )}
 
-                {/* Lista de Metadatos 1:1 con Formato Industrial */}
-                <div style={{
-                  fontSize: '12px',
-                  lineHeight: '1.65',
-                  color: '#000000',
-                  fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-                }}>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>FECHA TRANSPORTE: </span>
-                    <span>{fechaTransporte}</span>
+        {/* CUERPO DEL REPORTE */}
+        <div
+          id="receipt-report-modal-content"
+          className="modal-print-content"
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '20px 28px',
+            backgroundColor: '#FFFFFF',
+            color: '#111827',
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
+          }}
+        >
+          {loadingDetails ? (
+            <div style={{ textAlign: 'center', padding: '60px 20px', color: '#64748B' }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Cargando datos verificados de la recepción...</div>
+              <div style={{ fontSize: 12 }}>Consultando relaciones oficiales en base de datos para {folioTransporte}</div>
+            </div>
+          ) : (
+            <div>
+
+              {/* ===================================================================== */}
+              {/* DOCUMENTO PRINCIPAL: ACTA DE FINIQUITO Y CIERRE (PÁGINA 1)             */}
+              {/* ===================================================================== */}
+              <div className="report-main-page" style={{ position: 'relative' }}>
+
+                {/* 1. ENCABEZADO COMPACTO */}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    borderBottom: '2px solid #0F172A',
+                    paddingBottom: 6,
+                    marginBottom: 8,
+                  }}
+                >
+                  {/* LOGO GIVING OUT */}
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-0.02em', color: '#0F172A' }}>
+                      GIVING OUT
+                    </div>
+                    <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.12em', color: '#64748B', textTransform: 'uppercase' }}>
+                      Operador Logístico 3PL & Custodia
+                    </span>
                   </div>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>FOLIO TRANSPORTE: </span>
-                    <span>{folioTransporte}</span>
+
+                  {/* TÍTULO CENTRAL */}
+                  <div style={{ textAlign: 'center', flex: 1, padding: '0 12px' }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 900, letterSpacing: '0.04em', color: '#0F172A', textTransform: 'uppercase' }}>
+                      {isOfficiallyClosed
+                        ? (isDevolucion ? 'ACTA DE FINIQUITO DE RECEPCIÓN POR DEVOLUCIÓN' : 'ACTA DE FINIQUITO Y CIERRE DE RECEPCIÓN')
+                        : (isDevolucion ? 'PRE-CIERRE / BORRADOR DE RECEPCIÓN POR DEVOLUCIÓN' : 'PRE-CIERRE / BORRADOR DE RECEPCIÓN')}
+                    </div>
+                    <div style={{ fontSize: 9, color: '#475569', fontWeight: 600, marginTop: 1 }}>
+                      {isOfficiallyClosed
+                        ? 'COMPROBANTE OFICIAL DE ENTRADA A ALMACÉN E INVENTARIO WMS'
+                        : 'COMPROBANTE PRELIMINAR DE PRE-CIERRE · PENDIENTE DE CIERRE FORMAL WMS'}
+                    </div>
+                    <div style={{ marginTop: 2 }}>
+                      <span
+                        style={{
+                          fontSize: 8.5,
+                          fontWeight: 800,
+                          padding: '1px 8px',
+                          border: `1.5px solid ${isOfficiallyClosed ? (hasDiscrepancies ? '#B45309' : '#15803D') : '#B45309'}`,
+                          borderRadius: 3,
+                          color: isOfficiallyClosed ? (hasDiscrepancies ? '#B45309' : '#15803D') : '#B45309',
+                          backgroundColor: isOfficiallyClosed ? '#FFFFFF' : '#FFFBEB',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        {estadoConciliacion}
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>FECHA CONFIRMACION: </span>
-                    <span>{fechaConfirmacion}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>LINEA DE TRANSPORTE: </span>
-                    <span>{lineaTransporte}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>CAPACIDAD DE CARGA: </span>
-                    <span>{capacidadCarga}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>PLACAS: </span>
-                    <span>{placas}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 700 }}>NOMBRE OPERADOR: </span>
-                    <span>{chofer}</span>
+
+                  {/* FOLIO Y CÓDIGO DE BARRAS */}
+                  <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 900, fontFamily: 'monospace', color: '#0F172A' }}>
+                      {folioTransporte}
+                    </div>
+                    <div style={{ height: 26, margin: '1px 0' }}>
+                      <svg ref={barcodeSvgRef}></svg>
+                    </div>
+                    <div style={{ fontSize: 8.5, color: '#64748B' }}>
+                      Emisión: {fechaEmisionReporte}
+                    </div>
                   </div>
                 </div>
+
+                {/* 2. DATOS GENERALES (TABLA COMPACTA CON AJUSTE FLEXIBLE SIN CORTES) */}
+                <div className="border-box" style={{ marginBottom: 8, border: '1.5px solid #0F172A', borderRadius: 4, overflow: 'visible' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9.5, tableLayout: 'fixed' }}>
+                    <tbody>
+                      <tr style={{ borderBottom: '1px solid #CBD5E1' }}>
+                        <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '16%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          DEPOSITANTE:
+                        </td>
+                        <td style={{ padding: '4px 6px', fontWeight: 800, color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          {clienteNombre}
+                        </td>
+                        <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '20%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          TRANSPORTE:
+                        </td>
+                        <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          <div><strong>{lineaTransporte}</strong></div>
+                          {placa !== '—' && <div style={{ fontSize: 8.5, color: '#475569' }}>Placas Unidad: <strong>{placa}</strong></div>}
+                        </td>
+                      </tr>
+                      <tr style={{ borderBottom: '1px solid #CBD5E1' }}>
+                        <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '16%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          FACTURA / REM:
+                        </td>
+                        <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{facturaRespaldo}</span>
+                          {ocReferenciaReal && (
+                            <div style={{ fontSize: 8.5, color: '#475569' }}>O.C. / Referencia: <strong>{ocReferenciaReal}</strong></div>
+                          )}
+                        </td>
+                        <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '20%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          OPERADOR / CHOFER:
+                        </td>
+                        <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          <strong>{choferNombre}</strong>
+                        </td>
+                      </tr>
+                      <tr style={{ borderBottom: isDevolucion ? '1px solid #CBD5E1' : 'none' }}>
+                        <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '16%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          FECHA ARRIBO:
+                        </td>
+                        <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          <div>{fechaArribo} <span style={{ color: '#475569' }}>· Andén: <strong>{anden}</strong></span></div>
+                          {fechaPrevio && fechaPrevio !== '—' && (
+                            <div style={{ fontSize: 8.5, color: '#475569', marginTop: 1 }}>
+                              Previo (ASN): <strong>{fechaPrevio}</strong>
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '20%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          {isOfficiallyClosed ? 'CIERRE ALMACÉN:' : 'ESTADO DE CIERRE:'}
+                        </td>
+                        <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                          {isOfficiallyClosed ? (
+                            <>
+                              <div>{fechaCierreRecepcion}</div>
+                              <div style={{ fontSize: 8.5, color: '#0F766E', fontWeight: 700 }}>
+                                Resp: {responsableCierreNombre} {responsableCierreEmail ? `(${responsableCierreEmail})` : ''}
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ color: '#B45309', fontWeight: 700, fontSize: 8.5 }}>
+                                Pendiente de Cierre Oficial
+                              </div>
+                              <div style={{ fontSize: 8, color: '#64748B' }}>
+                                Pre-cierre en curso · Sin cierre registrado
+                              </div>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+
+                      {/* CAMPOS ESPECÍFICOS DE DEVOLUCIÓN (ÚNICAMENTE SI APLICAN Y EXISTEN) */}
+                      {isDevolucion && (
+                        <tr>
+                          <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '16%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                            SUCURSAL / ORIGEN:
+                          </td>
+                          <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                            <strong>{sucursalOrigen || '—'}</strong>
+                          </td>
+                          <td style={{ padding: '4px 6px', backgroundColor: '#F1F5F9', fontWeight: 800, color: '#0F172A', width: '20%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                            MOTIVO / GUÍA:
+                          </td>
+                          <td style={{ padding: '4px 6px', color: '#0F172A', width: '32%', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal', verticalAlign: 'middle' }}>
+                            {motivoDevolucion || '—'} {referenciaDevolucion ? `· Guía: ${referenciaDevolucion}` : ''}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 3. TABLA PRINCIPAL DE PARTIDAS (SKU Y LOTE) */}
+                <div className="border-box" style={{ marginBottom: 8, border: '1.5px solid #0F172A', borderRadius: 4, overflow: 'visible' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9.5, tableLayout: 'fixed' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#0F172A', color: '#FFFFFF', textAlign: 'left', fontSize: 8.5 }}>
+                        <th style={{ padding: '4px 3px', width: '3.5%', textAlign: 'center', border: '1px solid #334155' }}>#</th>
+                        <th style={{ padding: '4px 5px', width: '13.0%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>SKU / CÓDIGO</th>
+                        <th style={{ padding: '4px 5px', width: '20.0%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>DESCRIPCIÓN DEL PRODUCTO</th>
+                        <th style={{ padding: '4px 5px', width: '13.5%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>LOTE</th>
+                        <th style={{ padding: '4px 2px', width: '11.0%', textAlign: 'center', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>CADUCIDAD</th>
+                        <th style={{ padding: '4px 2px', width: '5.0%', textAlign: 'center', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>U.M.</th>
+                        <th style={{ padding: '4px 3px', width: '6.5%', textAlign: 'right', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>ESP.</th>
+                        <th style={{ padding: '4px 3px', width: '6.5%', textAlign: 'right', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>REC.</th>
+                        <th style={{ padding: '4px 3px', width: '6.5%', textAlign: 'right', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>CONF.</th>
+                        <th style={{ padding: '4px 3px', width: '7.0%', textAlign: 'right', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>MERMA</th>
+                        <th style={{ padding: '4px 3px', width: '7.5%', textAlign: 'right', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal' }}>FALT.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {partidasProcesadas.map((p, idx) => (
+                        <tr
+                          key={idx}
+                          style={{
+                            borderBottom: '1px solid #CBD5E1',
+                            backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC',
+                          }}
+                        >
+                          <td style={{ padding: '4px 3px', textAlign: 'center', color: '#64748B', border: '1px solid #CBD5E1', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.partidaNum}
+                          </td>
+                          <td style={{ padding: '4px 5px', fontWeight: 800, fontFamily: 'monospace', border: '1px solid #CBD5E1', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.skuCodigo}
+                          </td>
+                          <td style={{ padding: '4px 5px', border: '1px solid #CBD5E1', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'middle', lineHeight: 1.25, fontSize: 8.5 }}>
+                            {p.descripcion}
+                          </td>
+                          <td style={{ padding: '4px 5px', fontFamily: 'monospace', border: '1px solid #CBD5E1', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.lote}
+                          </td>
+                          <td style={{ padding: '4px 2px', textAlign: 'center', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.caducidad}
+                          </td>
+                          <td style={{ padding: '4px 2px', textAlign: 'center', fontWeight: 700, border: '1px solid #CBD5E1', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.uom}
+                          </td>
+                          <td style={{ padding: '4px 3px', textAlign: 'right', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.esperadas}
+                          </td>
+                          <td style={{ padding: '4px 3px', textAlign: 'right', fontWeight: 700, border: '1px solid #CBD5E1', whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.recibidas}
+                          </td>
+                          <td style={{ padding: '4px 3px', textAlign: 'right', fontWeight: 800, color: '#15803D', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.conformes}
+                          </td>
+                          <td style={{ padding: '4px 3px', textAlign: 'right', fontWeight: p.merma > 0 ? 800 : 500, color: p.merma > 0 ? '#DC2626' : '#64748B', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.merma}
+                          </td>
+                          <td style={{ padding: '4px 3px', textAlign: 'right', fontWeight: p.faltantes > 0 ? 800 : 500, color: p.faltantes > 0 ? '#B45309' : '#15803D', border: '1px solid #CBD5E1', whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: 8.5 }}>
+                            {p.faltantes}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ backgroundColor: '#F1F5F9', borderTop: '2px solid #0F172A', fontWeight: 800, fontSize: 8.5 }}>
+                        <td colSpan={6} style={{ padding: '4px 6px', textAlign: 'right', letterSpacing: '0.04em', border: '1px solid #CBD5E1' }}>
+                          {isOfficiallyClosed ? 'TOTALES DE PIEZAS AL CIERRE:' : 'TOTALES DE PIEZAS AL PRE-CIERRE:'}
+                        </td>
+                        <td style={{ padding: '4px 3px', textAlign: 'right', border: '1px solid #CBD5E1', whiteSpace: 'nowrap' }}>
+                          {totalEsperadoPiezas}
+                        </td>
+                        <td style={{ padding: '4px 3px', textAlign: 'right', border: '1px solid #CBD5E1', whiteSpace: 'nowrap' }}>
+                          {totalRecibidoPiezas}
+                        </td>
+                        <td style={{ padding: '4px 3px', textAlign: 'right', color: '#15803D', border: '1px solid #CBD5E1', whiteSpace: 'nowrap' }}>
+                          {totalConformePiezas}
+                        </td>
+                        <td style={{ padding: '4px 3px', textAlign: 'right', color: totalMermaPiezas > 0 ? '#DC2626' : '#64748B', border: '1px solid #CBD5E1', whiteSpace: 'nowrap' }}>
+                          {totalMermaPiezas}
+                        </td>
+                        <td style={{ padding: '4px 3px', textAlign: 'right', color: totalFaltantePiezas > 0 ? '#B45309' : '#15803D', border: '1px solid #CBD5E1', whiteSpace: 'nowrap' }}>
+                          {totalFaltantePiezas}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+
+                {/* 4. RESUMEN DE BULTOS / MANEJO FÍSICO */}
+                <div className="border-box" style={{ marginBottom: 8, border: '1.5px solid #0F172A', borderRadius: 4, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 9.5, textAlign: 'center', tableLayout: 'fixed' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#F1F5F9', borderBottom: '1px solid #CBD5E1', color: '#0F172A', fontSize: 8.5 }}>
+                        <th style={{ padding: '3px 4px', width: '20%', border: '1px solid #CBD5E1' }}>BULTOS DECLARADOS</th>
+                        <th style={{ padding: '3px 4px', width: '20%', border: '1px solid #CBD5E1' }}>RECIBIDOS EN ANDÉN</th>
+                        <th style={{ padding: '3px 4px', width: '20%', border: '1px solid #CBD5E1' }}>SIN DAÑO EXTERIOR</th>
+                        <th style={{ padding: '3px 4px', width: '20%', border: '1px solid #CBD5E1' }}>CON DAÑO EXTERIOR</th>
+                        <th style={{ padding: '3px 4px', width: '20%', border: '1px solid #CBD5E1' }}>FALTANTES RECEPCIÓN</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style={{ padding: '4px 4px', fontWeight: 800, fontSize: 11, border: '1px solid #CBD5E1' }}>
+                          {bultosDeclarados} <span style={{ fontSize: 8.5, fontWeight: 400, color: '#64748B' }}>bultos</span>
+                        </td>
+                        <td style={{ padding: '4px 4px', fontWeight: 800, fontSize: 11, border: '1px solid #CBD5E1' }}>
+                          {bultosRecibidos} <span style={{ fontSize: 8.5, fontWeight: 400, color: '#64748B' }}>bultos</span>
+                        </td>
+                        <td style={{ padding: '4px 4px', fontWeight: 800, fontSize: 11, border: '1px solid #CBD5E1', color: '#15803D' }}>
+                          {bultosSinDanoExterior} <span style={{ fontSize: 8.5, fontWeight: 400, color: '#64748B' }}>bultos</span>
+                        </td>
+                        <td style={{ padding: '4px 4px', fontWeight: 800, fontSize: 11, border: '1px solid #CBD5E1', color: bultosDanados > 0 ? '#DC2626' : '#64748B' }}>
+                          {bultosDanados} <span style={{ fontSize: 8.5, fontWeight: 400, color: '#64748B' }}>bulto</span>
+                        </td>
+                        <td style={{ padding: '4px 4px', fontWeight: 800, fontSize: 11, border: '1px solid #CBD5E1', color: bultosFaltantes > 0 ? '#B45309' : '#15803D' }}>
+                          {bultosFaltantes} <span style={{ fontSize: 8.5, fontWeight: 400, color: '#64748B' }}>bulto</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div style={{ backgroundColor: '#F8FAFC', padding: '3px 8px', fontSize: 8.5, color: '#334155', borderTop: '1px solid #CBD5E1' }}>
+                    <strong>Cuadre físico:</strong> {bultosDeclarados} bultos declarados = {bultosRecibidos} recibidos en andén + {bultosFaltantes} faltantes en recepción · De los {bultosRecibidos} recibidos: {bultosSinDanoExterior} sin daño exterior y {bultosDanados} con daño remitido a inspección técnica.
+                  </div>
+                </div>
+
+                {/* 5. OBSERVACIONES E INCIDENCIAS RELEVANTES */}
+                <div className="border-box" style={{ marginBottom: 8, border: '1px solid #CBD5E1', borderRadius: 4, padding: '5px 8px', fontSize: 9 }}>
+                  <div style={{ fontWeight: 800, color: '#0F172A', textTransform: 'uppercase', marginBottom: 2 }}>
+                    Observaciones e Incidencias Operativas:
+                  </div>
+                  <div style={{ color: '#334155', lineHeight: 1.35 }}>
+                    {hasDiscrepancies ? (
+                      <>
+                        {isOfficiallyClosed
+                          ? 'Recepción cerrada con reservas por discrepancia física de rampa.'
+                          : 'Recepción en pre-cierre con reservas por discrepancia física de rampa.'}
+                        {bultosDanados > 0 && qiRecord && (
+                          <span> Daño exterior registrado en {bultosDanados} bulto ({originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || 'bulto dañado')}), inspeccionado bajo folio {qiRecord.folio} con resultado de {qiRecord.totalPiezasRescatadas} piezas conformes rescatadas en {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || 'caja de rescate')} y {qiRecord.totalPiezasMerma} piezas de merma dictaminada (no aptas por daño físico).</span>
+                        )}
+                        {bultosDanados > 0 && !qiRecord && (
+                          <span> Daño exterior registrado en {bultosDanados} {bultosDanados === 1 ? 'bulto retenido en rampa (dictamen e inspección técnica de calidad pendiente)' : 'bultos retenidos en rampa (dictamen e inspección técnica de calidad pendiente)'}.</span>
+                        )}
+                        {totalFaltantePiezas > 0 ? (
+                          <span> Faltante físico en recepción de {bultosFaltantes} bulto equivalente a {totalFaltantePiezas} piezas.</span>
+                        ) : bultosFaltantes > 0 ? (
+                          <span> Faltante físico en rampa de {bultosFaltantes} {bultosFaltantes === 1 ? 'bulto' : 'bultos'} (piezas por determinar tras clasificación).</span>
+                        ) : null}
+                        <span> {isOfficiallyClosed ? 'Conformes definitivas al cierre' : 'Conformes confirmadas al pre-cierre'}: {totalConformePiezas} piezas en {cajasConformesAlCierre} cajas.</span>
+                      </>
+                    ) : (
+                      <span>{isOfficiallyClosed ? 'Recepción concluida conforme a lo programado.' : 'Recepción en proceso de pre-cierre conforme a lo programado.'} Sin discrepancias físicas, bultos dañados ni faltantes. {isOfficiallyClosed ? 'Conformes al cierre' : 'Conformes confirmadas al pre-cierre'}: {totalConformePiezas} piezas en {cajasConformesAlCierre} cajas estándar.</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 6. FIRMAS Y RESPONSABLES AL FINAL (ACREDITACIÓN REAL DE CADA ACTO) */}
+                <div
+                  className="signature-box"
+                  style={{
+                    border: '1.5px solid #0F172A',
+                    borderRadius: 4,
+                    padding: '8px 10px',
+                    backgroundColor: '#FFFFFF',
+                  }}
+                >
+                  <div style={{ fontSize: 9, fontWeight: 900, color: '#0F172A', textTransform: 'uppercase', marginBottom: 6 }}>
+                    Responsables Operativos y Certificación de Actos
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: qiRecord ? '1fr 1fr 1fr' : '1fr 1fr', gap: 10 }}>
+
+                    {/* FIRMA 1: CHOFER EN RAMPA */}
+                    <div style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 8px', textAlign: 'center', backgroundColor: '#F8FAFC' }}>
+                      <div style={{ fontSize: 8.5, fontWeight: 800, color: '#334155', textTransform: 'uppercase', marginBottom: 4 }}>
+                        1. Entrega y Revisión Exterior en Rampa
+                      </div>
+                      <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 2 }}>
+                        {firmaChoferBase64 ? (
+                          <img src={firmaChoferBase64} alt="Firma Chofer" style={{ maxHeight: 32, maxWidth: '90%', objectFit: 'contain' }} />
+                        ) : (
+                          <span style={{ fontSize: 9, fontStyle: 'italic', color: '#64748B' }}>[ Firma registrada en rampa ]</span>
+                        )}
+                      </div>
+                      <div style={{ borderBottom: '1.5px solid #0F172A', width: '85%', margin: '0 auto 4px auto' }}></div>
+                      <div style={{ fontSize: 9.5, fontWeight: 800, color: '#0F172A' }}>
+                        {choferNombre}
+                      </div>
+                      <div style={{ fontSize: 8.5, color: '#475569' }}>
+                        {lineaTransporte} {placa !== '—' ? `(${placa})` : ''} · Lib: {fechaLiberacionChofer}
+                      </div>
+                      <div style={{ fontSize: 8, color: '#B45309', fontWeight: 700, marginTop: 2 }}>
+                        * Acredita exclusivamente entrega física y conteo exterior en rampa
+                      </div>
+                    </div>
+
+                    {/* FIRMA 2: DICTAMEN DE CALIDAD (SI HUBO INSPECCIÓN) */}
+                    {qiRecord && (
+                      <div style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 8px', textAlign: 'center', backgroundColor: '#F8FAFC' }}>
+                        <div style={{ fontSize: 8.5, fontWeight: 800, color: '#334155', textTransform: 'uppercase', marginBottom: 4 }}>
+                          2. Inspección Técnica y Rescate (Calidad)
+                        </div>
+                        <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 2 }}>
+                          <span style={{ fontSize: 8.5, color: '#0F172A', fontWeight: 800, border: '1px solid #64748B', padding: '1px 6px', borderRadius: 3, backgroundColor: '#FFFFFF' }}>
+                            DICTAMEN TÉCNICO REGISTRADO · {qiRecord.folio}
+                          </span>
+                        </div>
+                        <div style={{ borderBottom: '1.5px solid #0F172A', width: '85%', margin: '0 auto 4px auto' }}></div>
+                        <div style={{ fontSize: 9.5, fontWeight: 800, color: '#0F172A' }}>
+                          {qiRecord.inspectorNombre || qiRecord.firmadoPor || 'Inspector de Calidad'}
+                        </div>
+                        <div style={{ fontSize: 8.5, color: '#475569' }}>
+                          Inspección: {fechaInspeccionCalidad || '—'}
+                        </div>
+                        <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700, marginTop: 2 }}>
+                          * Acredita dictamen técnico, {qiRecord.totalPiezasRescatadas} pz rescate y {qiRecord.totalPiezasMerma} pz merma
+                        </div>
+                      </div>
+                    )}
+
+                    {/* FIRMA 3: SUPERVISOR DE CIERRE DE ALMACÉN */}
+                    <div style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 8px', textAlign: 'center', backgroundColor: '#F8FAFC' }}>
+                      <div style={{ fontSize: 8.5, fontWeight: 800, color: '#334155', textTransform: 'uppercase', marginBottom: 4 }}>
+                        {qiRecord ? '3. Finiquito y Cierre de Almacén' : '2. Finiquito y Cierre de Almacén'}
+                      </div>
+                      <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 2 }}>
+                        {isOfficiallyClosed ? (
+                          <span style={{ fontSize: 8.5, color: '#0F766E', fontWeight: 800, border: '1px solid #0F766E', padding: '1px 6px', borderRadius: 3, backgroundColor: '#FFFFFF' }}>
+                            CIERRE OPERATIVO REGISTRADO EN SISTEMA
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 8.5, color: '#B45309', fontWeight: 800, border: '1px solid #B45309', padding: '1px 6px', borderRadius: 3, backgroundColor: '#FFFBEB' }}>
+                            PRE-CIERRE / BORRADOR EN REVISIÓN
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ borderBottom: '1.5px solid #0F172A', width: '85%', margin: '0 auto 4px auto' }}></div>
+                      <div style={{ fontSize: 9.5, fontWeight: 800, color: '#0F172A' }}>
+                        {isOfficiallyClosed ? responsableCierreNombre : 'Pendiente de ejecución de cierre oficial'}
+                      </div>
+                      <div style={{ fontSize: 8.5, color: '#475569' }}>
+                        {isOfficiallyClosed ? (
+                          <>{responsableCierreEmail ? `Usuario: ${responsableCierreEmail} · ` : ''}Cierre oficial: {fechaCierreRecepcion}</>
+                        ) : (
+                          <>Estado operativo: Por Cerrar (Etapa 6) · Sin cierre persistido</>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 8, color: isOfficiallyClosed ? '#0F766E' : '#B45309', fontWeight: 700, marginTop: 2 }}>
+                        {isOfficiallyClosed
+                          ? '* Acredita conformidad del finiquito e ingreso formal a inventario WMS'
+                          : '* Documento preliminar de pre-cierre. No certifica cierre ni finiquito definitivo.'}
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+
+                {/* PIE INSTITUCIONAL PÁGINA 1 CON NUMERACIÓN REAL */}
+                <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
+                  Giving Out WMS · Sistema de Gestión de Almacenes 3PL · Folio {folioTransporte} · Hoja 1 de {printScope === 'FULL' || viewMode === 'WITH_ANNEXES' ? totalPagesFull : 1}
+                </div>
+
               </div>
 
-              {/* LADO DERECHO: LOGOTIPO CORPORATIVO Y CÓDIGO DE BARRAS 128 */}
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-end',
-                textAlign: 'right'
-              }}>
-                
-                {/* LOGO PROVA U OFICIAL GIVING OUT */}
-                {brandLogo === 'PROVA' ? (
-                  <div style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    border: '1.5px solid #dc2626',
-                    borderRadius: '2px',
-                    overflow: 'hidden',
-                    backgroundColor: '#ffffff',
-                    marginBottom: '10px'
-                  }}>
-                    {/* Icono de flechas rojas PROVA */}
-                    <div style={{
-                      padding: '4px 6px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRight: '1.5px solid #dc2626',
-                      background: '#ffffff'
-                    }}>
-                      <svg width="30" height="30" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M12 40L24 16L36 40H28L24 30L20 40H12Z" fill="#DC2626" />
-                        <path d="M24 6L6 28H16L24 14L32 28H42L24 6Z" fill="#DC2626" opacity="0.95" />
-                      </svg>
-                    </div>
-                    {/* Logotipo Tipográfico PROVA */}
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <div style={{
-                        padding: '2px 14px 0px 14px',
-                        fontWeight: 900,
-                        fontSize: '22px',
-                        letterSpacing: '2px',
-                        color: '#000000',
-                        lineHeight: 1.1,
-                        textAlign: 'center'
-                      }}>
-                        PROVA
+              {/* ===================================================================== */}
+              {/* SECCIÓN DE ANEXOS OPCIONALES (PÁGINAS 2+)                             */}
+              {/* ===================================================================== */}
+              <div className="report-annex-section" style={{ display: viewMode === 'WITH_ANNEXES' ? 'block' : 'none' }}>
+
+                {/* ------------------------------------------------------------------- */}
+                {/* ANEXO A: MANIFIESTO DE UNIDADES DE MANEJO (HUs) Y TARIMAS           */}
+                {/* ------------------------------------------------------------------- */}
+                {includeAnnexA && (
+                  <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
+                    {/* ENCABEZADO DE ANEXO */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: '#0F172A', textTransform: 'uppercase' }}>
+                          ANEXO A · MANIFIESTO DE UNIDADES DE MANEJO (HUs) Y TARIMAS
+                        </div>
+                        <div style={{ fontSize: 9.5, color: '#64748B' }}>
+                          Folio: <strong>{folioTransporte}</strong> · Depositante: <strong>{clienteNombre}</strong>
+                        </div>
                       </div>
-                      <div style={{
-                        backgroundColor: '#dc2626',
-                        color: '#ffffff',
-                        fontSize: '7px',
-                        fontWeight: 800,
-                        letterSpacing: '0.6px',
-                        padding: '2px 6px',
-                        textAlign: 'center',
-                        textTransform: 'uppercase'
-                      }}>
-                        PROCESOS DE VALOR AGREGADO
+                      <div style={{ textAlign: 'right', fontSize: 9.5, color: '#0F172A', fontWeight: 700 }}>
+                        {cajasActivasRacks} {cajasActivasRacks === 1 ? 'caja activa en rack' : 'cajas activas en racks'}{cajasDespachadas > 0 ? ` · ${cajasDespachadas} ${cajasDespachadas === 1 ? 'caja despachada' : 'cajas despachadas'}` : ''}{cajasHistoricasInactivas > 0 ? ` · ${cajasHistoricasInactivas} ${cajasHistoricasInactivas === 1 ? 'HU histórica dañada/inactiva' : 'HUs históricas dañadas/inactivas'}` : ''}
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '6px 12px',
-                    border: '1.5px solid #0d9488',
-                    borderRadius: '4px',
-                    backgroundColor: '#f0fdfa',
-                    marginBottom: '10px'
-                  }}>
-                    <div style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '4px',
-                      backgroundColor: '#0d9488',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#ffffff',
-                      fontWeight: 900,
-                      fontSize: '14px'
-                    }}>
-                      GO
+
+                    {/* TARIMA CONTENEDOR (ACLARACIÓN PUNTUAL PUNTO 4) */}
+                    {palletHu && (
+                      <div className="border-box" style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 10px', backgroundColor: '#F8FAFC', marginBottom: 8, fontSize: 9.5 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div>
+                            <span style={{ fontWeight: 800, color: '#0F766E' }}>TARIMA MASTER: {palletHu.codigo}</span>
+                            <span style={{ marginLeft: 8, fontSize: 8.5, color: '#64748B' }}>(Contenedor logístico de arribo)</span>
+                          </div>
+                          <span style={{ fontSize: 8.5, fontWeight: 600, color: '#475569' }}>
+                            Andén de arribo: {receipt.andenAsignado || 'REC-01 (Rampa)'} (Histórico)
+                          </span>
+                        </div>
+                        <div style={{ marginTop: 3, fontSize: 8.5, color: '#334155' }}>
+                          <strong>{isOfficiallyClosed ? 'Composición al cierre:' : 'Composición actual previa al cierre:'}</strong>{' '}
+                          {isOfficiallyClosed ? (
+                            <>
+                              {cajasConformesAlCierre} {cajasConformesAlCierre === 1 ? 'caja física activa asociada' : 'cajas físicas activas asociadas'} a la Tarima Master. No se duplica su conteo con las cajas contenidas.
+                            </>
+                          ) : (
+                            <>
+                              {cajasActivasRacks} {cajasActivasRacks === 1 ? 'caja física activa asociada' : 'cajas físicas activas asociadas'} a la Tarima Master.{bultosFaltantes > 0 ? ` ${bultosDeclarados} ${bultosDeclarados === 1 ? 'bulto declarado' : 'bultos declarados'} originalmente · ${bultosFaltantes} ${bultosFaltantes === 1 ? 'faltante no arribado' : 'faltantes no arribados'}.` : ''} No se duplica su conteo con las cajas contenidas.
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* TABLA DE CAJAS CON ANCHO TOTAL 100%, SALTOS DE LÍNEA Y FILAS EXPANDIBLES */}
+                    <div className="annex-table-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, overflow: 'visible', width: '100%', marginBottom: 8 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 8.5, tableLayout: 'fixed' }}>
+                        <thead>
+                          <tr style={{ backgroundColor: '#0F172A', color: '#FFFFFF', textAlign: 'left' }}>
+                            <th style={{ padding: '5px 6px', width: '16.5%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>CÓDIGO HU</th>
+                            <th style={{ padding: '5px 6px', width: '15%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>TIPO / CONDICIÓN</th>
+                            <th style={{ padding: '5px 6px', width: '17%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>SKU / PRODUCTO</th>
+                            <th style={{ padding: '5px 6px', width: '17%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>SALDO ALMACÉN</th>
+                            <th style={{ padding: '5px 6px', width: '12.5%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>LOTE & CADUCIDAD</th>
+                            <th style={{ padding: '5px 6px', width: '11%', border: '1px solid #334155', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>UBICACIÓN</th>
+                            <th style={{ padding: '5px 4px', width: '11%', border: '1px solid #334155', textAlign: 'center', whiteSpace: 'normal', wordBreak: 'normal', overflowWrap: 'normal' }}>ESTATUS OPERATIVO</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {boxHus.map((box: any, idx: number) => {
+                            const isDespachado = box.estadoHu === 'DESPACHADO';
+                            const isInactive = box.estadoHu === 'INACTIVO' || box.estadoHu === 'DAÑADO';
+                            const pzas = Number(box.cantidad) || 0;
+                            const skuFactor = box.lote?.sku?.capacidadEmpaque || (box.skuCodigo?.includes('ARR') ? 20 : 12);
+                            const standardCap = (box.reacondicionada || box.cajaOrigenId) ? skuFactor : (box.piezasPorCaja || skuFactor);
+                            const isPartial = !isInactive && !isDespachado && (box.reacondicionada || Boolean(box.cajaOrigenId) || pzas < standardCap);
+                            const cadStr = box.fechaVencimiento ? formatCalendarDate(box.fechaVencimiento) : '—';
+                            const ubi = isDespachado
+                              ? `Salida / Despacho (era ${box.ubicacionActual || 'rack'})`
+                              : isInactive
+                              ? `${box.ubicacionActual || 'AREA_CALIDAD'} (Retención)`
+                              : (box.lote?.ubicacion?.codigo || box.ubicacionActual || 'En Rack');
+
+                            // Resolución limpia del folio de origen para la caja rescatada
+                            const originBox = box.cajaOrigenId ? boxHus.find((b: any) => b.id === box.cajaOrigenId) : null;
+                            const originFolio = box.cajaOrigenCodigo || originBox?.codigo || (box.cajaOrigenId?.startsWith('BOX-') ? box.cajaOrigenId : (isPartial ? (originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : null) : null));
+
+                            return (
+                              <tr
+                                key={idx}
+                                style={{
+                                  borderBottom: '1px solid #CBD5E1',
+                                  backgroundColor: isInactive ? '#FEF2F2' : isPartial ? '#FFFBEB' : (idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC'),
+                                  height: 'auto',
+                                }}
+                              >
+                                <td
+                                  style={{
+                                    padding: '5px 6px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: 800,
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                    color: isDespachado ? '#1D4ED8' : isInactive ? '#DC2626' : isPartial ? '#B45309' : '#0F172A',
+                                  }}
+                                >
+                                  <div style={{ fontSize: 8.5, lineHeight: 1.25, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                    {box.codigo}
+                                  </div>
+                                  {isPartial && originFolio && (
+                                    <div style={{ fontSize: 7.5, color: '#B45309', fontWeight: 700, marginTop: 3, lineHeight: 1.2 }}>
+                                      Rescate de:
+                                      <div style={{ fontFamily: 'monospace', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{originFolio}</div>
+                                    </div>
+                                  )}
+                                  {isInactive && (
+                                    <div style={{ fontSize: 7.5, color: '#DC2626', fontWeight: 700, marginTop: 3, lineHeight: 1.2 }}>
+                                      Reacond. en:
+                                      <div style={{ fontFamily: 'monospace', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                        {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord?.cajaDestinoCodigo || '—')}
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                                <td
+                                  style={{
+                                    padding: '5px 6px',
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                  }}
+                                >
+                                  {isInactive ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#DC2626', fontSize: 8.5, lineHeight: 1.25 }}>
+                                        Caja dañada en arribo
+                                      </div>
+                                      <div style={{ color: '#991B1B', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Inactiva por reacondicionamiento
+                                      </div>
+                                    </div>
+                                  ) : isPartial ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.25 }}>
+                                        Parcial: {pzas} de {standardCap} piezas · Reacondicionada
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontSize: 8.5, color: '#334155', lineHeight: 1.25 }}>
+                                      Caja estándar ({standardCap} pz)
+                                    </div>
+                                  )}
+                                </td>
+                                <td
+                                  style={{
+                                    padding: '5px 6px',
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 800, color: '#0F172A', fontFamily: 'monospace', fontSize: 8.5, lineHeight: 1.25 }}>
+                                    {box.skuCodigo || box.lote?.sku?.codigo || '—'}
+                                  </div>
+                                  <div style={{ fontSize: 8, color: isInactive ? '#DC2626' : '#475569', marginTop: 2, lineHeight: 1.25 }}>
+                                    {(() => {
+                                      const rawDesc = box.skuDescripcion || box.lote?.sku?.descripcion || '—';
+                                      return isInactive && !rawDesc.includes('[DAÑO EXTERIOR]') ? `[DAÑO EXTERIOR] ${rawDesc}` : rawDesc;
+                                    })()}
+                                  </div>
+                                </td>
+                                <td
+                                  style={{
+                                    padding: '5px 6px',
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                  }}
+                                >
+                                  {isInactive ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#DC2626', fontSize: 8.5, lineHeight: 1.2 }}>
+                                        Saldo actual: 0 pz
+                                      </div>
+                                      <div style={{ color: '#475569', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Desglose técnico:
+                                      </div>
+                                      <div style={{ color: '#991B1B', fontSize: 7.5, fontWeight: 700, lineHeight: 1.25 }}>
+                                        {qiRecord ? `${standardCap} originales / ${qiRecord.totalPiezasRescatadas} rescatadas / ${qiRecord.totalPiezasMerma} merma` : '12 originales / 10 rescatadas / 2 merma'}
+                                      </div>
+                                    </div>
+                                  ) : isDespachado ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#1E40AF', fontSize: 8.5, lineHeight: 1.2 }}>
+                                        Saldo actual: 0 pz
+                                      </div>
+                                      <div style={{ color: '#1D4ED8', fontSize: 8, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Despachadas: {pzas} pz
+                                      </div>
+                                      <div style={{ color: '#475569', fontSize: 7.5, fontWeight: 600, lineHeight: 1.2 }}>
+                                        Pedido: <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{box.pedidoCodigo || box.ordenCodigo || '—'}</span>
+                                      </div>
+                                    </div>
+                                  ) : isPartial ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.2 }}>
+                                        Saldo actual: {pzas} pz
+                                      </div>
+                                      <div style={{ color: '#78350F', fontSize: 7.5, fontWeight: 600, lineHeight: 1.2 }}>
+                                        En rack (caja no estándar)
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, color: '#0F172A', fontSize: 8.5, lineHeight: 1.2 }}>
+                                        Saldo actual: {pzas} pz
+                                      </div>
+                                      <div style={{ color: '#166534', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        En rack (disponible)
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                                <td
+                                  style={{
+                                    padding: '5px 6px',
+                                    fontFamily: 'monospace',
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 700, fontSize: 8.5, color: '#0F172A', lineHeight: 1.25 }}>
+                                    {box.loteTexto || box.lote?.lote || '—'}
+                                  </div>
+                                  <div style={{ fontSize: 7.5, color: '#64748B', marginTop: 2, fontFamily: 'system-ui, sans-serif', lineHeight: 1.2 }}>
+                                    Cad: {cadStr}
+                                  </div>
+                                </td>
+                                <td
+                                  style={{
+                                    padding: '5px 6px',
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                  }}
+                                >
+                                  {isDespachado ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 700, fontSize: 8.5, color: '#1E40AF', lineHeight: 1.2 }}>
+                                        Salida / Despacho
+                                      </div>
+                                      <div style={{ fontSize: 7.5, color: '#64748B', fontWeight: 500, lineHeight: 1.2 }}>
+                                        (era {box.ubicacionActual || 'rack'})
+                                      </div>
+                                    </div>
+                                  ) : isInactive ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, fontSize: 8.5, color: '#DC2626', lineHeight: 1.2 }}>
+                                        {box.ubicacionActual || 'AREA_CALIDAD'} (Retención)
+                                      </div>
+                                      <div style={{ fontSize: 7.5, color: '#64748B', fontWeight: 600, lineHeight: 1.2 }}>
+                                        Arribo histórico: {(() => {
+                                          const raw = anden !== '—' ? anden : (receipt.andenAsignado || 'Rampa 1 / REC-01');
+                                          if (raw.includes('Rampa') && raw.includes('REC')) return raw;
+                                          if (raw.includes('REC')) return `Rampa 1 / ${raw}`;
+                                          if (raw.includes('Rampa')) return `${raw} / REC-01`;
+                                          return `Rampa 1 / ${raw}`;
+                                        })()}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontWeight: 800, fontSize: 8.5, color: '#0F172A', fontFamily: 'monospace', lineHeight: 1.25 }}>
+                                      {box.lote?.ubicacion?.codigo || box.ubicacionActual || 'En Rack'}
+                                    </div>
+                                  )}
+                                </td>
+                                <td
+                                  style={{
+                                    padding: '5px 4px',
+                                    border: '1px solid #CBD5E1',
+                                    verticalAlign: 'top',
+                                    textAlign: 'center',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal',
+                                    height: 'auto',
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: 7.5,
+                                      fontWeight: 800,
+                                      padding: '2px 4px',
+                                      borderRadius: 3,
+                                      display: 'inline-block',
+                                      width: '100%',
+                                      boxSizing: 'border-box',
+                                      textAlign: 'center',
+                                      lineHeight: 1.2,
+                                      backgroundColor: isDespachado ? '#DBEAFE' : isInactive ? '#FEE2E2' : isPartial ? '#FEF3C7' : '#DCFCE7',
+                                      color: isDespachado ? '#1E40AF' : isInactive ? '#991B1B' : isPartial ? '#92400E' : '#166534',
+                                      border: `1px solid ${isDespachado ? '#93C5FD' : isInactive ? '#FCA5A5' : isPartial ? '#FCD34D' : '#86EFAC'}`,
+                                    }}
+                                  >
+                                    {isDespachado ? (
+                                      <>
+                                        <div>DESPACHADA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>(Salida)</div>
+                                      </>
+                                    ) : isInactive ? (
+                                      <>
+                                        <div>HISTÓRICA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>INACTIVA</div>
+                                      </>
+                                    ) : isPartial ? (
+                                      <>
+                                        <div>ACTIVA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>PARCIAL</div>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <div>ACTIVA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>EN RACK</div>
+                                      </>
+                                    )}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
-                      <div style={{ fontWeight: 900, fontSize: '14px', color: '#0f172a', lineHeight: 1.1 }}>
-                        GIVING OUT WMS
-                      </div>
-                      <div style={{ fontSize: '7.5px', fontWeight: 700, color: '#0d9488', letterSpacing: '0.5px' }}>
-                        OPERADOR LOGÍSTICO 3PL
-                      </div>
+
+                    {/* PIE INSTITUCIONAL ANEXO A */}
+                    <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
+                      Giving Out WMS · Folio {folioTransporte} · Hoja {pageAnnexANum} de {totalPagesFull}
                     </div>
                   </div>
                 )}
 
-                {/* CÓDIGO DE BARRAS VECTORIAL 1:1 ESCANEABLE CON LASER */}
-                <div style={{ textAlign: 'center', minWidth: '220px' }}>
-                  <svg ref={barcodeSvgRef} style={{ width: '100%', height: 'auto', display: 'block' }}></svg>
-                </div>
-              </div>
-            </div>
+                {/* ------------------------------------------------------------------- */}
+                {/* ANEXO B: BITÁCORA TÉCNICA DE INSPECCIÓN Y RESCATE (CALIDAD)         */}
+                {/* ------------------------------------------------------------------- */}
+                {includeAnnexB && qiRecord && (
+                  <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: '#0F172A', textTransform: 'uppercase' }}>
+                          ANEXO B · BITÁCORA TÉCNICA DE INSPECCIÓN Y RESCATE
+                        </div>
+                        <div style={{ fontSize: 9.5, color: '#64748B' }}>
+                          Folio Inspección: <strong>{qiRecord.folio}</strong> · Recepción: <strong>{folioTransporte}</strong>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', fontSize: 9.5, color: '#0F172A', fontWeight: 700 }}>
+                        Fecha: {fechaInspeccionCalidad || '—'} · Inspector: <strong>{qiRecord.inspectorNombre || qiRecord.firmadoPor}</strong>
+                      </div>
+                    </div>
 
-            {/* --------------------------------------------------------------------- */}
-            {/* VISTA 1: MANIFIESTO 1:1 PROVA DE BULTOS Y CONTENEDORES                */}
-            {/* --------------------------------------------------------------------- */}
-            {viewTab === 'BULTOS_1TO1' && (
-              <>
-                {/* TABLA PRINCIPAL DE BULTOS CON FRANJA DE TÍTULO */}
-                <div style={{ marginBottom: '20px' }}>
-                  <table style={{
-                    width: '100%',
-                    borderCollapse: 'collapse',
-                    border: '1.5px solid #000000',
-                    fontSize: '12px',
-                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-                  }}>
-                    {/* CABECERA CON EL TÍTULO CENTRAL (DEVOLUCIONES O RECEPCIÓN DE MERCANCÍA) */}
-                    <thead>
-                      <tr>
-                        <th
-                          colSpan={6}
-                          style={{
-                            border: '1.5px solid #000000',
-                            padding: '7px',
-                            textAlign: 'center',
-                            fontSize: '13px',
-                            fontWeight: 900,
-                            letterSpacing: '0.05em',
-                            backgroundColor: '#ffffff',
-                            color: '#000000'
-                          }}
-                        >
-                          {reportMode === 'DEVOLUCIONES' ? 'DEVOLUCIONES' : 'RECEPCIÓN DE MERCANCÍA'}
-                        </th>
-                      </tr>
-                      <tr style={{ backgroundColor: '#ffffff', color: '#000000' }}>
-                        <th style={{ border: '1px solid #000000', padding: '6px 8px', fontWeight: 800, textAlign: 'center', width: '15%' }}>
-                          FOLIO
-                        </th>
-                        <th style={{ border: '1px solid #000000', padding: '6px 8px', fontWeight: 800, textAlign: 'center', width: '18%' }}>
-                          SUCURSAL
-                        </th>
-                        <th style={{ border: '1px solid #000000', padding: '6px 8px', fontWeight: 800, textAlign: 'center', width: '27%' }}>
-                          TIPO
-                        </th>
-                        <th style={{ border: '1px solid #000000', padding: '6px 8px', fontWeight: 800, textAlign: 'center', width: '13%' }}>
-                          PREVIO
-                        </th>
-                        <th style={{ border: '1px solid #000000', padding: '6px 8px', fontWeight: 800, textAlign: 'center', width: '13%' }}>
-                          CAJAS
-                        </th>
-                        <th style={{ border: '1px solid #000000', padding: '6px 8px', fontWeight: 800, textAlign: 'center', width: '14%' }}>
-                          DIFERENCIA
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bultoLines.map((row, idx) => (
-                        <tr key={idx} style={{ backgroundColor: '#ffffff' }}>
-                          <td style={{ border: '1px solid #000000', padding: '5px 8px', textAlign: 'center', fontWeight: 600 }}>
-                            {row.folio}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '5px 8px', textAlign: 'center', fontWeight: 500 }}>
-                            {row.sucursal}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '5px 12px', textAlign: 'left', fontWeight: 500 }}>
-                            {row.tipo}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '5px 8px', textAlign: 'center' }}>
-                            {row.previo}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '5px 8px', textAlign: 'center', fontWeight: 700 }}>
-                            {row.cajas}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '5px 8px', textAlign: 'center' }}>
-                            {row.diferencia}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* TABLA RESUMEN DE TOTALES AGRUPADA POR TIPO (ALINEADA A LA DERECHA) */}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '30px' }}>
-                  <table style={{
-                    width: '320px',
-                    borderCollapse: 'collapse',
-                    border: '1.5px solid #000000',
-                    fontSize: '12px',
-                    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-                  }}>
-                    <thead>
-                      <tr style={{ backgroundColor: '#ffffff' }}>
-                        <th style={{ border: '1px solid #000000', padding: '6px 10px', textAlign: 'center', fontWeight: 800, width: '70%' }}>
-                          TOTAL
-                        </th>
-                        <th style={{ border: '1px solid #000000', padding: '6px 10px', textAlign: 'center', fontWeight: 800, width: '30%' }}>
-                          DIFERENCIA
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {summaryRows.map((s, i) => (
-                        <tr key={i} style={{ backgroundColor: '#ffffff' }}>
-                          <td style={{ border: '1px solid #000000', padding: '5px 10px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontWeight: 600 }}>{s.tipo}</span>
-                              <span style={{ fontWeight: 700 }}>{s.total}</span>
-                            </div>
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '5px 10px', textAlign: 'center' }}>
-                            {s.diferencia}
-                          </td>
-                        </tr>
-                      ))}
-                      {/* FILA FINAL TOTAL CONSOLIDADO */}
-                      <tr style={{ backgroundColor: '#ffffff', fontWeight: 900 }}>
-                        <td style={{ border: '1.5px solid #000000', padding: '6px 10px' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span>TOTAL</span>
-                            <span>{grandTotalCajas}</span>
+                    <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Origen Dañada</div>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#DC2626' }}>
+                            {originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || '—')}
                           </div>
-                        </td>
-                        <td style={{
-                          border: '1.5px solid #000000',
-                          padding: '6px 10px',
-                          textAlign: 'center',
-                          color: grandTotalDiferencia === 0 ? '#059669' : (grandTotalDiferencia !== null && grandTotalDiferencia > 0) ? '#0284c7' : (grandTotalDiferencia !== null && grandTotalDiferencia < 0) ? '#d97706' : '#000000'
-                        }}>
-                          {grandTotalDiferencia === null ? '-' : grandTotalDiferencia === 0 ? '0' : grandTotalDiferencia > 0 ? `+${grandTotalDiferencia}` : grandTotalDiferencia}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
+                          <div style={{ fontSize: 8, color: '#64748B' }}>Contenido histórico: {qiRecord.totalPiezasInspeccionadas || 12} piezas</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Destino Rescate</div>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#15803D' }}>
+                            {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || '—')}
+                          </div>
+                          <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700 }}>{qiRecord.totalPiezasRescatadas} piezas conformes rescatadas</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Merma Dictaminada</div>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
+                            {qiRecord.totalPiezasMerma} piezas
+                          </div>
+                          <div style={{ fontSize: 8, color: '#DC2626' }}>Envases no aptos por daño físico</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Dictamen Operativo</div>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
+                            REACONDICIONADO
+                          </div>
+                          <div style={{ fontSize: 8, color: '#64748B' }}>
+                            Horas maquila: {qiRecord.horasMaquila && Number(qiRecord.horasMaquila) > 0 ? `${qiRecord.horasMaquila} hrs` : 'No registrado'}
+                          </div>
+                        </div>
+                      </div>
 
-            {/* --------------------------------------------------------------------- */}
-            {/* VISTA 2: AUDITORÍA DETALLADA POR SKU / PRODUCTO                       */}
-            {/* --------------------------------------------------------------------- */}
-            {viewTab === 'DETALLE_SKU' && (
-              <div style={{ marginBottom: '30px' }}>
-                <div style={{
-                  padding: '10px 14px',
-                  backgroundColor: '#f8fafc',
-                  border: '1px solid #cbd5e1',
-                  borderRadius: '6px',
-                  marginBottom: '14px',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}>
-                  <div>
-                    <span style={{ fontSize: '12px', color: '#64748b' }}>Depositante: </span>
-                    <strong style={{ fontSize: '13px', color: '#0f172a' }}>{cliente}</strong>
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
+                        <strong>Observaciones de la Inspección Técnica:</strong> {qiRecord.observaciones || 'Inspección interna pieza por pieza y reacondicionamiento conforme a protocolo Giving Out 3PL.'}
+                      </div>
+                    </div>
+
+                    {/* PIE INSTITUCIONAL ANEXO B */}
+                    <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
+                      Giving Out WMS · Folio {folioTransporte} · Hoja {pageAnnexBNum} de {totalPagesFull}
+                    </div>
                   </div>
-                  <div>
-                    <span style={{ fontSize: '12px', color: '#64748b' }}>Factura / OC: </span>
-                    <strong style={{ fontSize: '13px', color: '#0f172a', fontFamily: 'monospace' }}>{factura}</strong>
+                )}
+
+                {/* ------------------------------------------------------------------- */}
+                {/* ANEXO C: TRAZABILIDAD DE SALIDAS Y EXISTENCIA ACTUAL                */}
+                {/* ------------------------------------------------------------------- */}
+                {includeAnnexC && (
+                  <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: '#0F172A', textTransform: 'uppercase' }}>
+                          ANEXO C · TRAZABILIDAD DE SALIDAS Y EXISTENCIA ACTUAL EN ALMACÉN
+                        </div>
+                        <div style={{ fontSize: 9.5, color: '#64748B' }}>
+                          {isOfficiallyClosed ? 'Instantánea posterior al cierre' : 'Instantánea de existencia actual previa al cierre'} · Fecha de consulta: <strong>{fechaEmisionReporte}</strong>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', fontSize: 9.5, color: '#0F172A', fontWeight: 700 }}>
+                        Folio: <strong>{folioTransporte}</strong>
+                      </div>
+                    </div>
+
+                    <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Físico Actual en Racks</div>
+                          <div style={{ fontSize: 13, fontWeight: 900, color: '#0F172A' }}>{piezasActivasEnRacks} PZA</div>
+                          <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700 }}>{cajasActivasRacks} cajas activas</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Salidas Posteriores</div>
+                          <div style={{ fontSize: 13, fontWeight: 900, color: '#1D4ED8' }}>{piezasDespachadas} PZA</div>
+                          {cajasDespachadas > 0 ? (
+                            <div style={{ fontSize: 8, color: '#1D4ED8', fontWeight: 700 }}>
+                              {cajasDespachadas} {cajasDespachadas === 1 ? 'caja' : 'cajas'}{dispatchedOrdersStr}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 8, color: '#64748B', fontWeight: 600 }}>
+                              Sin salidas posteriores
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Elegible Caja Cerrada</div>
+                          <div style={{ fontSize: 13, fontWeight: 900, color: '#0F766E' }}>{piezasElegiblesCajaCerrada} PZA</div>
+                          <div style={{ fontSize: 8, color: '#0F766E', fontWeight: 700 }}>{cajasElegiblesCajaCerrada} cajas cerradas estándar</div>
+                        </div>
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>En Caja Parcial</div>
+                          <div style={{ fontSize: 13, fontWeight: 900, color: '#B45309' }}>{piezasActivasEnRacks - piezasElegiblesCajaCerrada} PZA</div>
+                          <div style={{ fontSize: 8, color: '#B45309', fontWeight: 700 }}>
+                            {cajasActivasRacks - cajasElegiblesCajaCerrada > 0
+                              ? `${cajasActivasRacks - cajasElegiblesCajaCerrada} caja parcial (${piezasActivasEnRacks - piezasElegiblesCajaCerrada} pz)`
+                              : 'Sin cajas parciales'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
+                        <strong>Balance matemático de existencia:</strong> {totalConformePiezas} piezas conformes {isOfficiallyClosed ? 'al cierre' : 'al pre-cierre'} = {piezasActivasEnRacks} piezas actuales en racks + {piezasDespachadas} piezas despachadas en pedidos posteriores.{cajasDespachadas === 0 ? ' No se registran salidas ni despachos posteriores vinculados a esta recepción.' : ''} Bajo la regla de caja cerrada de {clienteNombre}, únicamente {piezasElegiblesCajaCerrada} piezas son elegibles para asignación automática estándar; {piezasActivasEnRacks - piezasElegiblesCajaCerrada > 0 ? `las ${piezasActivasEnRacks - piezasElegiblesCajaCerrada} piezas restantes corresponden a la caja parcial reacondicionada ${reconditionedBoxCodigo}.` : 'la totalidad de las piezas en inventario corresponden a cajas cerradas estándar.'}
+                      </div>
+                    </div>
+
+                    {/* PIE INSTITUCIONAL ANEXO C */}
+                    <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
+                      Giving Out WMS · Folio {folioTransporte} · Hoja {pageAnnexCNum} de {totalPagesFull}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                <table style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  border: '1.5px solid #000000',
-                  fontSize: '12px',
-                  fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-                }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#f1f5f9' }}>
-                      <th style={{ border: '1px solid #000000', padding: '7px 8px', textAlign: 'left', width: '16%' }}>SKU / CÓDIGO</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 8px', textAlign: 'left', width: '22%' }}>DESCRIPCIÓN</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '13%' }}>LOTE</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '11%' }}>CADUCIDAD</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '9%' }}>ESPERADO</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '9%' }}>CONFORME</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '9%' }}>MERMA / QA</th>
-                      <th style={{ border: '1px solid #000000', padding: '7px 6px', textAlign: 'center', width: '11%' }}>VARIACIÓN</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {skuLines.map((line, i) => {
-                      const fisico = line.conforme + line.merma;
-                      const variacion = fisico - line.esperada;
-                      return (
-                        <tr key={i}>
-                          <td style={{ border: '1px solid #000000', padding: '6px 8px' }}>
-                            <div style={{ fontWeight: 800 }}>{line.codigo}</div>
-                            <div style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>EAN: {line.ean}</div>
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 8px' }}>{line.descripcion}</td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', fontWeight: 600 }}>
-                            {line.lote !== '-' ? (
-                              <span style={{ backgroundColor: '#fef3c7', color: '#92400e', padding: '2px 5px', borderRadius: '3px' }}>
-                                {line.lote}
-                              </span>
-                            ) : (
-                              <span style={{ color: '#94a3b8' }}>-</span>
-                            )}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', fontWeight: 600 }}>
-                            {line.fechaVencimiento !== '-' ? (
-                              <span style={{ backgroundColor: '#e0f2fe', color: '#0369a1', padding: '2px 5px', borderRadius: '3px' }}>
-                                {line.fechaVencimiento}
-                              </span>
-                            ) : (
-                              <span style={{ color: '#94a3b8' }}>-</span>
-                            )}
-                          </td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700 }}>{line.esperada}</td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700, color: '#059669' }}>{line.conforme}</td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 600, color: line.merma > 0 ? '#d97706' : '#64748b' }}>{line.merma}</td>
-                          <td style={{ border: '1px solid #000000', padding: '6px 6px', textAlign: 'center', fontWeight: 700 }}>
-                            {variacion === 0 ? (
-                              <span style={{ color: '#059669' }}>0 (Exacto)</span>
-                            ) : variacion > 0 ? (
-                              <span style={{ color: '#0284c7' }}>+{variacion} (Sobrante)</span>
-                            ) : (
-                              <span style={{ color: '#d97706' }}>{variacion} (Faltante)</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {(() => {
-                      const totalFisicoSKU = totalConformeSKU + totalMermaSKU;
-                      const totalVariacionSKU = totalFisicoSKU - totalEsperadoSKU;
-                      return (
-                        <tr style={{ backgroundColor: '#f8fafc', fontWeight: 900 }}>
-                          <td colSpan={4} style={{ border: '1.5px solid #000000', padding: '8px 10px', textAlign: 'right' }}>
-                            TOTAL PIEZAS FÍSICAS:
-                          </td>
-                          <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center' }}>{totalEsperadoSKU}</td>
-                          <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center', color: '#059669' }}>{totalConformeSKU}</td>
-                          <td style={{ border: '1.5px solid #000000', padding: '8px 8px', textAlign: 'center', color: totalMermaSKU > 0 ? '#d97706' : '#000000' }}>{totalMermaSKU}</td>
-                          <td style={{
-                            border: '1.5px solid #000000',
-                            padding: '8px 8px',
-                            textAlign: 'center',
-                            color: totalVariacionSKU === 0 ? '#059669' : totalVariacionSKU > 0 ? '#0284c7' : '#d97706'
-                          }}>
-                            {totalVariacionSKU === 0
-                              ? '0 (Cuadrada)'
-                              : totalVariacionSKU > 0
-                                ? `+${totalVariacionSKU} (Excedente)`
-                                : `${totalVariacionSKU} (Faltante)`
-                            }
-                          </td>
-                        </tr>
-                      );
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* --------------------------------------------------------------------- */}
-            {/* SECCIÓN DE FIRMAS DE CONFORMIDAD Y VALIDEZ OPERATIVA                  */}
-            {/* --------------------------------------------------------------------- */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '60px',
-              marginTop: '45px',
-              paddingTop: '20px',
-              fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-            }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ borderBottom: '1.5px solid #000000', width: '80%', margin: '0 auto 8px auto' }}></div>
-                <div style={{ fontSize: '12px', fontWeight: 800, color: '#000000' }}>
-                  Firma y Nombre del Operador Transportista
-                </div>
-                <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
-                  {chofer} · Entregó de conformidad
-                </div>
               </div>
 
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ borderBottom: '1.5px solid #000000', width: '80%', margin: '0 auto 8px auto' }}></div>
-                <div style={{ fontSize: '12px', fontWeight: 800, color: '#000000' }}>
-                  Firma y Sello Supervisor de Almacén CEDIS
-                </div>
-                <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
-                  Giving Out WMS 360+ · Recibió y validó físicamente
-                </div>
-              </div>
             </div>
-
-          </div>
+          )}
         </div>
 
       </div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 }

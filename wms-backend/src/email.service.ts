@@ -40,7 +40,7 @@ export class EmailService {
 
       const alertInfo = task.alerta ? `
         <div style="background:#f8f9fa;padding:12px 16px;border-radius:8px;border-left:4px solid #0d9488;margin-bottom:16px;">
-          <strong style="color:#0d9488;">📋 Alerta Origen:</strong><br/>
+          <strong style="color:#0d9488;">Alerta Origen:</strong><br/>
           <span style="font-weight:600;">${task.alerta.titulo}</span>
         </div>` : '';
 
@@ -54,7 +54,7 @@ export class EmailService {
         <body style="font-family:'Segoe UI',Arial,sans-serif;background:#f0f4f8;padding:20px;">
           <div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
             <div style="background:linear-gradient(135deg,#0f172a,#1e293b);padding:24px 28px;color:white;">
-              <div style="font-size:12px;opacity:0.7;margin-bottom:4px;">📦 GIVING OUT WMS</div>
+              <div style="font-size:12px;opacity:0.7;margin-bottom:4px;letter-spacing:0.5px;text-transform:uppercase;">GIVING OUT WMS</div>
               <h1 style="margin:0;font-size:20px;">Nueva Tarea Asignada</h1>
             </div>
             <div style="padding:24px 28px;">
@@ -73,7 +73,7 @@ export class EmailService {
 
               ${alertInfo}
               
-              ${task.notas ? `<div style="margin-top:12px;"><strong>📝 Instrucciones:</strong><br/><span style="color:#475569;">${task.notas}</span></div>` : ''}
+              ${task.notas ? `<div style="margin-top:12px;"><strong>Instrucciones:</strong><br/><span style="color:#475569;">${task.notas}</span></div>` : ''}
               
               <p style="margin-top:20px;font-size:13px;color:#94a3b8;">
                 Tarea creada por: ${task.creadoPor || 'Sistema'}<br/>
@@ -91,14 +91,14 @@ export class EmailService {
       const result = await transport.sendMail({
         from: `"${cfg.from}" <${cfg.user}>`,
         to: task.asignadoA,
-        subject: `📋 Tarea asignada: ${task.titulo} [${task.prioridad}]`,
+        subject: `[${task.prioridad}] Tarea asignada: ${task.titulo}`,
         html,
       });
 
-      console.log(`✅ Email sent to ${task.asignadoA}: ${result.messageId}`);
+      console.log(`[EMAIL] Sent to ${task.asignadoA}: ${result.messageId}`);
       return { success: true, messageId: result.messageId };
     } catch (error: any) {
-      console.error(`❌ Email error: ${error.message}`);
+      console.error(`[EMAIL ERROR]: ${error.message}`);
       return { success: false, error: error.message };
     }
   }
