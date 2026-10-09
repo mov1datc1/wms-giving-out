@@ -4,6 +4,24 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.14] — 2026-10-09
+
+### 🚀 Certificación E2E de REC-2026-0006, Blindaje de fechaCierre e Idempotencia, y Promoción a main
+
+- **1. Auditoría Directa en BD y Persistencia Formal de `fechaCierre` (`operations.controller.ts`, `Receiving.tsx`):**
+  - Se auditó y certificó directamente en base de datos PostgreSQL la persistencia obligatoria del timestamp de cierre para recepciones finalizadas: `REC-2026-0006` con `fechaCierre = 2026-10-09T15:18:44.919Z` (exacto a `09/10/2026 09:18:44` local), `estado = 'CERRADA'`, `bloqueado = true` y bitácora de auditoría inmutable `CERRAR_RECEPCION`.
+  - En `computeReceiptStage` (`Receiving.tsx:2521`), se reforzó la condición como regla general: `const isClosed = r.estado === 'CERRADA' || r.estado === 'CERRADO' || Boolean(r.fechaCierre);`. Toda recepción con fecha de cierre queda automáticamente catalogada como cerrada (`isClosed: true`), asignada a la pestaña "Cerradas" y excluida de "Por Cerrar".
+- **2. Candado Total de Idempotencia en Cierre Oficial (`operations.controller.ts`):**
+  - La verificación inicial de `closeReceipt` comprueba defensivamente `if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO' || receipt.fechaCierre)`. Ante llamadas repetidas o reintentos en red, responde inmediatamente `idempotent: true` devolviendo el registro existente, sin recalcular inventarios, sin mutar fechas y sin duplicar movimientos ni bitácoras de auditoría.
+- **3. Cero Fechas Ficticias en Reporte Oficial con Anexos (`ReceiptReportModal.tsx`):**
+  - El modal de reporte de cierre formatea con fidelidad estricta el timestamp persistido en `receipt.fechaCierre` (o en su defecto `auditCierre.createdAt`), soportando las acciones de auditoría `CIERRE_RECEPCION` y `CERRAR_RECEPCION`. Erradica cualquier timestamp sintético o visual no respaldado en BD.
+- **4. Culminación Exitosa de la Prueba E2E Completa (REC-2026-0006):**
+  - Flujo de 6 Fases completado al 100%: Previo → Rampa (12 bultos, 1 con daño exterior) → Calidad (10 pz rescatadas en `BOX-REC-2026-0006-0002` + 2 pz merma en `HU-NC-REC-2026-0006-MERMA-01` segregadas en DEV-01) → Doble Etiquetado (12 HUs activas `0002..0013` en Tarima Master `PLT-REC-2026-0006-01`, caja histórica `0001-DANO` saldo 0 fuera de stock) → Putaway con Escaneo Dual en 12 racks de Alimentos B → Inventario (210 pzas comerciales conformes + 2 pzas merma bloqueadas) → Cierre Oficial → Reporte y Acta de Finiquito. Balance perfecto: 212 esperadas = 210 conformes + 2 merma, 0 faltantes.
+- **5. Promoción Oficial de dev a main:**
+  - Integración mediante fast-forward limpio de `dev` a `main` (commit base de código `0099ad6`).
+  - Verificación de compilación limpia al 100% (0 errores) tanto en frontend (`tsc -b && vite build`) como en backend (`prisma generate && nest build`).
+  - Sincronización completa de los repositorios locales y remotos (`origin/dev` y `origin/main`).
+
 ## [1.9.13] — 2026-10-09
 
 ### 🔍 Corrección General de Resumen Putaway, Idempotencia de Escaneo Dual y Desglose de HUs en Almacén
