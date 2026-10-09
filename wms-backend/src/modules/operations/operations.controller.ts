@@ -92,8 +92,8 @@ function isExcelCaducidadHeader(h: string): boolean {
 export class OperationsController {
   constructor(private prisma: PrismaService) {}
 
-  private async audit(usuario: string, accion: string, entidad: string, entidadId?: string, detalle?: string) {
-    await this.prisma.auditLog.create({
+  private async audit(usuario: string, accion: string, entidad: string, entidadId?: string, detalle?: string, client: any = this.prisma) {
+    await client.auditLog.create({
       data: {
         usuario: usuario || 'Supervisor Andén',
         accion,
@@ -2469,327 +2469,408 @@ export class OperationsController {
     const inspectorNombre = (body.inspectorNombre || 'Inspector de Calidad').trim();
     const now = new Date();
 
-    // Generar folio de inspección correlativo
-    const countInspections = await this.prisma.qualityInspection.count();
-    const folioInspeccion = `INSP-2026-${String(countInspections + 1).padStart(4, '0')}`;
+    // Protección de concurrencia: si dos dictámenes se ejecutan simultáneamente y colisionan
+    // en folio o correlativos (P2002), se reintenta automáticamente recalculando el siguiente correlativo.
+    const maxRetries = 5;
+    let attempt = 0;
 
-    // Costeo del servicio 3PL
-    const horasMaquila = Number(body.horasMaquila || 0);
-    const tarifaPorHora = Number(body.tarifaMaquilaPorHora || 0);
-    const costoTotalMaquila = horasMaquila * tarifaPorHora;
+    while (attempt < maxRetries) {
+      attempt++;
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const receipt = await tx.receipt.findFirst({
+            where: { OR: [{ id: receiptId }, { codigo: receiptId }] },
+            include: {
+              cliente: true,
+              lineas: { include: { sku: true } },
+              handlingUnits: { orderBy: { codigo: 'asc' } },
+            },
+          });
+          if (!receipt) throw new HttpException('Previo no encontrado', HttpStatus.NOT_FOUND);
+          if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO') {
+            throw new HttpException('No se puede realizar inspección en una recepción CERRADA inmutable.', HttpStatus.BAD_REQUEST);
+          }
 
-    // Crear registro maestro de QualityInspection
-    const inspection = await this.prisma.qualityInspection.create({
-      data: {
-        folio: folioInspeccion,
-        receiptId: receipt.id,
-        clienteId: receipt.clienteId,
-        fechaInspeccion: now,
-        inspectorNombre,
-        estado: 'COMPLETADA',
-        totalCajasInspeccionadas: body.items.length,
-        totalPiezasInspeccionadas: 0,
-        totalPiezasRescatadas: 0,
-        totalPiezasMerma: 0,
-        totalCajasNuevasArmadas: 0,
-        horasMaquila,
-        tarifaMaquilaPorHora: tarifaPorHora,
-        costoTotalMaquila,
-        observaciones: body.observacionesGenerales || 'Inspección interna y reacondicionamiento completados exitosamente.',
-        detallesJson: '[]',
-        firmadoPor: inspectorNombre,
-      },
-    });
+          // 1. Generar folio de inspección correlativo seguro anti-colisión
+          const existingInspections = await tx.qualityInspection.findMany({
+            select: { folio: true },
+          });
+          let maxFolioNum = 0;
+          for (const qi of existingInspections) {
+            if (qi.folio) {
+              const m = qi.folio.match(/INSP-(\d{4})-(\d+)/);
+              if (m) {
+                const num = parseInt(m[2], 10);
+                if (!isNaN(num) && num > maxFolioNum) {
+                  maxFolioNum = num;
+                }
+              }
+            }
+          }
+          let nextFolioIndex = maxFolioNum + 1;
+          let folioInspeccion = `INSP-2026-${String(nextFolioIndex).padStart(4, '0')}`;
+          while (await tx.qualityInspection.findUnique({ where: { folio: folioInspeccion } })) {
+            nextFolioIndex++;
+            folioInspeccion = `INSP-2026-${String(nextFolioIndex).padStart(4, '0')}`;
+          }
 
-    let totalPiezasInspeccionadas = 0;
-    let totalPiezasRescatadas = 0;
-    let totalPiezasMerma = 0;
-    const nuevasCajasCreadas: any[] = [];
-    const cajasDetalleAudit: any[] = [];
+          // 2. Costeo del servicio 3PL
+          const horasMaquila = Number(body.horasMaquila || 0);
+          const tarifaPorHora = Number(body.tarifaMaquilaPorHora || 0);
+          const costoTotalMaquila = horasMaquila * tarifaPorHora;
 
-    // Contar cajas existentes para numeración correlativa segura
-    const allReceiptBoxes = receipt.handlingUnits.filter((h) => h.tipoHu === 'CAJA');
-    let nextBoxIndex = allReceiptBoxes.length;
-
-    // Procesar cada caja dictaminada
-    for (const item of body.items) {
-      const box = receipt.handlingUnits.find((h) => h.id === item.huId);
-      if (!box) {
-        throw new HttpException(`Caja con ID ${item.huId} no encontrada en este previo.`, HttpStatus.NOT_FOUND);
-      }
-
-      // Validar idempotencia: no se permite volver a dictaminar una caja inactiva o ya procesada
-      if (box.estadoHu === 'INACTIVO' || box.inspeccionId || (box.reacondicionada && box.cajaOrigenId)) {
-        throw new HttpException(
-          `La caja ${box.codigo} ya fue dictaminada previamente y no puede ser procesada nuevamente.`,
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      const pTotales = Number(item.piezasTotales || box.piezasPorCaja || box.cantidad || 0);
-      const pRescatadas = Number(item.piezasRescatadas || 0);
-      const pMerma = Number(item.piezasMerma || 0);
-
-      if (pRescatadas + pMerma !== pTotales) {
-        throw new HttpException(
-          `La suma de piezas rescatadas (${pRescatadas}) y merma (${pMerma}) debe ser exactamente igual a las piezas totales (${pTotales}) en la caja ${box.codigo}.`,
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      totalPiezasInspeccionadas += pTotales;
-      totalPiezasRescatadas += pRescatadas;
-      totalPiezasMerma += pMerma;
-
-      // Desactivar la caja dañada original y marcarla como procesada en maquila vinculada a la inspección
-      await this.prisma.handlingUnit.update({
-        where: { id: box.id },
-        data: {
-          estadoHu: 'INACTIVO',
-          reacondicionada: true,
-          motivoDano: item.motivoDano || 'Empaque dañado en transporte / inspección realizada',
-          inspeccionId: inspection.id,
-        },
-      });
-
-      // Si se rescataron piezas y se solicita armar cajas conformes
-      const createdBoxesForItem: any[] = [];
-      if (pRescatadas > 0 && body.armarCajasConformes !== false) {
-        const stdPiezas = box.piezasPorCaja || 12;
-        let piezasRestantes = pRescatadas;
-
-        while (piezasRestantes > 0) {
-          nextBoxIndex++;
-          const newBoxCode = `BOX-${receipt.codigo}-${String(nextBoxIndex).padStart(4, '0')}`;
-          const piezasEstaCaja = Math.min(piezasRestantes, stdPiezas);
-          piezasRestantes -= piezasEstaCaja;
-
-          const isPartialBox = piezasEstaCaja < stdPiezas;
-          const newHu = await this.prisma.handlingUnit.create({
+          // 3. Crear registro maestro de QualityInspection
+          const inspection = await tx.qualityInspection.create({
             data: {
-              codigo: newBoxCode,
-              tipoHu: 'CAJA',
-              clienteId: receipt.clienteId,
+              folio: folioInspeccion,
               receiptId: receipt.id,
-              receiptLineId: box.receiptLineId,
-              cantidad: piezasEstaCaja,
-              uom: 'PZA',
-              ubicacionActual: 'RAMPA_RECEPCION',
-              estadoHu: 'ACTIVO',
-              parentHuId: box.parentHuId,
-              estadoEtiqueta: 'GENERADA',
-              loteTexto: box.loteTexto,
-              fechaVencimiento: box.fechaVencimiento,
+              clienteId: receipt.clienteId,
+              fechaInspeccion: now,
+              inspectorNombre,
+              estado: 'COMPLETADA',
+              totalCajasInspeccionadas: body.items.length,
+              totalPiezasInspeccionadas: 0,
+              totalPiezasRescatadas: 0,
+              totalPiezasMerma: 0,
+              totalCajasNuevasArmadas: 0,
+              horasMaquila,
+              tarifaMaquilaPorHora: tarifaPorHora,
+              costoTotalMaquila,
+              observaciones: body.observacionesGenerales || 'Inspección interna y reacondicionamiento completados exitosamente.',
+              detallesJson: '[]',
+              firmadoPor: inspectorNombre,
+            },
+          });
+
+          let totalPiezasInspeccionadas = 0;
+          let totalPiezasRescatadas = 0;
+          let totalPiezasMerma = 0;
+          const nuevasCajasCreadas: any[] = [];
+          const cajasDetalleAudit: any[] = [];
+
+          // Determinar consecutivo seguro para numeración de nuevas cajas
+          const prefix = `BOX-${receipt.codigo}-`;
+          let maxExistingBoxNum = 0;
+          for (const h of receipt.handlingUnits) {
+            if (h.tipoHu === 'CAJA' && h.codigo && h.codigo.startsWith(prefix)) {
+              const suffix = h.codigo.substring(prefix.length);
+              const numMatch = suffix.match(/^(\d{1,6})/);
+              if (numMatch) {
+                const num = parseInt(numMatch[1], 10);
+                if (!isNaN(num) && num > maxExistingBoxNum) {
+                  maxExistingBoxNum = num;
+                }
+              }
+            }
+          }
+          let nextBoxIndex = maxExistingBoxNum;
+
+          // 4. Procesar cada caja dictaminada
+          for (const item of body.items) {
+            const box = receipt.handlingUnits.find((h) => h.id === item.huId);
+            if (!box) {
+              throw new HttpException(`Caja con ID ${item.huId} no encontrada en este previo.`, HttpStatus.NOT_FOUND);
+            }
+
+            // Validar idempotencia: no se permite volver a dictaminar una caja inactiva o ya procesada
+            if (box.estadoHu === 'INACTIVO' || box.inspeccionId || (box.reacondicionada && box.cajaOrigenId)) {
+              throw new HttpException(
+                `La caja ${box.codigo} ya fue dictaminada previamente y no puede ser procesada nuevamente.`,
+                HttpStatus.BAD_REQUEST,
+              );
+            }
+
+            const pTotales = Number(item.piezasTotales || box.piezasPorCaja || box.cantidad || 0);
+            const pRescatadas = Number(item.piezasRescatadas || 0);
+            const pMerma = Number(item.piezasMerma || 0);
+
+            if (pRescatadas + pMerma !== pTotales) {
+              throw new HttpException(
+                `La suma de piezas rescatadas (${pRescatadas}) y merma (${pMerma}) debe ser exactamente igual a las piezas totales (${pTotales}) en la caja ${box.codigo}.`,
+                HttpStatus.BAD_REQUEST,
+              );
+            }
+
+            totalPiezasInspeccionadas += pTotales;
+            totalPiezasRescatadas += pRescatadas;
+            totalPiezasMerma += pMerma;
+
+            // Desactivar la caja dañada original y marcarla histórica/inactiva vinculada a la inspección
+            await tx.handlingUnit.update({
+              where: { id: box.id },
+              data: {
+                estadoHu: 'INACTIVO',
+                reacondicionada: true,
+                motivoDano: item.motivoDano || 'Empaque dañado en transporte / inspección realizada',
+                inspeccionId: inspection.id,
+              },
+            });
+
+            // Si se rescataron piezas y se solicita armar cajas conformes
+            const createdBoxesForItem: any[] = [];
+            if (pRescatadas > 0 && body.armarCajasConformes !== false) {
+              const stdPiezas = box.piezasPorCaja || 12;
+              let piezasRestantes = pRescatadas;
+
+              while (piezasRestantes > 0) {
+                nextBoxIndex++;
+                let newBoxCode = `BOX-${receipt.codigo}-${String(nextBoxIndex).padStart(4, '0')}`;
+                while (await tx.handlingUnit.findUnique({ where: { codigo: newBoxCode } })) {
+                  nextBoxIndex++;
+                  newBoxCode = `BOX-${receipt.codigo}-${String(nextBoxIndex).padStart(4, '0')}`;
+                }
+
+                const piezasEstaCaja = Math.min(piezasRestantes, stdPiezas);
+                piezasRestantes -= piezasEstaCaja;
+
+                const newHu = await tx.handlingUnit.create({
+                  data: {
+                    codigo: newBoxCode,
+                    tipoHu: 'CAJA',
+                    clienteId: receipt.clienteId,
+                    receiptId: receipt.id,
+                    receiptLineId: box.receiptLineId,
+                    cantidad: piezasEstaCaja,
+                    uom: 'PZA',
+                    ubicacionActual: 'RAMPA_RECEPCION',
+                    estadoHu: 'ACTIVO',
+                    parentHuId: box.parentHuId,
+                    estadoEtiqueta: 'GENERADA',
+                    loteTexto: box.loteTexto,
+                    fechaVencimiento: box.fechaVencimiento,
+                    skuCodigo: box.skuCodigo,
+                    skuDescripcion: (box.skuDescripcion || '').replace('[DAÑO EXTERIOR] ', ''),
+                    facturaRespaldo: box.facturaRespaldo,
+                    piezasPorCaja: piezasEstaCaja,
+                    reacondicionada: true,
+                    cajaOrigenId: box.id,
+                    inspeccionId: inspection.id,
+                  },
+                });
+                createdBoxesForItem.push(newHu);
+                nuevasCajasCreadas.push(newHu);
+              }
+            }
+
+            cajasDetalleAudit.push({
+              cajaOrigenCodigo: box.codigo,
+              cajaOrigenId: box.id,
               skuCodigo: box.skuCodigo,
-              skuDescripcion: (box.skuDescripcion || '').replace('[DAÑO EXTERIOR] ', ''),
-              facturaRespaldo: box.facturaRespaldo,
-              piezasPorCaja: piezasEstaCaja,
-              reacondicionada: true,
-              cajaOrigenId: box.id,
-              inspeccionId: inspection.id,
-            },
-          });
-          createdBoxesForItem.push(newHu);
-          nuevasCajasCreadas.push(newHu);
-        }
-      }
-
-      cajasDetalleAudit.push({
-        cajaOrigenCodigo: box.codigo,
-        cajaOrigenId: box.id,
-        skuCodigo: box.skuCodigo,
-        loteTexto: box.loteTexto,
-        piezasTotales: pTotales,
-        piezasRescatadas: pRescatadas,
-        piezasMerma: pMerma,
-        motivoDano: item.motivoDano || 'Revisión técnica de calidad',
-        observaciones: item.observaciones || '',
-        nuevasCajasGeneradas: createdBoxesForItem.map((nb) => ({ id: nb.id, codigo: nb.codigo, cantidad: nb.cantidad })),
-      });
-
-      // Reajustar la partida del previo en ReceiptLine si corresponde (sin marcarla concluida antes de conteo de andén)
-      if (box.receiptLineId) {
-        const line = receipt.lineas.find((l) => l.id === box.receiptLineId);
-        if (line) {
-          const currentRecibida = Number(line.cantidadRecibida || 0);
-          const currentDanada = Number(line.cantidadDanada || 0);
-          const newDanada = Math.max(0, currentDanada - pRescatadas);
-          const newRecibida = currentRecibida + pRescatadas;
-
-          await this.prisma.receiptLine.update({
-            where: { id: line.id },
-            data: {
-              cantidadRecibida: newRecibida,
-              cantidadDanada: newDanada,
-              notas: `${line.notas || ''} | [Control de Calidad]: Rescatadas ${pRescatadas} pzas, Merma dictaminada: ${pMerma} pzas.`.trim(),
-            },
-          });
-        }
-      }
-
-      // Asiento formal de merma en Almacén Virtual No Conforme / Merma
-      if (pMerma > 0) {
-        const line = receipt.lineas.find((l) => l.id === box.receiptLineId);
-        const skuId = line?.skuId || receipt.lineas[0]?.skuId;
-        const sku = line?.sku || (skuId ? await this.prisma.skuMaster.findUnique({ where: { id: skuId } }) : null);
-
-        if (sku) {
-          const devLoc = await this.ensureVirtualMermaLocation();
-          const lotVirtual = await this.prisma.lotInventory.create({
-            data: {
-              skuId: sku.id,
-              clienteId: receipt.clienteId,
-              lote: box.loteTexto || line?.loteAsignado || null,
-              fechaVencimiento: box.fechaVencimiento || line?.fechaVencimiento || null,
-              estadoCalidad: 'MERMA',
-              cantidadBloqueada: pMerma,
-              cantidadDisponible: 0,
-              cantidadReservada: 0,
-              ubicacionId: devLoc.id,
-              notas: `[ALMACEN_VIRTUAL_NC] MERMA: ${item.motivoDano || 'Dictamen de calidad'} | Dictamen: ${folioInspeccion} | Origen: ${box.codigo} | Previo: ${receipt.codigo}`,
-            },
-          });
-
-          // HU segregada en almacén virtual
-          const huSeq = await this.prisma.handlingUnit.count();
-          const huMermaCode = `HU-NC-${new Date().getFullYear()}-${String(huSeq + 1).padStart(5, '0')}`;
-          const huMerma = await this.prisma.handlingUnit.create({
-            data: {
-              codigo: huMermaCode,
-              tipoHu: 'CAJA',
-              lotId: lotVirtual.id,
-              clienteId: receipt.clienteId,
-              receiptId: receipt.id,
-              receiptLineId: box.receiptLineId,
-              cantidad: pMerma,
-              uom: sku.uomBase || 'PZA',
-              ubicacionActual: devLoc.id,
-              estadoHu: 'CUARENTENA',
-              skuCodigo: sku.codigo,
-              skuDescripcion: sku.descripcion,
               loteTexto: box.loteTexto,
-              fechaVencimiento: box.fechaVencimiento,
-              motivoDano: item.motivoDano || 'Merma dictaminada en calidad',
-              cajaOrigenId: box.id,
-              inspeccionId: inspection.id,
-            },
-          });
+              piezasTotales: pTotales,
+              piezasRescatadas: pRescatadas,
+              piezasMerma: pMerma,
+              motivoDano: item.motivoDano || 'Revisión técnica de calidad',
+              observaciones: item.observaciones || '',
+              nuevasCajasGeneradas: createdBoxesForItem.map((nb) => ({ id: nb.id, codigo: nb.codigo, cantidad: nb.cantidad })),
+            });
 
-          await this.prisma.inventoryMovement.create({
+            // Reajustar la partida del previo en ReceiptLine si corresponde
+            if (box.receiptLineId) {
+              const line = receipt.lineas.find((l) => l.id === box.receiptLineId);
+              if (line) {
+                const currentRecibida = Number(line.cantidadRecibida || 0);
+                const currentDanada = Number(line.cantidadDanada || 0);
+                const newDanada = Math.max(0, currentDanada - pRescatadas);
+                const newRecibida = currentRecibida + pRescatadas;
+
+                await tx.receiptLine.update({
+                  where: { id: line.id },
+                  data: {
+                    cantidadRecibida: newRecibida,
+                    cantidadDanada: newDanada,
+                    notas: `${line.notas || ''} | [Control de Calidad]: Rescatadas ${pRescatadas} pzas, Merma dictaminada: ${pMerma} pzas.`.trim(),
+                  },
+                });
+              }
+            }
+
+            // Asiento formal de merma en Almacén Virtual No Conforme / Merma (DEV-01) si pMerma > 0
+            if (pMerma > 0) {
+              const line = receipt.lineas.find((l) => l.id === box.receiptLineId);
+              const skuId = line?.skuId || receipt.lineas[0]?.skuId;
+              const sku = line?.sku || (skuId ? await tx.skuMaster.findUnique({ where: { id: skuId } }) : null);
+
+              if (sku) {
+                const devLoc = await this.ensureVirtualMermaLocation(tx);
+                const lotVirtual = await tx.lotInventory.create({
+                  data: {
+                    skuId: sku.id,
+                    clienteId: receipt.clienteId,
+                    lote: box.loteTexto || line?.loteAsignado || null,
+                    fechaVencimiento: box.fechaVencimiento || line?.fechaVencimiento || null,
+                    estadoCalidad: 'MERMA',
+                    cantidadBloqueada: pMerma,
+                    cantidadDisponible: 0,
+                    cantidadReservada: 0,
+                    ubicacionId: devLoc.id,
+                    notas: `[ALMACEN_VIRTUAL_NC] MERMA: ${item.motivoDano || 'Dictamen de calidad'} | Dictamen: ${folioInspeccion} | Origen: ${box.codigo} | Previo: ${receipt.codigo}`,
+                  },
+                });
+
+                // HU segregada en almacén virtual con numeración segura y ubicación legible DEV-01
+                let mermaIndex = 1;
+                let huMermaCode = `HU-NC-${receipt.codigo}-MERMA-${String(mermaIndex).padStart(2, '0')}`;
+                while (await tx.handlingUnit.findUnique({ where: { codigo: huMermaCode } })) {
+                  mermaIndex++;
+                  huMermaCode = `HU-NC-${receipt.codigo}-MERMA-${String(mermaIndex).padStart(2, '0')}`;
+                }
+
+                const huMerma = await tx.handlingUnit.create({
+                  data: {
+                    codigo: huMermaCode,
+                    tipoHu: 'CAJA',
+                    lotId: lotVirtual.id,
+                    clienteId: receipt.clienteId,
+                    receiptId: receipt.id,
+                    receiptLineId: box.receiptLineId,
+                    cantidad: pMerma,
+                    uom: sku.uomBase || 'PZA',
+                    ubicacionActual: devLoc.codigo || 'DEV-01',
+                    estadoHu: 'BLOQUEADO',
+                    skuCodigo: sku.codigo,
+                    skuDescripcion: sku.descripcion,
+                    loteTexto: box.loteTexto,
+                    fechaVencimiento: box.fechaVencimiento,
+                    motivoDano: item.motivoDano || 'Merma dictaminada en calidad',
+                    cajaOrigenId: box.id,
+                    inspeccionId: inspection.id,
+                  },
+                });
+
+                await tx.inventoryMovement.create({
+                  data: {
+                    tipoMovimiento: 'DESVIO_MERMA',
+                    almacenId: devLoc.almacenId,
+                    skuId: sku.id,
+                    clienteId: receipt.clienteId,
+                    lotId: lotVirtual.id,
+                    huId: huMerma.id,
+                    toLocationId: devLoc.id,
+                    cantidad: pMerma,
+                    usuario: inspectorNombre,
+                    motivo: `[MERMA] ${item.motivoDano || 'Dictamen técnico en Calidad'} | Origen: ${box.codigo} | Dictamen: ${folioInspeccion}`,
+                    documentoOrigen: `${receipt.codigo} / ${folioInspeccion}`,
+                  },
+                });
+
+                await this.audit(
+                  inspectorNombre,
+                  'MERMA_ALMACEN_VIRTUAL',
+                  'QualityInspection',
+                  inspection.id,
+                  `Envío automático de ${pMerma} pzas de merma a Almacén Virtual No Conforme. Dictamen: ${folioInspeccion} | Caja: ${box.codigo} | Lote: ${box.loteTexto || 'S/L'} | Ubicación: ${devLoc.codigo}`,
+                  tx,
+                );
+              }
+            }
+
+            // Asiento en kárdex para piezas conformes rescatadas
+            if (pRescatadas > 0) {
+              const line = receipt.lineas.find((l) => l.id === box.receiptLineId);
+              const skuId = line?.skuId || receipt.lineas[0]?.skuId;
+              if (skuId) {
+                await tx.inventoryMovement.create({
+                  data: {
+                    tipoMovimiento: 'REACONDICIONAMIENTO_MAQUILA',
+                    skuId,
+                    clienteId: receipt.clienteId,
+                    cantidad: pRescatadas,
+                    usuario: inspectorNombre,
+                    motivo: `Piezas rescatadas en maquila de caja dañada ${box.codigo} e integradas como conformes`,
+                    documentoOrigen: `${receipt.codigo} / ${folioInspeccion}`,
+                  },
+                });
+              }
+            }
+          }
+
+          // Actualizar registro maestro de QualityInspection con los totales definitivos
+          await tx.qualityInspection.update({
+            where: { id: inspection.id },
             data: {
-              tipoMovimiento: 'DESVIO_MERMA',
-              almacenId: devLoc.almacenId,
-              skuId: sku.id,
-              clienteId: receipt.clienteId,
-              lotId: lotVirtual.id,
-              huId: huMerma.id,
-              toLocationId: devLoc.id,
-              cantidad: pMerma,
-              usuario: inspectorNombre,
-              motivo: `[MERMA] ${item.motivoDano || 'Dictamen técnico en Calidad'} | Origen: ${box.codigo} | Dictamen: ${folioInspeccion}`,
-              documentoOrigen: `${receipt.codigo} / ${folioInspeccion}`,
+              totalPiezasInspeccionadas,
+              totalPiezasRescatadas,
+              totalPiezasMerma,
+              totalCajasNuevasArmadas: nuevasCajasCreadas.length,
+              detallesJson: JSON.stringify(cajasDetalleAudit),
             },
           });
 
+          // Evaluar si aún quedan cajas retenidas pendientes o bultos sin identificar
+          const remainingPendingBoxes = receipt.handlingUnits.filter(
+            (h) =>
+              h.tipoHu === 'CAJA' &&
+              (h.estadoHu === 'RETENIDA' || h.estadoHu === 'DAÑADO' || h.codigo.includes('DANO')) &&
+              !h.reacondicionada &&
+              h.estadoHu !== 'INACTIVO' &&
+              !body.items.some((it) => it.huId === h.id)
+          );
+
+          const previousProcessed = receipt.handlingUnits.filter(
+            (h) =>
+              h.tipoHu === 'CAJA' &&
+              (h.codigo.includes('DANO') || h.estadoHu === 'INACTIVO') &&
+              (h.reacondicionada || h.inspeccionId != null) &&
+              !h.cajaOrigenId
+          ).length;
+          const totalProcessedNow = previousProcessed + body.items.length;
+          const remainingUnidentified = Math.max(0, (receipt.bultosDanados || 0) - (remainingPendingBoxes.length + totalProcessedNow));
+
+          const allCompleted = remainingPendingBoxes.length === 0 && remainingUnidentified === 0;
+          const nuevoEstadoCalidad = allCompleted ? 'COMPLETADA' : 'EN_PROCESO';
+
+          // Actualizar estado de inspección en el previo
+          await tx.receipt.update({
+            where: { id: receipt.id },
+            data: {
+              inspeccionCalidadEstado: nuevoEstadoCalidad,
+            },
+          });
+
+          // Auditoría
           await this.audit(
             inspectorNombre,
-            'MERMA_ALMACEN_VIRTUAL',
-            'QualityInspection',
-            inspection.id,
-            `Envío automático de ${pMerma} pzas de merma a Almacén Virtual No Conforme. Dictamen: ${folioInspeccion} | Caja: ${box.codigo} | Lote: ${box.loteTexto || 'S/L'} | Ubicación: ${devLoc.codigo}`,
+            'INSPECCION_CALIDAD_REACONDICIONAMIENTO',
+            'Receipt',
+            receipt.id,
+            `Inspección ${folioInspeccion}: ${totalPiezasInspeccionadas} piezas revisadas, ${totalPiezasRescatadas} rescatadas en ${nuevasCajasCreadas.length} cajas nuevas, ${totalPiezasMerma} piezas a merma dictaminada. Estado Calidad: ${nuevoEstadoCalidad}.`,
+            tx,
           );
-        }
-      }
 
-      // Asiento en kárdex para piezas conformes rescatadas
-      if (pRescatadas > 0) {
-        const line = receipt.lineas.find((l) => l.id === box.receiptLineId);
-        const skuId = line?.skuId || receipt.lineas[0]?.skuId;
-        if (skuId) {
-          await this.prisma.inventoryMovement.create({
-            data: {
-              tipoMovimiento: 'REACONDICIONAMIENTO_MAQUILA',
-              skuId,
-              clienteId: receipt.clienteId,
-              cantidad: pRescatadas,
-              usuario: inspectorNombre,
-              motivo: `Piezas rescatadas en maquila de caja dañada ${box.codigo} e integradas como conformes`,
-              documentoOrigen: `${receipt.codigo} / ${folioInspeccion}`,
+          return {
+            success: true,
+            message: allCompleted
+              ? `Inspección de calidad completada exitosamente bajo folio ${folioInspeccion}.`
+              : `Dictamen parcial registrado bajo folio ${folioInspeccion}. Quedan cajas pendientes por dictaminar.`,
+            inspection,
+            nuevasCajasCreadas,
+            allCompleted,
+            inspeccionCalidadEstado: nuevoEstadoCalidad,
+            balance: {
+              totalPiezasInspeccionadas,
+              totalPiezasRescatadas,
+              totalPiezasMerma,
+              totalCajasNuevasArmadas: nuevasCajasCreadas.length,
+              costoTotalMaquila,
             },
-          });
+          };
+        });
+      } catch (err: any) {
+        const isUniqueConstraint =
+          err?.code === 'P2002' ||
+          (typeof err?.message === 'string' &&
+            err.message.includes('Unique constraint failed') &&
+            (err.message.includes('folio') || err.message.includes('codigo')));
+
+        if (isUniqueConstraint && attempt < maxRetries) {
+          const delayMs = 50 * attempt + Math.floor(Math.random() * 50);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
         }
+        throw err;
       }
     }
-
-    // Actualizar registro maestro de QualityInspection con los totales definitivos
-    await this.prisma.qualityInspection.update({
-      where: { id: inspection.id },
-      data: {
-        totalPiezasInspeccionadas,
-        totalPiezasRescatadas,
-        totalPiezasMerma,
-        totalCajasNuevasArmadas: nuevasCajasCreadas.length,
-        detallesJson: JSON.stringify(cajasDetalleAudit),
-      },
-    });
-
-    // Evaluar si aún quedan cajas retenidas pendientes o bultos sin identificar
-    const remainingPendingBoxes = receipt.handlingUnits.filter(
-      (h) =>
-        h.tipoHu === 'CAJA' &&
-        (h.estadoHu === 'RETENIDA' || h.estadoHu === 'DAÑADO' || h.codigo.includes('DANO')) &&
-        !h.reacondicionada &&
-        h.estadoHu !== 'INACTIVO' &&
-        !body.items.some((it) => it.huId === h.id)
-    );
-
-    const previousProcessed = receipt.handlingUnits.filter(
-      (h) =>
-        h.tipoHu === 'CAJA' &&
-        (h.codigo.includes('DANO') || h.estadoHu === 'INACTIVO') &&
-        (h.reacondicionada || h.inspeccionId != null) &&
-        !h.cajaOrigenId
-    ).length;
-    const totalProcessedNow = previousProcessed + body.items.length;
-    const remainingUnidentified = Math.max(0, (receipt.bultosDanados || 0) - (remainingPendingBoxes.length + totalProcessedNow));
-
-    const allCompleted = remainingPendingBoxes.length === 0 && remainingUnidentified === 0;
-    const nuevoEstadoCalidad = allCompleted ? 'COMPLETADA' : 'EN_PROCESO';
-
-    // Actualizar estado de inspección en el previo
-    await this.prisma.receipt.update({
-      where: { id: receipt.id },
-      data: {
-        inspeccionCalidadEstado: nuevoEstadoCalidad,
-      },
-    });
-
-    // Auditoría
-    await this.audit(
-      inspectorNombre,
-      'INSPECCION_CALIDAD_REACONDICIONAMIENTO',
-      'Receipt',
-      receipt.id,
-      `Inspección ${folioInspeccion}: ${totalPiezasInspeccionadas} piezas revisadas, ${totalPiezasRescatadas} rescatadas en ${nuevasCajasCreadas.length} cajas nuevas, ${totalPiezasMerma} piezas a merma dictaminada. Estado Calidad: ${nuevoEstadoCalidad}.`,
-    );
-
-    return {
-      success: true,
-      message: allCompleted
-        ? `Inspección de calidad completada exitosamente bajo folio ${folioInspeccion}.`
-        : `Dictamen parcial registrado bajo folio ${folioInspeccion}. Quedan cajas pendientes por dictaminar.`,
-      inspection,
-      nuevasCajasCreadas,
-      allCompleted,
-      inspeccionCalidadEstado: nuevoEstadoCalidad,
-      balance: {
-        totalPiezasInspeccionadas,
-        totalPiezasRescatadas,
-        totalPiezasMerma,
-        totalCajasNuevasArmadas: nuevasCajasCreadas.length,
-        costoTotalMaquila,
-      },
-    };
   }
 
   @Get('receipts/:id/inspection/report')
@@ -6811,20 +6892,20 @@ export class OperationsController {
     };
   }
 
-  private async ensureVirtualMermaLocation() {
-    const devLoc = await this.prisma.location.findFirst({
+  private async ensureVirtualMermaLocation(client: any = this.prisma) {
+    const devLoc = await client.location.findFirst({
       where: { OR: [{ codigo: 'DEV-01' }, { codigo: 'NC-MERMA-01' }] },
     });
     if (devLoc) return devLoc;
 
-    let zone = await this.prisma.zone.findFirst({
+    let zone = await client.zone.findFirst({
       where: { OR: [{ codigo: 'DEVOLUCION' }, { tipoZona: 'CUARENTENA' }] },
     });
 
     if (!zone) {
-      const wh = await this.prisma.warehouse.findFirst();
+      const wh = await client.warehouse.findFirst();
       if (!wh) throw new Error('No se encontró ningún almacén en el sistema');
-      zone = await this.prisma.zone.create({
+      zone = await client.zone.create({
         data: {
           codigo: 'DEVOLUCION',
           nombre: 'Zona de Devoluciones y Merma',
@@ -6834,7 +6915,7 @@ export class OperationsController {
       });
     }
 
-    return this.prisma.location.create({
+    return client.location.create({
       data: {
         codigo: 'DEV-01',
         almacenId: zone.almacenId,
