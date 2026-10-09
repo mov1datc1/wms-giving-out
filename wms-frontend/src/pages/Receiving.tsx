@@ -507,8 +507,8 @@ export function buildReceiptTimeline(
       fase: 'CALIDAD_RESERVA',
       fecha: auditDano?.createdAt || damagedHu?.createdAt || receipt.fechaLiberacionChofer || receipt.updatedAt,
       titulo: 'Identificación física y retención de bulto con daño exterior',
-      subtitulo: `Bulto identificado como ${damagedHu?.codigo || 'BOX-...-DANO'} (${damagedHu?.skuCodigo || 'ACE-OLI-1L'} · ${damagedHu?.cantidad || 12} pzas) descargado en andén de arribo ${andenArribo} y transferido a custodia en ${areaCustodia} (fuera de stock) para dictamen técnico`,
-      actor: auditDano?.usuario || 'Jonathan Palacios',
+      subtitulo: `Bulto identificado como ${damagedHu?.codigo || 'BOX-...-DANO'} (${damagedHu?.skuCodigo || receipt.lineas?.[0]?.sku?.codigo || 'SKU'} · ${damagedHu?.cantidad || receipt.lineas?.[0]?.sku?.capacidadEmpaque || 0} pzas) descargado en andén de arribo ${andenArribo} y transferido a custodia en ${areaCustodia} (fuera de stock) para dictamen técnico`,
+      actor: auditDano?.usuario || receipt.recibidoPor || receipt.nombreReceptor || 'Supervisor de Andén',
       tipo: 'RETENCION',
       color: '#D97706',
       borderColor: '#FDE68A',
@@ -531,17 +531,17 @@ export function buildReceiptTimeline(
   const insp = (receipt.inspecciones && receipt.inspecciones.length > 0) ? receipt.inspecciones[0] : (receipt.qualityInspections?.[0] || null);
   const isCalidadDone = Boolean(auditCalidad || insp || receipt.inspeccionCalidadEstado === 'COMPLETADA');
   if (isCalidadDone) {
-    const fol = insp?.folio || 'INSP-2026-0023';
-    const inspTot = insp?.totalPiezasInspeccionadas ?? 12;
-    const inspRes = insp?.totalPiezasRescatadas ?? 10;
-    const inspMer = insp?.totalPiezasMerma ?? 2;
+    const fol = insp?.folio || (receipt.codigo ? `DICTAMEN-${receipt.codigo}` : 'DICTAMEN-CALIDAD');
+    const inspTot = insp?.totalPiezasInspeccionadas ?? (Number(receipt.bultosDanados || 0) * (receipt.lineas?.[0]?.sku?.capacidadEmpaque || receipt.piezasPorCajaEsperadas || 0));
+    const inspRes = insp?.totalPiezasRescatadas ?? inspTot;
+    const inspMer = insp?.totalPiezasMerma ?? 0;
     events.push({
       id: 'evt-calidad',
       fase: 'CALIDAD',
       fecha: insp?.fechaInspeccion || auditCalidad?.createdAt || insp?.createdAt || receipt.updatedAt,
       titulo: `Inspección de Calidad completada (Dictamen ${fol})`,
       subtitulo: `Revisión técnica de ${inspTot} piezas: ${inspRes} piezas rescatadas/reacondicionadas en caja activa · ${inspMer} piezas de merma dictaminada fuera de stock${insp?.observaciones ? ` · ${insp.observaciones}` : ''}`,
-      actor: insp?.inspectorNombre || auditCalidad?.usuario || 'Jonathan Palacios',
+      actor: insp?.inspectorNombre || auditCalidad?.usuario || receipt.recibidoPor || 'Inspector de Calidad',
       tipo: 'CALIDAD',
       color: '#7C3AED',
       borderColor: '#DDD6FE',
@@ -1538,7 +1538,7 @@ export function Receiving() {
   // --- FINALIZAR Y CERRAR RECEPCIÓN (Tarea 5: Candado de Discrepancias) ---
   async function handleCloseReceiptSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!closingReceipt) return;
+    if (!closingReceipt || submitting) return;
 
     // 1. Detectar líneas discrepantes activas
     const activeLines = closingReceipt.lineas || [];
@@ -5090,9 +5090,7 @@ export function Receiving() {
           const qualityInspectionRecord = currentReceipt.inspecciones?.[0] || currentReceipt.qualityInspections?.[0] || currentReceipt.qualityInspection || null;
           const isQualityCompleted = Boolean(
             qualityInspectionRecord ||
-            currentReceipt.inspeccionCalidadEstado === 'COMPLETADA' ||
-            currentReceipt.codigo === 'REC-2026-0009' ||
-            currentReceipt.codigo === 'REC-2026-0011'
+            currentReceipt.inspeccionCalidadEstado === 'COMPLETADA'
           );
           const hasDamagedBoxes = Boolean(bultosDanados > 0 || currentReceipt.cantidadDanada > 0);
 
@@ -6736,7 +6734,11 @@ export function Receiving() {
                                         <>
                                           <span style={{ fontWeight: 800, color: '#DC2626' }}>0 pzas</span>
                                           <div style={{ fontSize: 10, color: '#64748B' }}>
-                                            Orig: {pzas} pz · {rescuedBoxes.reduce((s: number, r: any) => s + (Number(r.cantidad) || 0), 0) || 10} rescatadas, 2 merma
+                                            {(() => {
+                                              const totalResc = rescuedBoxes.reduce((s: number, r: any) => s + (Number(r.cantidad) || 0), 0);
+                                              const mermaPzas = Math.max(0, pzas - totalResc);
+                                              return `Orig: ${pzas} pz · ${totalResc} rescatadas${mermaPzas > 0 ? `, ${mermaPzas} merma` : ''}`;
+                                            })()}
                                           </div>
                                         </>
                                       ) : isDespachado ? (
@@ -6878,9 +6880,7 @@ export function Receiving() {
                         const inspectionRecord = currentReceipt.inspecciones?.[0] || currentReceipt.qualityInspections?.[0] || currentReceipt.qualityInspection || null;
                         const isInspectionCompleted = Boolean(
                           inspectionRecord ||
-                          currentReceipt.inspeccionCalidadEstado === 'COMPLETADA' ||
-                          currentReceipt.codigo === 'REC-2026-0009' ||
-                          currentReceipt.codigo === 'REC-2026-0011'
+                          currentReceipt.inspeccionCalidadEstado === 'COMPLETADA'
                         );
                         const hasDamaged = Boolean(currentReceipt.bultosDanados > 0 || currentReceipt.cantidadDanada > 0);
 
@@ -6899,7 +6899,7 @@ export function Receiving() {
                                   Inspección:{' '}
                                   <strong>
                                     {isInspectionCompleted ? (
-                                      inspectionRecord?.folio || (currentReceipt.codigo === 'REC-2026-0009' ? 'INSP-2026-0001' : currentReceipt.codigo === 'REC-2026-0011' ? 'INSP-2026-0002' : 'Registrada')
+                                      inspectionRecord?.folio || 'Dictamen Registrado'
                                     ) : hasDamaged ? (
                                       <span style={{ color: '#D97706', fontWeight: 700 }}>Pendiente / No realizada</span>
                                     ) : (

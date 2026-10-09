@@ -222,7 +222,11 @@ export function DualLabelModal({
       const cajasDanadasHistoricas = existingDamagedBoxes.length;
 
       // Conciliación física persistida en andén (cantidadRecibida = conformes totales: sanas + rescatadas)
-      const totalConformesPiezas = Number(line.cantidadRecibida ?? (line.cantidadEsperada || 0));
+      const totalConformesPiezas = receipt.conteoAndenEstado === 'COMPLETADO'
+        ? Number(line.cantidadRecibida || 0)
+        : (Number(line.cantidadRecibida) > 0
+            ? Math.max(Number(line.cantidadRecibida), Number(line.cantidadEsperada || 0) - Number(line.cantidadDanada || 0))
+            : Math.max(0, Number(line.cantidadEsperada || 0) - Number(line.cantidadDanada || 0)));
       const totalDanadasPiezas = Number(line.cantidadDanada || 0);
 
       // Cajas sanas conciliadas en andén que todavía necesitan materializarse como HUs

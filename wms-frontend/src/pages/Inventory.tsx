@@ -1055,7 +1055,11 @@ export function Inventory() {
                           <>
                             <span style={{ fontWeight: 800, color: 'var(--danger)' }}>0 pzas</span>
                             <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
-                              Orig: {pzas} pz · {rescuedBoxes.reduce((s, r) => s + (Number(r.cantidad) || 0), 0) || 10} rescatadas, 2 merma
+                              {(() => {
+                                const totalResc = rescuedBoxes.reduce((s: number, r: any) => s + (Number(r.cantidad) || 0), 0);
+                                const mermaPzas = Math.max(0, pzas - totalResc);
+                                return `Orig: ${pzas} pz · ${totalResc} rescatadas${mermaPzas > 0 ? `, ${mermaPzas} merma` : ''}`;
+                              })()}
                             </div>
                           </>
                         ) : isDespachado ? (

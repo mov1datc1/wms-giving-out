@@ -4,6 +4,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import * as XLSX from 'xlsx';
 import * as jwt from 'jsonwebtoken';
 import { PrismaService } from '../../prisma.service';
+import { withConcurrencyRetry } from '../../common/concurrency.util';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 import {
@@ -601,7 +602,11 @@ export class OperationsController {
       );
 
       // Conciliación física persistida en andén
-      const conformesTotalPiezas = Number(line.cantidadRecibida ?? (line.cantidadEsperada || 0));
+      const conformesTotalPiezas = receipt.conteoAndenEstado === 'COMPLETADO'
+        ? Number(line.cantidadRecibida || 0)
+        : (Number(line.cantidadRecibida) > 0
+            ? Math.max(Number(line.cantidadRecibida), Number(line.cantidadEsperada || 0) - Number(line.cantidadDanada || 0))
+            : Math.max(0, Number(line.cantidadEsperada || 0) - Number(line.cantidadDanada || 0)));
       const piezasSanasAnden = Math.max(0, conformesTotalPiezas - existingRescuedPieces);
       const cajasSanasAnden = packSize > 0 ? Math.floor(piezasSanasAnden / packSize) : 0;
       const nuevasCajasCrear = Math.max(0, cajasSanasAnden - existingHealthyBoxes.length);
@@ -755,140 +760,153 @@ export class OperationsController {
       }
     }
 
-    // 2. Determinar o crear la Tarima Master
-    const createdPallets: any[] = [];
-    const createdCajas: any[] = [];
-    let currentPallet: any = pallets.length > 0 ? pallets[0] : null;
-    let palletCount = pallets.length;
-    let cajasInCurrentPallet = 0;
-
-    if (!currentPallet) {
-      palletCount++;
-      const palletCodigo = `PLT-${receipt.codigo}-${String(palletCount).padStart(2, '0')}`;
-      currentPallet = await this.prisma.handlingUnit.create({
-        data: {
-          codigo: palletCodigo,
-          tipoHu: 'PALLET',
-          clienteId: receipt.clienteId,
-          receiptId: receipt.id,
-          cantidad: 0,
-          uom: 'TARIMA',
-          ubicacionActual: 'RAMPA_RECEPCION',
-          estadoHu: 'ACTIVO',
-          estadoEtiqueta: 'GENERADA',
-          facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
-        },
+    // 2. Determinar o crear la Tarima Master y Cajas con protección de concurrencia
+    const { createdPallets, createdCajas } = await withConcurrencyRetry(async () => {
+      const freshHus = await this.prisma.handlingUnit.findMany({
+        where: { receiptId: receipt.id },
       });
-      createdPallets.push(currentPallet);
-    } else {
-      createdPallets.push(currentPallet);
-    }
+      const currentPallets = freshHus.filter(h => h.tipoHu === 'PALLET' || (h.codigo && h.codigo.startsWith('PLT-')));
 
-    // Determinar consecutivo seguro para numeración de nuevas cajas
-    const prefix = `BOX-${receipt.codigo}-`;
-    let maxExistingIndex = 0;
-    for (const h of receipt.handlingUnits) {
-      if (h.tipoHu === 'CAJA' && h.codigo && h.codigo.startsWith(prefix)) {
-        const suffix = h.codigo.substring(prefix.length);
-        const numMatch = suffix.match(/^(\d{1,6})/);
-        if (numMatch) {
-          const num = parseInt(numMatch[1], 10);
-          if (!isNaN(num) && num > maxExistingIndex) {
-            maxExistingIndex = num;
-          }
+      const cPallets: any[] = [];
+      const cCajas: any[] = [];
+      let curPallet: any = currentPallets.length > 0 ? currentPallets[0] : null;
+
+      let maxPltIdx = 0;
+      for (const p of currentPallets) {
+        const match = p.codigo?.match(/PLT-[^-]+-(\d+)/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxPltIdx) maxPltIdx = num;
         }
       }
-    }
-    let globalBoxIndex = maxExistingIndex;
+      let pCount = maxPltIdx;
+      let cInCurrentPallet = 0;
 
-    // 3. Procesar partidas: vincular existentes y crear únicamente las cajas sanas pendientes
-    for (const plan of linesPlan) {
-      const { line, sku, piezasPorCaja, existingRescuedBoxes, existingHealthyBoxes, nuevasCajasCrear } = plan;
-
-      // A. Vincular HUs conformes/reacondicionadas ya creadas por Calidad
-      for (const rBox of existingRescuedBoxes) {
-        if (!rBox.parentHuId || rBox.parentHuId !== currentPallet.id) {
-          await this.prisma.handlingUnit.update({
-            where: { id: rBox.id },
-            data: { parentHuId: currentPallet.id },
-          });
-          rBox.parentHuId = currentPallet.id;
-        }
-        if (!createdCajas.some(c => c.id === rBox.id)) {
-          createdCajas.push(rBox);
-          cajasInCurrentPallet++;
-        }
-      }
-
-      // B. Vincular cajas sanas preexistentes (si las hubiera)
-      for (const eBox of existingHealthyBoxes) {
-        if (!eBox.parentHuId || eBox.parentHuId !== currentPallet.id) {
-          await this.prisma.handlingUnit.update({
-            where: { id: eBox.id },
-            data: { parentHuId: currentPallet.id },
-          });
-          eBox.parentHuId = currentPallet.id;
-        }
-        if (!createdCajas.some(c => c.id === eBox.id)) {
-          createdCajas.push(eBox);
-          cajasInCurrentPallet++;
-        }
-      }
-
-      // C. Crear ÚNICAMENTE las cajas sanas que todavía necesitan materializarse como HUs
-      for (let cIdx = 1; cIdx <= nuevasCajasCrear; cIdx++) {
-        if (cajasInCurrentPallet >= cajasPorTarimaDefault) {
-          palletCount++;
-          const palletCodigo = `PLT-${receipt.codigo}-${String(palletCount).padStart(2, '0')}`;
-          currentPallet = await this.prisma.handlingUnit.create({
-            data: {
-              codigo: palletCodigo,
-              tipoHu: 'PALLET',
-              clienteId: receipt.clienteId,
-              receiptId: receipt.id,
-              cantidad: 0,
-              uom: 'TARIMA',
-              ubicacionActual: 'RAMPA_RECEPCION',
-              estadoHu: 'ACTIVO',
-              estadoEtiqueta: 'GENERADA',
-              facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
-            },
-          });
-          createdPallets.push(currentPallet);
-          cajasInCurrentPallet = 0;
-        }
-
-        globalBoxIndex++;
-        const boxCodigo = `BOX-${receipt.codigo}-${String(globalBoxIndex).padStart(4, '0')}`;
-        const caja = await this.prisma.handlingUnit.create({
+      if (!curPallet) {
+        pCount++;
+        const palletCodigo = `PLT-${receipt.codigo}-${String(pCount).padStart(2, '0')}`;
+        curPallet = await this.prisma.handlingUnit.create({
           data: {
-            codigo: boxCodigo,
-            tipoHu: 'CAJA',
+            codigo: palletCodigo,
+            tipoHu: 'PALLET',
             clienteId: receipt.clienteId,
             receiptId: receipt.id,
-            receiptLineId: line.id,
-            parentHuId: currentPallet.id,
-            cantidad: piezasPorCaja,
-            uom: line.uom || sku.uomBase || 'PZA',
+            cantidad: 0,
+            uom: 'TARIMA',
             ubicacionActual: 'RAMPA_RECEPCION',
             estadoHu: 'ACTIVO',
             estadoEtiqueta: 'GENERADA',
-            skuCodigo: sku.codigo,
-            skuDescripcion: sku.descripcion,
-            loteTexto: line.loteAsignado || line.loteEsperado || 'S/LOTE',
-            fechaVencimiento: line.fechaVencimiento || null,
             facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
-            piezasPorCaja: piezasPorCaja,
           },
         });
-
-        createdCajas.push(caja);
-        cajasInCurrentPallet++;
+        cPallets.push(curPallet);
+      } else {
+        cPallets.push(curPallet);
       }
 
-      // D. HUs dañadas originales históricas/inactivas: NO SE MODIFICAN, NO SE REACTIVAN, NO SE ASIGNAN A TARIMA
-      // E. Cajas faltantes confirmadas: NO SE GENERA HU NI ETIQUETA
-    }
+      // Determinar consecutivo seguro para numeración de nuevas cajas
+      const boxPrefix = `BOX-${receipt.codigo}-`;
+      let maxExIdx = 0;
+      for (const h of freshHus) {
+        if (h.tipoHu === 'CAJA' && h.codigo && h.codigo.startsWith(boxPrefix)) {
+          const suffix = h.codigo.substring(boxPrefix.length);
+          const numMatch = suffix.match(/^(\d{1,6})/);
+          if (numMatch) {
+            const num = parseInt(numMatch[1], 10);
+            if (!isNaN(num) && num > maxExIdx) maxExIdx = num;
+          }
+        }
+      }
+      let gBoxIdx = maxExIdx;
+
+      // 3. Procesar partidas: vincular existentes y crear únicamente las cajas sanas pendientes
+      for (const plan of linesPlan) {
+        const { line, sku, piezasPorCaja, existingRescuedBoxes, existingHealthyBoxes, nuevasCajasCrear } = plan;
+
+        // A. Vincular HUs conformes/reacondicionadas ya creadas por Calidad
+        for (const rBox of existingRescuedBoxes) {
+          if (!rBox.parentHuId || rBox.parentHuId !== curPallet.id) {
+            await this.prisma.handlingUnit.update({
+              where: { id: rBox.id },
+              data: { parentHuId: curPallet.id },
+            });
+            rBox.parentHuId = curPallet.id;
+          }
+          if (!cCajas.some(c => c.id === rBox.id)) {
+            cCajas.push(rBox);
+            cInCurrentPallet++;
+          }
+        }
+
+        // B. Vincular cajas sanas preexistentes (si las hubiera)
+        for (const eBox of existingHealthyBoxes) {
+          if (!eBox.parentHuId || eBox.parentHuId !== curPallet.id) {
+            await this.prisma.handlingUnit.update({
+              where: { id: eBox.id },
+              data: { parentHuId: curPallet.id },
+            });
+            eBox.parentHuId = curPallet.id;
+          }
+          if (!cCajas.some(c => c.id === eBox.id)) {
+            cCajas.push(eBox);
+            cInCurrentPallet++;
+          }
+        }
+
+        // C. Crear ÚNICAMENTE las cajas sanas que todavía necesitan materializarse como HUs
+        for (let cIdx = 1; cIdx <= nuevasCajasCrear; cIdx++) {
+          if (cInCurrentPallet >= cajasPorTarimaDefault) {
+            pCount++;
+            const palletCodigo = `PLT-${receipt.codigo}-${String(pCount).padStart(2, '0')}`;
+            curPallet = await this.prisma.handlingUnit.create({
+              data: {
+                codigo: palletCodigo,
+                tipoHu: 'PALLET',
+                clienteId: receipt.clienteId,
+                receiptId: receipt.id,
+                cantidad: 0,
+                uom: 'TARIMA',
+                ubicacionActual: 'RAMPA_RECEPCION',
+                estadoHu: 'ACTIVO',
+                estadoEtiqueta: 'GENERADA',
+                facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
+              },
+            });
+            cPallets.push(curPallet);
+            cInCurrentPallet = 0;
+          }
+
+          gBoxIdx++;
+          const boxCodigo = `BOX-${receipt.codigo}-${String(gBoxIdx).padStart(4, '0')}`;
+          const caja = await this.prisma.handlingUnit.create({
+            data: {
+              codigo: boxCodigo,
+              tipoHu: 'CAJA',
+              clienteId: receipt.clienteId,
+              receiptId: receipt.id,
+              receiptLineId: line.id,
+              parentHuId: curPallet.id,
+              cantidad: piezasPorCaja,
+              uom: line.uom || sku.uomBase || 'PZA',
+              ubicacionActual: 'RAMPA_RECEPCION',
+              estadoHu: 'ACTIVO',
+              estadoEtiqueta: 'GENERADA',
+              skuCodigo: sku.codigo,
+              skuDescripcion: sku.descripcion,
+              loteTexto: line.loteAsignado || line.loteEsperado || 'S/LOTE',
+              fechaVencimiento: line.fechaVencimiento || null,
+              facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
+              piezasPorCaja: piezasPorCaja,
+            },
+          });
+
+          cCajas.push(caja);
+          cInCurrentPallet++;
+        }
+      }
+
+      return { createdPallets: cPallets, createdCajas: cCajas };
+    }, { contextName: 'generateLabels' });
 
     // 4. Actualizar cantidades consolidadas en los pallets y enriquecer respuesta
     const enrichedCreatedPallets: any[] = [];
@@ -1087,11 +1105,11 @@ export class OperationsController {
       );
     }
 
-    const usuario = (body?.usuario || (body as any)?.colocadoPor || 'Jonathan Palacios').trim() || 'Jonathan Palacios';
+    const usuario = (body?.usuario || (body as any)?.colocadoPor || receipt.recibidoPor || 'Operador de Andén').trim();
     const now = new Date();
 
     await this.prisma.handlingUnit.updateMany({
-      where: { receiptId },
+      where: { receiptId, estadoHu: 'ACTIVO' },
       data: { estadoEtiqueta: 'COLOCADA' },
     });
 
@@ -1595,32 +1613,43 @@ export class OperationsController {
         );
       }
 
-      const count = await this.prisma.receipt.count();
-      const codigo = `REC-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+      const receipt = await withConcurrencyRetry(async () => {
+        const yearPrefix = `REC-${new Date().getFullYear()}-`;
+        const existingReceipts = await this.prisma.receipt.findMany({
+          where: { codigo: { startsWith: yearPrefix } },
+          select: { codigo: true },
+        });
+        let maxSeq = 0;
+        for (const r of existingReceipts) {
+          const num = parseInt(r.codigo.replace(yearPrefix, ''), 10);
+          if (!isNaN(num) && num > maxSeq) maxSeq = num;
+        }
+        const codigo = `${yearPrefix}${String(maxSeq + 1).padStart(4, '0')}`;
 
-      const receipt = await this.prisma.receipt.create({
-        data: {
-          ...receiptData,
-          codigo,
-          estado: receiptData.estado || 'PENDIENTE_ARRIBO',
-          facturaRespaldo: facturaRespaldo || null,
-          ocReferencia: ocReferencia || null,
-          tipoImportacion,
-          lineas: { create: lineasData },
-        },
-        include: {
-          cliente: { select: { id: true, nombreComercial: true, codigo: true } },
-          proveedor: true,
-          lineas: { include: { sku: true } },
-        },
-      });
+        return await this.prisma.receipt.create({
+          data: {
+            ...receiptData,
+            codigo,
+            estado: receiptData.estado || 'PENDIENTE_ARRIBO',
+            facturaRespaldo: facturaRespaldo || null,
+            ocReferencia: ocReferencia || null,
+            tipoImportacion,
+            lineas: { create: lineasData },
+          },
+          include: {
+            cliente: { select: { id: true, nombreComercial: true, codigo: true } },
+            proveedor: true,
+            lineas: { include: { sku: true } },
+          },
+        });
+      }, { contextName: 'createReceipt' });
 
       await this.audit(
         data.recibidoPor || 'Sistema',
         'CREAR_PREVIO_RECIBO',
         'Receipt',
         receipt.id,
-        `${codigo}: Factura ${facturaRespaldo || ocReferencia}, Importación: ${tipoImportacion}, ${lineasData.length} SKUs esperados`,
+        `${receipt.codigo}: Factura ${data.facturaRespaldo || data.ocReferencia || 'S/F'}, Importación: ${data.tipoImportacion || 'DEFINITIVA'}, ${lineasData.length} SKUs esperados`,
       );
       return receipt;
     } catch (error: any) {
@@ -2102,47 +2131,57 @@ export class OperationsController {
         );
       }
 
-      // Generar folio consecutivo
-      const count = await this.prisma.receipt.count();
-      const codigo = `REC-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
-
-      // Factura de respaldo y Orden de compra independientes
-      const facturaRespaldo = body.facturaRespaldo || detectedFactura || null;
-      const ocReferencia = body.ocReferencia || detectedOc || null;
+      const facturaRespaldo = (body.facturaRespaldo || detectedFactura || '').trim() || null;
+      const ocReferencia = (body.ocReferencia || detectedOc || '').trim() || null;
       const origen = body.origen || 'NACIONAL';
-      const tipoImportacion = body.tipoImportacion || (origen === 'IMPORTACION' ? 'DEFINITIVA' : 'NO_APLICA');
-      const tipoRecepcion = body.tipoRecepcion || 'NORMAL';
+      const tipoImportacion = body.tipoImportacion || 'DEFINITIVA';
+      const tipoRecepcion = body.tipoRecepcion || 'DIRECTA';
 
-      const receipt = await this.prisma.receipt.create({
-        data: {
-          codigo,
-          clienteId,
-          proveedorId: body.proveedorId || null,
-          proveedorNombre: body.proveedorNombre || null,
-          facturaRespaldo,
-          ocReferencia,
-          origen,
-          tipoImportacion,
-          tipoRecepcion,
-          lineaTransporte: body.lineaTransporte || null,
-          capacidadCarga: body.capacidadCarga || null,
-          placa: body.placa ? String(body.placa).toUpperCase() : null,
-          nombreChofer: body.nombreChofer || null,
-          folioTransporte: body.folioTransporte || null,
-          archivoPrevioUrl: archivoNombre || body.archivoPrevioUrl || null,
-          notas: body.notas || (archivoNombre ? `Importado vía Excel: ${archivoNombre}` : 'Creado vía formulario manual'),
-          recibidoPor: body.recibidoPor || body.usuario || 'Operador',
-          estado: 'PENDIENTE_ARRIBO',
-          lineas: {
-            create: lineasParsed,
+      // Generar folio consecutivo y crear previo con reintentos automáticos
+      const receipt = await withConcurrencyRetry(async () => {
+        const yearPrefixManual = `REC-${new Date().getFullYear()}-`;
+        const existingReceiptsManual = await this.prisma.receipt.findMany({
+          where: { codigo: { startsWith: yearPrefixManual } },
+          select: { codigo: true },
+        });
+        let maxSeqManual = 0;
+        for (const r of existingReceiptsManual) {
+          const num = parseInt(r.codigo.replace(yearPrefixManual, ''), 10);
+          if (!isNaN(num) && num > maxSeqManual) maxSeqManual = num;
+        }
+        const codigo = `${yearPrefixManual}${String(maxSeqManual + 1).padStart(4, '0')}`;
+
+        return await this.prisma.receipt.create({
+          data: {
+            codigo,
+            clienteId,
+            proveedorId: body.proveedorId || null,
+            proveedorNombre: body.proveedorNombre || null,
+            facturaRespaldo,
+            ocReferencia,
+            origen,
+            tipoImportacion,
+            tipoRecepcion,
+            lineaTransporte: body.lineaTransporte || null,
+            capacidadCarga: body.capacidadCarga || null,
+            placa: body.placa ? String(body.placa).toUpperCase() : null,
+            nombreChofer: body.nombreChofer || null,
+            folioTransporte: body.folioTransporte || null,
+            archivoPrevioUrl: archivoNombre || body.archivoPrevioUrl || null,
+            notas: body.notas || (archivoNombre ? `Importado vía Excel: ${archivoNombre}` : 'Creado vía formulario manual'),
+            recibidoPor: body.recibidoPor || body.usuario || 'Operador',
+            estado: 'PENDIENTE_ARRIBO',
+            lineas: {
+              create: lineasParsed,
+            },
           },
-        },
-        include: {
-          cliente: { select: { id: true, nombreComercial: true, codigo: true } },
-          proveedor: true,
-          lineas: { include: { sku: true } },
-        },
-      });
+          include: {
+            cliente: { select: { id: true, nombreComercial: true, codigo: true } },
+            proveedor: true,
+            lineas: { include: { sku: true } },
+          },
+        });
+      }, { contextName: 'createReceiptManual' });
 
       const totalUnidades = lineasParsed.reduce((sum, l) => sum + (l.cantidadEsperada || 0), 0);
 
@@ -2151,12 +2190,12 @@ export class OperationsController {
         file ? 'CARGAR_PREVIO_EXCEL' : 'CREAR_PREVIO_MANUAL',
         'Receipt',
         receipt.id,
-        `${codigo}: ${lineasParsed.length} líneas (${totalUnidades} Uds) · Factura: ${facturaRespaldo || 'S/F'} · Origen: ${origen} · Archivo: ${archivoNombre || 'Formulario'}`,
+        `${receipt.codigo}: ${lineasParsed.length} líneas (${totalUnidades} Uds) · Factura: ${facturaRespaldo || 'S/F'} · Origen: ${origen} · Archivo: ${archivoNombre || 'Formulario'}`,
       );
 
       return {
         success: true,
-        message: `Previo ${codigo} creado exitosamente con ${lineasParsed.length} líneas (${totalUnidades} unidades esperadas)`,
+        message: `Previo ${receipt.codigo} creado exitosamente con ${lineasParsed.length} líneas (${totalUnidades} unidades esperadas)`,
         data: receipt,
         estadisticas: {
           totalLineas: lineasParsed.length,
@@ -2933,6 +2972,7 @@ export class OperationsController {
       cajasReacondicionadas: receipt.handlingUnits
         .filter((h) => h.reacondicionada && h.estadoHu === 'ACTIVO')
         .map((h) => ({
+          id: h.id,
           codigo: h.codigo,
           skuCodigo: h.skuCodigo,
           skuDescripcion: h.skuDescripcion,
@@ -2940,6 +2980,12 @@ export class OperationsController {
           fechaVencimiento: h.fechaVencimiento,
           cantidad: h.cantidad,
           ubicacion: h.ubicacionActual,
+          ubicacionActual: h.ubicacionActual,
+          estadoEtiqueta: h.estadoEtiqueta || 'GENERADA',
+          etiquetaImpresa: Boolean(h.etiquetaImpresa),
+          estadoHu: h.estadoHu,
+          lotId: h.lotId,
+          piezasPorCaja: h.piezasPorCaja,
         })),
     };
   }
@@ -3384,6 +3430,15 @@ export class OperationsController {
     if (!destLoc) {
       throw new HttpException(
         `Ubicación física de rack "${normScannedRack}" no existe en el catálogo o no está autorizada.`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Validación formal contra catálogo: ubicación debe ser de almacenamiento/rack y no de recibo, staging ni merma
+    if (['RECIBO', 'STAGING', 'CUARENTENA'].includes(destLoc.tipoUbicacion) ||
+        ['RECIBO', 'STAGING', 'DEVOLUCION'].includes(destLoc.zona?.codigo || '')) {
+      throw new HttpException(
+        `La ubicación "${destLoc.codigo}" es de tipo ${destLoc.tipoUbicacion} / zona ${destLoc.zona?.nombre || destLoc.zona?.codigo} y no es una posición válida de rack/almacenamiento comercial.`,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -4517,90 +4572,107 @@ export class OperationsController {
     const createdLots: any[] = [];
     const createdHus: any[] = [];
 
-    // --- Procesar Conforme ---
-    if (qtyConforme > 0 && data.ubicacionConformeId) {
-      const lotC = await this.prisma.lotInventory.create({
-        data: {
-          skuId: data.skuId, clienteId: data.clienteId,
-          lote: data.lote || null, serie: data.serie || null,
-          fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
-          proveedorNombre: data.proveedor,
-          estadoCalidad: 'LIBERADO',
-          cantidadDisponible: qtyConforme,
-          ubicacionId: data.ubicacionConformeId,
-        },
+    await withConcurrencyRetry(async () => {
+      // Calcular correlativo HU seguro para el año en curso
+      const huYear = new Date().getFullYear();
+      const huYearPrefix = `HU-${huYear}-`;
+      const existingHusGen = await this.prisma.handlingUnit.findMany({
+        where: { codigo: { startsWith: huYearPrefix } },
+        select: { codigo: true },
       });
+      let maxHuSeq = 0;
+      for (const h of existingHusGen) {
+        const num = parseInt(h.codigo.replace(huYearPrefix, ''), 10);
+        if (!isNaN(num) && num > maxHuSeq) maxHuSeq = num;
+      }
 
-      const huCodigoC = `HU-${new Date().getFullYear()}-${String(await this.prisma.handlingUnit.count() + 1).padStart(5, '0')}`;
-      const huC = await this.prisma.handlingUnit.create({
-        data: {
-          codigo: huCodigoC, tipoHu: data.tipoHu, lotId: lotC.id,
-          clienteId: data.clienteId, cantidad: qtyConforme,
-          uom: 'PZA', ubicacionActual: data.ubicacionConformeId,
-        },
-      });
+      // --- Procesar Conforme ---
+      if (qtyConforme > 0 && data.ubicacionConformeId) {
+        const lotC = await this.prisma.lotInventory.create({
+          data: {
+            skuId: data.skuId, clienteId: data.clienteId,
+            lote: data.lote || null, serie: data.serie || null,
+            fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
+            proveedorNombre: data.proveedor,
+            estadoCalidad: 'LIBERADO',
+            cantidadDisponible: qtyConforme,
+            ubicacionId: data.ubicacionConformeId,
+          },
+        });
 
-      await this.prisma.inventoryMovement.create({
-        data: {
-          tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
-          skuId: data.skuId, clienteId: data.clienteId, lotId: lotC.id,
-          huId: huC.id, toLocationId: data.ubicacionConformeId,
-          cantidad: qtyConforme, usuario: data.usuario,
-          motivo: data.notas || `Recepción Conforme — ${data.proveedor || 'Proveedor'}`,
-        },
-      });
+        maxHuSeq++;
+        const huCodigoC = `${huYearPrefix}${String(maxHuSeq).padStart(5, '0')}`;
+        const huC = await this.prisma.handlingUnit.create({
+          data: {
+            codigo: huCodigoC, tipoHu: data.tipoHu, lotId: lotC.id,
+            clienteId: data.clienteId, cantidad: qtyConforme,
+            uom: 'PZA', ubicacionActual: data.ubicacionConformeId,
+          },
+        });
 
-      await this.prisma.location.update({
-        where: { id: data.ubicacionConformeId },
-        data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
-      });
+        await this.prisma.inventoryMovement.create({
+          data: {
+            tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
+            skuId: data.skuId, clienteId: data.clienteId, lotId: lotC.id,
+            huId: huC.id, toLocationId: data.ubicacionConformeId,
+            cantidad: qtyConforme, usuario: data.usuario,
+            motivo: data.notas || `Recepción Conforme — ${data.proveedor || 'Proveedor'}`,
+          },
+        });
 
-      createdLots.push(lotC);
-      createdHus.push(huC);
-    }
+        await this.prisma.location.update({
+          where: { id: data.ubicacionConformeId },
+          data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
+        });
 
-    // --- Procesar No Conforme ---
-    if (qtyNoConforme > 0 && data.ubicacionNoConformeId) {
-      const lotNC = await this.prisma.lotInventory.create({
-        data: {
-          skuId: data.skuId, clienteId: data.clienteId,
-          lote: data.lote || null, serie: data.serie || null,
-          fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
-          proveedorNombre: data.proveedor,
-          estadoCalidad: 'BLOQUEADO',
-          cantidadBloqueada: qtyNoConforme,
-          cantidadDisponible: 0,
-          ubicacionId: data.ubicacionNoConformeId,
-        },
-      });
+        createdLots.push(lotC);
+        createdHus.push(huC);
+      }
 
-      const huCodigoNC = `HU-${new Date().getFullYear()}-${String(await this.prisma.handlingUnit.count() + 1).padStart(5, '0')}`;
-      const huNC = await this.prisma.handlingUnit.create({
-        data: {
-          codigo: huCodigoNC, tipoHu: data.tipoHu, lotId: lotNC.id,
-          clienteId: data.clienteId, cantidad: qtyNoConforme,
-          uom: 'PZA', ubicacionActual: data.ubicacionNoConformeId,
-        },
-      });
+      // --- Procesar No Conforme ---
+      if (qtyNoConforme > 0 && data.ubicacionNoConformeId) {
+        const lotNC = await this.prisma.lotInventory.create({
+          data: {
+            skuId: data.skuId, clienteId: data.clienteId,
+            lote: data.lote || null, serie: data.serie || null,
+            fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
+            proveedorNombre: data.proveedor,
+            estadoCalidad: 'BLOQUEADO',
+            cantidadBloqueada: qtyNoConforme,
+            cantidadDisponible: 0,
+            ubicacionId: data.ubicacionNoConformeId,
+          },
+        });
 
-      await this.prisma.inventoryMovement.create({
-        data: {
-          tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
-          skuId: data.skuId, clienteId: data.clienteId, lotId: lotNC.id,
-          huId: huNC.id, toLocationId: data.ubicacionNoConformeId,
-          cantidad: qtyNoConforme, usuario: data.usuario,
-          motivo: data.notas || `Recepción No Conforme — ${data.proveedor || 'Proveedor'}`,
-        },
-      });
+        maxHuSeq++;
+        const huCodigoNC = `${huYearPrefix}${String(maxHuSeq).padStart(5, '0')}`;
+        const huNC = await this.prisma.handlingUnit.create({
+          data: {
+            codigo: huCodigoNC, tipoHu: data.tipoHu, lotId: lotNC.id,
+            clienteId: data.clienteId, cantidad: qtyNoConforme,
+            uom: 'PZA', ubicacionActual: data.ubicacionNoConformeId,
+          },
+        });
 
-      await this.prisma.location.update({
-        where: { id: data.ubicacionNoConformeId },
-        data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
-      });
+        await this.prisma.inventoryMovement.create({
+          data: {
+            tipoMovimiento: 'ENTRADA', almacenId: data.almacenId,
+            skuId: data.skuId, clienteId: data.clienteId, lotId: lotNC.id,
+            huId: huNC.id, toLocationId: data.ubicacionNoConformeId,
+            cantidad: qtyNoConforme, usuario: data.usuario,
+            motivo: data.notas || `Recepción No Conforme — ${data.proveedor || 'Proveedor'}`,
+          },
+        });
 
-      createdLots.push(lotNC);
-      createdHus.push(huNC);
-    }
+        await this.prisma.location.update({
+          where: { id: data.ubicacionNoConformeId },
+          data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
+        });
+
+        createdLots.push(lotNC);
+        createdHus.push(huNC);
+      }
+    }, { contextName: 'executeReceptionDirect' });
 
     // Update receipt line if linked
     if (data.receiptLineId) {
@@ -4848,177 +4920,190 @@ export class OperationsController {
     const processedResults: any[] = [];
 
     try {
-      // Ejecutar en transacción atómica de Prisma con timeout extendido para facturas grandes
-      await this.prisma.$transaction(async (tx) => {
-        let huSequence = await tx.handlingUnit.count();
+      // Ejecutar en transacción atómica de Prisma con reintento por colisión y timeout extendido
+      await withConcurrencyRetry(async () => {
+        return this.prisma.$transaction(async (tx) => {
+          const currentYear = new Date().getFullYear();
+          const huYearPrefix = `HU-${currentYear}-`;
+          const existingHus = await tx.handlingUnit.findMany({
+            where: { codigo: { startsWith: huYearPrefix } },
+            select: { codigo: true },
+          });
+          let maxHuSeq = 0;
+          for (const h of existingHus) {
+            const num = parseInt(h.codigo.replace(huYearPrefix, '') || '0', 10);
+            if (!isNaN(num) && num > maxHuSeq) maxHuSeq = num;
+          }
+          let huSequence = maxHuSeq;
 
-        for (const lineData of activeLines) {
-          const line = receipt.lineas.find(rl => rl.id === lineData.receiptLineId)!;
-          const qtyConforme = Math.max(0, Number(lineData.cantidadConforme) || 0);
-          const qtyNoConforme = Math.max(0, Number(lineData.cantidadNoConforme) || 0);
+          for (const lineData of activeLines) {
+            const line = receipt.lineas.find(rl => rl.id === lineData.receiptLineId)!;
+            const qtyConforme = Math.max(0, Number(lineData.cantidadConforme) || 0);
+            const qtyNoConforme = Math.max(0, Number(lineData.cantidadNoConforme) || 0);
 
-          const locConforme = lineData.ubicacionConformeId || defaultConformeLocId;
-          const locNoConforme = lineData.ubicacionNoConformeId || defaultNoConformeLocId;
+            const locConforme = lineData.ubicacionConformeId || defaultConformeLocId;
+            const locNoConforme = lineData.ubicacionNoConformeId || defaultNoConformeLocId;
 
-          totalConforme += qtyConforme;
-          totalNoConforme += qtyNoConforme;
+            totalConforme += qtyConforme;
+            totalNoConforme += qtyNoConforme;
 
-          // 1. Producto Conforme (LIBERADO)
-          if (qtyConforme > 0 && locConforme) {
-            const lotC = await tx.lotInventory.create({
-              data: {
-                skuId: line.skuId,
-                clienteId: receipt.clienteId,
-                lote: lineData.lote || null,
-                fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : null,
-                proveedorNombre: receipt.proveedorId ? undefined : 'Proveedor',
-                estadoCalidad: 'LIBERADO',
-                cantidadDisponible: qtyConforme,
-                ubicacionId: locConforme,
-              },
-            });
-
-            huSequence++;
-            const huCodigoC = `HU-${new Date().getFullYear()}-${String(huSequence).padStart(5, '0')}`;
-            const huC = await tx.handlingUnit.create({
-              data: {
-                codigo: huCodigoC,
-                tipoHu: lineData.tipoHu || 'CAJA',
-                lotId: lotC.id,
-                clienteId: receipt.clienteId,
-                cantidad: qtyConforme,
-                uom: line.uom || 'PZA',
-                ubicacionActual: locConforme,
-              },
-            });
-
-            if (effectiveAlmacenId) {
-              await tx.inventoryMovement.create({
+            // 1. Producto Conforme (LIBERADO)
+            if (qtyConforme > 0 && locConforme) {
+              const lotC = await tx.lotInventory.create({
                 data: {
-                  tipoMovimiento: 'ENTRADA',
-                  almacenId: effectiveAlmacenId,
                   skuId: line.skuId,
                   clienteId: receipt.clienteId,
+                  lote: lineData.lote || null,
+                  fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : null,
+                  proveedorNombre: receipt.proveedorId ? undefined : 'Proveedor',
+                  estadoCalidad: 'LIBERADO',
+                  cantidadDisponible: qtyConforme,
+                  ubicacionId: locConforme,
+                },
+              });
+
+              huSequence++;
+              const huCodigoC = `${huYearPrefix}${String(huSequence).padStart(5, '0')}`;
+              const huC = await tx.handlingUnit.create({
+                data: {
+                  codigo: huCodigoC,
+                  tipoHu: lineData.tipoHu || 'CAJA',
                   lotId: lotC.id,
-                  huId: huC.id,
-                  toLocationId: locConforme,
+                  clienteId: receipt.clienteId,
                   cantidad: qtyConforme,
-                  usuario: body.usuario,
-                  motivo: lineData.notas || `Recepción Factura Completa Conforme — Previo ${receipt.codigo}`,
+                  uom: line.uom || 'PZA',
+                  ubicacionActual: locConforme,
                 },
+              });
+
+              if (effectiveAlmacenId) {
+                await tx.inventoryMovement.create({
+                  data: {
+                    tipoMovimiento: 'ENTRADA',
+                    almacenId: effectiveAlmacenId,
+                    skuId: line.skuId,
+                    clienteId: receipt.clienteId,
+                    lotId: lotC.id,
+                    huId: huC.id,
+                    toLocationId: locConforme,
+                    cantidad: qtyConforme,
+                    usuario: body.usuario,
+                    motivo: lineData.notas || `Recepción Factura Completa Conforme — Previo ${receipt.codigo}`,
+                  },
+                });
+              }
+
+              await tx.location.update({
+                where: { id: locConforme },
+                data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
               });
             }
 
-            await tx.location.update({
-              where: { id: locConforme },
-              data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
-            });
-          }
-
-          // 2. Producto No Conforme / Dañado (CUARENTENA)
-          if (qtyNoConforme > 0 && locNoConforme) {
-            const lotNC = await tx.lotInventory.create({
-              data: {
-                skuId: line.skuId,
-                clienteId: receipt.clienteId,
-                lote: lineData.lote || null,
-                fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : null,
-                proveedorNombre: receipt.proveedorId ? undefined : 'Proveedor',
-                estadoCalidad: 'CUARENTENA',
-                cantidadBloqueada: qtyNoConforme,
-                cantidadDisponible: 0,
-                ubicacionId: locNoConforme,
-              },
-            });
-
-            huSequence++;
-            const huCodigoNC = `HU-${new Date().getFullYear()}-${String(huSequence).padStart(5, '0')}`;
-            const huNC = await tx.handlingUnit.create({
-              data: {
-                codigo: huCodigoNC,
-                tipoHu: lineData.tipoHu || 'CAJA',
-                lotId: lotNC.id,
-                clienteId: receipt.clienteId,
-                cantidad: qtyNoConforme,
-                uom: line.uom || 'PZA',
-                ubicacionActual: locNoConforme,
-              },
-            });
-
-            if (effectiveAlmacenId) {
-              await tx.inventoryMovement.create({
+            // 2. Producto No Conforme / Dañado (CUARENTENA)
+            if (qtyNoConforme > 0 && locNoConforme) {
+              const lotNC = await tx.lotInventory.create({
                 data: {
-                  tipoMovimiento: 'ENTRADA',
-                  almacenId: effectiveAlmacenId,
                   skuId: line.skuId,
                   clienteId: receipt.clienteId,
-                  lotId: lotNC.id,
-                  huId: huNC.id,
-                  toLocationId: locNoConforme,
-                  cantidad: qtyNoConforme,
-                  usuario: body.usuario,
-                  motivo: lineData.notas || `Recepción Factura Completa Dañado / Cuarentena — Previo ${receipt.codigo}`,
+                  lote: lineData.lote || null,
+                  fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : null,
+                  proveedorNombre: receipt.proveedorId ? undefined : 'Proveedor',
+                  estadoCalidad: 'CUARENTENA',
+                  cantidadBloqueada: qtyNoConforme,
+                  cantidadDisponible: 0,
+                  ubicacionId: locNoConforme,
                 },
+              });
+
+              huSequence++;
+              const huCodigoNC = `${huYearPrefix}${String(huSequence).padStart(5, '0')}`;
+              const huNC = await tx.handlingUnit.create({
+                data: {
+                  codigo: huCodigoNC,
+                  tipoHu: lineData.tipoHu || 'CAJA',
+                  lotId: lotNC.id,
+                  clienteId: receipt.clienteId,
+                  cantidad: qtyNoConforme,
+                  uom: line.uom || 'PZA',
+                  ubicacionActual: locNoConforme,
+                },
+              });
+
+              if (effectiveAlmacenId) {
+                await tx.inventoryMovement.create({
+                  data: {
+                    tipoMovimiento: 'ENTRADA',
+                    almacenId: effectiveAlmacenId,
+                    skuId: line.skuId,
+                    clienteId: receipt.clienteId,
+                    lotId: lotNC.id,
+                    huId: huNC.id,
+                    toLocationId: locNoConforme,
+                    cantidad: qtyNoConforme,
+                    usuario: body.usuario,
+                    motivo: lineData.notas || `Recepción Factura Completa Dañado / Cuarentena — Previo ${receipt.codigo}`,
+                  },
+                });
+              }
+
+              await tx.location.update({
+                where: { id: locNoConforme },
+                data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
               });
             }
 
-            await tx.location.update({
-              where: { id: locNoConforme },
-              data: { ocupacion: { increment: 1 }, estado: 'OCUPADO' },
+            // 3. Actualizar partida del previo
+            const newRecibida = line.cantidadRecibida + qtyConforme;
+            const newDanada = line.cantidadDanada + qtyNoConforme;
+            const totalProcesada = newRecibida + newDanada;
+
+            const updatedLine = await tx.receiptLine.update({
+              where: { id: line.id },
+              data: {
+                cantidadRecibida: newRecibida,
+                cantidadDanada: newDanada,
+                estado: line.cantidadEsperada && totalProcesada >= line.cantidadEsperada ? 'COMPLETO' : 'PARCIAL',
+                loteAsignado: lineData.lote || line.loteAsignado,
+                fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : line.fechaVencimiento,
+                ubicacionId: locConforme || locNoConforme,
+              },
             });
-          }
 
-          // 3. Actualizar partida del previo
-          const newRecibida = line.cantidadRecibida + qtyConforme;
-          const newDanada = line.cantidadDanada + qtyNoConforme;
-          const totalProcesada = newRecibida + newDanada;
-
-          const updatedLine = await tx.receiptLine.update({
-            where: { id: line.id },
-            data: {
+            processedResults.push({
+              lineId: line.id,
+              sku: line.sku.codigo,
               cantidadRecibida: newRecibida,
               cantidadDanada: newDanada,
-              estado: line.cantidadEsperada && totalProcesada >= line.cantidadEsperada ? 'COMPLETO' : 'PARCIAL',
-              loteAsignado: lineData.lote || line.loteAsignado,
-              fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : line.fechaVencimiento,
-              ubicacionId: locConforme || locNoConforme,
+              estado: updatedLine.estado,
+            });
+          }
+
+          // 4. Actualizar estado del previo y activar candado de andén
+          await tx.receipt.update({
+            where: { id: receiptId },
+            data: {
+              estado: (receipt.estado === 'PENDIENTE' || receipt.estado === 'PENDIENTE_ARRIBO') ? 'EN_PROCESO_CONTEO' : receipt.estado,
+              bloqueado: true,
+              bloqueadoPor: body.usuario,
+              fechaBloqueo: receipt.fechaBloqueo || new Date(),
             },
           });
 
-          processedResults.push({
-            lineId: line.id,
-            sku: line.sku.codigo,
-            cantidadRecibida: newRecibida,
-            cantidadDanada: newDanada,
-            estado: updatedLine.estado,
+          // 5. Bitácora de auditoría legal
+          await tx.auditLog.create({
+            data: {
+              usuario: body.usuario,
+              accion: 'RECEPCION_MASIVA_FACTURA',
+              entidad: 'Receipt',
+              entidadId: receiptId,
+              detalle: `Recepción física masiva de factura completa: ${activeLines.length} partidas procesadas (${totalConforme} conformes, ${totalNoConforme} dañados). Total: ${totalConforme + totalNoConforme} piezas.`,
+            },
           });
-        }
-
-        // 4. Actualizar estado del previo y activar candado de andén
-        await tx.receipt.update({
-          where: { id: receiptId },
-          data: {
-            estado: (receipt.estado === 'PENDIENTE' || receipt.estado === 'PENDIENTE_ARRIBO') ? 'EN_PROCESO_CONTEO' : receipt.estado,
-            bloqueado: true,
-            bloqueadoPor: body.usuario,
-            fechaBloqueo: receipt.fechaBloqueo || new Date(),
-          },
+        }, {
+          maxWait: 10000,
+          timeout: 45000,
         });
-
-        // 5. Bitácora de auditoría legal
-        await tx.auditLog.create({
-          data: {
-            usuario: body.usuario,
-            accion: 'RECEPCION_MASIVA_FACTURA',
-            entidad: 'Receipt',
-            entidadId: receiptId,
-            detalle: `Recepción física masiva de factura completa: ${activeLines.length} partidas procesadas (${totalConforme} conformes, ${totalNoConforme} dañados). Total: ${totalConforme + totalNoConforme} piezas.`,
-          },
-        });
-      }, {
-        maxWait: 10000,
-        timeout: 45000,
-      });
+      }, { contextName: 'batchReception', maxRetries: 5 });
     } catch (txError: any) {
       console.error('Error en transacción de batchReception:', txError);
       if (txError instanceof HttpException) throw txError;
@@ -5293,6 +5378,7 @@ export class OperationsController {
         include: {
           lineas: { include: { sku: true } },
           cliente: true,
+          inspecciones: true,
         },
       });
       if (!receipt) {
@@ -5307,17 +5393,23 @@ export class OperationsController {
         );
       }
 
-      // 1. Validar si ya se encuentra cerrada
+      // 1. CANDADO DE IDEMPOTENCIA TOTAL: Si ya se encuentra cerrada oficialmente, devolver estado existente sin duplicar escrituras
       if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO') {
-        throw new HttpException(
-          {
-            statusCode: HttpStatus.FORBIDDEN,
-            message: `Operación rechazada: La recepción previa "${receipt.codigo}" ya se encuentra CERRADA e inmutable en auditoría.`,
-            error: 'Forbidden',
-            detalles: { codigo: 'RECEPCION_YA_CERRADA', receiptId },
+        const fullReceipt = await this.prisma.receipt.findUnique({
+          where: { id: receipt.id },
+          include: {
+            cliente: true,
+            proveedor: true,
+            lineas: { include: { sku: true } },
           },
-          HttpStatus.FORBIDDEN,
-        );
+        });
+        return {
+          success: true,
+          idempotent: true,
+          message: `Recepción ${receipt.codigo} ya se encontraba finalizada y cerrada previamente. Se preservó el cierre existente sin duplicar movimientos ni auditorías.`,
+          discrepanciasResueltas: receipt.lineas?.filter((l: any) => l.estado === 'DISCREPANCIA' || (l.notas && l.notas.includes('[DISCREPANCIA_RESUELTA]'))).length || 0,
+          receipt: fullReceipt || receipt,
+        };
       }
 
       // 2. Validar usuario auditor
@@ -5399,7 +5491,12 @@ export class OperationsController {
           const clasificacion = (resolution?.clasificacion || body.clasificacionGlobal || '').trim();
           const justificacion = (resolution?.justificacion || body.justificacionGlobal || '').trim();
 
-          const yaJustificadoEnNotas = item.line.notas && item.line.notas.includes('[DISCREPANCIA_RESUELTA]');
+          const yaDictaminadoEnCalidad = (
+            (receipt.inspeccionCalidadEstado === 'COMPLETADA' || (receipt.inspecciones && receipt.inspecciones.length > 0)) &&
+            item.tipoDiscrepancia === 'MERMA' &&
+            item.diferencia === 0
+          );
+          const yaJustificadoEnNotas = (item.line.notas && (item.line.notas.includes('[DISCREPANCIA_RESUELTA]') || item.line.notas.includes('[Control de Calidad]'))) || yaDictaminadoEnCalidad;
 
           if (!clasificacion || !justificacion) {
             if (!yaJustificadoEnNotas) {
@@ -5414,6 +5511,11 @@ export class OperationsController {
                 tipoDiscrepancia: item.tipoDiscrepancia,
                 faltaClasificacion: !clasificacion,
                 faltaJustificacion: !justificacion,
+              });
+            } else {
+              resolvedMap.set(lId, {
+                clasificacion: clasificacion || (yaDictaminadoEnCalidad ? 'MERMA_DICTAMINADA_CALIDAD' : 'MERMA_TECNICA'),
+                justificacion: justificacion || (yaDictaminadoEnCalidad ? 'Merma dictaminada y segregada en Almacén Virtual DEV-01 por Control de Calidad.' : (item.line.notas || 'Resuelta en auditoría.')),
               });
             }
           } else {
@@ -5581,7 +5683,8 @@ export class OperationsController {
           const fis = rec + dan;
           const dif = fis - esp;
           const hasDiscrepancy = (esp > 0 && (dif !== 0 || dan > 0)) || (esp === 0 && fis > 0);
-          const hasResolution = line.notas && line.notas.includes('[DISCREPANCIA_RESUELTA]');
+          const isQualityMermaResolved = (dif === 0 && dan > 0 && line.notas && line.notas.includes('[Control de Calidad]'));
+          const hasResolution = (line.notas && line.notas.includes('[DISCREPANCIA_RESUELTA]')) || isQualityMermaResolved;
           if (hasDiscrepancy && !hasResolution) {
             throw new HttpException(
               {
@@ -5657,9 +5760,6 @@ export class OperationsController {
       }
     }
 
-    const count = await this.prisma.salesOrder.count();
-    const codigo = `PED-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
-
     if (!data.clienteId) throw new HttpException('El depositante es obligatorio', HttpStatus.BAD_REQUEST);
     if (!data.lineas || data.lineas.length === 0) throw new HttpException('La orden debe tener al menos un producto', HttpStatus.BAD_REQUEST);
 
@@ -5730,33 +5830,59 @@ export class OperationsController {
       });
     }
 
-    // 2. Crear la orden de salida
-    const order = await this.prisma.salesOrder.create({
-      data: {
-        codigo,
-        clienteId: data.clienteId,
-        endCustomerId: data.endCustomerId || null,
-        almacenOrigenId: data.almacenOrigenId || null,
-        prioridad: data.prioridad || 3,
-        fechaCompromiso: data.fechaCompromiso ? new Date(data.fechaCompromiso) : null,
-        horaCompromiso: data.horaCompromiso || null,
-        estado: data.estado || 'SOLICITADO',
-        notas: data.notas || null,
-        solicitadoPor: data.solicitadoPor || null,
-        lineas: { create: cleanLines },
-      },
-      include: { cliente: true, endCustomer: true, lineas: { include: { sku: true } } },
-    });
-
-    // 3. Aplicar las reservas automáticas en los lotes
-    for (const res of reservationsToApply) {
-      await this.prisma.lotInventory.update({
-        where: { id: res.lotId },
-        data: { cantidadReservada: { increment: res.cantidad } },
+    // 2. Crear la orden de salida y aplicar reservas en transacción con reintento ante concurrencia
+    const order = await withConcurrencyRetry(async () => {
+      const yearPrefixPed = `PED-${new Date().getFullYear()}-`;
+      const existingOrders = await this.prisma.salesOrder.findMany({
+        where: { codigo: { startsWith: yearPrefixPed } },
+        select: { codigo: true },
       });
-    }
+      let maxPedSeq = 0;
+      for (const o of existingOrders) {
+        const num = parseInt(o.codigo.replace(yearPrefixPed, ''), 10);
+        if (!isNaN(num) && num > maxPedSeq) maxPedSeq = num;
+      }
+      const codigo = `${yearPrefixPed}${String(maxPedSeq + 1).padStart(4, '0')}`;
 
-    await this.audit(data.usuario || 'Sistema', 'CREAR_ORDEN', 'SalesOrder', order.id, `${codigo}: ${cleanLines.length} líneas reservadas`);
+      return await this.prisma.$transaction(async (tx) => {
+        const ord = await tx.salesOrder.create({
+          data: {
+            codigo,
+            clienteId: data.clienteId,
+            endCustomerId: data.endCustomerId || null,
+            almacenOrigenId: data.almacenOrigenId || null,
+            prioridad: data.prioridad || 3,
+            fechaCompromiso: data.fechaCompromiso ? new Date(data.fechaCompromiso) : null,
+            horaCompromiso: data.horaCompromiso || null,
+            estado: data.estado || 'SOLICITADO',
+            notas: data.notas || null,
+            solicitadoPor: data.solicitadoPor || null,
+            lineas: { create: cleanLines },
+          },
+          include: { cliente: true, endCustomer: true, lineas: { include: { sku: true } } },
+        });
+
+        for (const res of reservationsToApply) {
+          await tx.lotInventory.update({
+            where: { id: res.lotId },
+            data: { cantidadReservada: { increment: res.cantidad } },
+          });
+        }
+
+        await tx.auditLog.create({
+          data: {
+            usuario: data.usuario || 'Sistema',
+            accion: 'CREAR_ORDEN',
+            entidad: 'SalesOrder',
+            entidadId: ord.id,
+            detalle: `${codigo}: ${cleanLines.length} líneas reservadas`,
+          },
+        });
+
+        return ord;
+      });
+    }, { contextName: 'createSalesOrder' });
+
     return order;
   }
 
@@ -6711,9 +6837,6 @@ export class OperationsController {
   @Post('cycle-counts')
   @ApiOperation({ summary: 'Crear conteo cíclico' })
   async createCycleCount(@Body() data: any) {
-    const count = await this.prisma.cycleCount.count();
-    const codigo = `CC-${new Date().getFullYear()}-${String(count + 1).padStart(3, '0')}`;
-
     const lotWhere: any = { cantidadDisponible: { gt: 0 }, estadoCalidad: 'LIBERADO' };
 
     if (data.tipo === 'ZONA' && data.zonaId) {
@@ -6736,20 +6859,34 @@ export class OperationsController {
       else { lineMap.set(key, { skuId: lot.skuId, ubicacionId: lot.ubicacionId, lote: lot.lote, total: lot.cantidadDisponible }); }
     }
 
-    return this.prisma.cycleCount.create({
-      data: {
-        codigo, nombre: data.nombre, tipo: data.tipo || 'SKU',
-        fechaProgramada: new Date(data.fechaProgramada),
-        almacenId: data.almacenId, asignadoA: data.asignadoA, notas: data.notas,
-        lineas: {
-          create: Array.from(lineMap.values()).map(item => ({
-            skuId: item.skuId, ubicacionId: item.ubicacionId,
-            lote: item.lote, cantidadSistema: item.total,
-          })),
+    return withConcurrencyRetry(async () => {
+      const yearPrefixCC = `CC-${new Date().getFullYear()}-`;
+      const existingCCs = await this.prisma.cycleCount.findMany({
+        where: { codigo: { startsWith: yearPrefixCC } },
+        select: { codigo: true },
+      });
+      let maxCCSeq = 0;
+      for (const c of existingCCs) {
+        const num = parseInt(c.codigo.replace(yearPrefixCC, ''), 10);
+        if (!isNaN(num) && num > maxCCSeq) maxCCSeq = num;
+      }
+      const codigo = `${yearPrefixCC}${String(maxCCSeq + 1).padStart(3, '0')}`;
+
+      return this.prisma.cycleCount.create({
+        data: {
+          codigo, nombre: data.nombre, tipo: data.tipo || 'SKU',
+          fechaProgramada: new Date(data.fechaProgramada),
+          almacenId: data.almacenId, asignadoA: data.asignadoA, notas: data.notas,
+          lineas: {
+            create: Array.from(lineMap.values()).map(item => ({
+              skuId: item.skuId, ubicacionId: item.ubicacionId,
+              lote: item.lote, cantidadSistema: item.total,
+            })),
+          },
         },
-      },
-      include: { lineas: { include: { sku: { select: { codigo: true, descripcion: true } } } } },
-    });
+        include: { lineas: { include: { sku: { select: { codigo: true, descripcion: true } } } } },
+      });
+    }, { contextName: 'createCycleCount', maxRetries: 5 });
   }
 
   @Put('cycle-counts/:id/count')

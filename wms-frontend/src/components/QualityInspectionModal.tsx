@@ -43,6 +43,38 @@ const MOTIVOS_DANO_OPTIONS = [
   { value: 'OTRO_DANO_FISICO', label: 'Otro daño físico detectado en inspección' }
 ];
 
+const NON_RACK_LOCATIONS = [
+  'RAMPA_RECEPCION',
+  'RAMPA',
+  'REC-01',
+  'RECIBO',
+  'RECEPCION',
+  'RECEPCIÓN',
+  'ANDEN',
+  'ANDÉN',
+  'AREA_CALIDAD',
+  'CALIDAD',
+  'CUARENTENA',
+  'QA',
+  'STAGE',
+  'STAGING',
+  'TRANSITO',
+  'TRÁNSITO'
+];
+
+export function isNonRackLocation(location?: string | null): boolean {
+  if (!location) return true;
+  const clean = location.trim().toUpperCase();
+  if (!clean || ['—', '-', 'N/A', 'SIN ASIGNAR'].includes(clean)) return true;
+  if (NON_RACK_LOCATIONS.includes(clean)) return true;
+  return NON_RACK_LOCATIONS.some((kw) =>
+    clean.startsWith(kw) ||
+    clean.includes(`_${kw}`) ||
+    clean.includes(`${kw}_`) ||
+    clean.includes(`/${kw}`)
+  );
+}
+
 export function QualityInspectionModal({
   receipt,
   token,
@@ -2267,15 +2299,45 @@ export function QualityInspectionModal({
                       </h4>
                       <p style={{ margin: '2px 0 0 0', fontSize: 12, color: '#64748B' }}>
                         {(() => {
+                          const recondBoxes: any[] = reportData?.cajasReacondicionadas || [];
                           const allHus: any[] = receipt?.handlingUnits || reportData?.handlingUnits || [];
-                          const allDone = (reportData?.cajasReacondicionadas || []).length > 0 && (reportData.cajasReacondicionadas || []).every((b: any) => {
+                          if (recondBoxes.length === 0) {
+                            return 'No hay cajas reacondicionadas registradas aún.';
+                          }
+                          const statuses = recondBoxes.map((b: any) => {
                             const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
-                            const rUbi = rHu.ubicacionActual || rHu.ubicacion || b.ubicacion;
-                            return (rUbi && !['ANDEN', 'AREA_CALIDAD', 'CALIDAD'].includes(rUbi) && rUbi !== '—') || receipt?.estado === 'UBICADO' || receipt?.estado === 'CERRADO' || receipt?.estado === 'CERRADA';
+                            const ubi = rHu.ubicacionActual || rHu.ubicacion || b.ubicacionActual || b.ubicacion;
+                            const inRack = !isNonRackLocation(ubi) && Boolean(
+                              ubi ||
+                              receipt?.estado === 'UBICADO' ||
+                              receipt?.estado === 'CERRADO' ||
+                              receipt?.estado === 'CERRADA' ||
+                              rHu.lotId ||
+                              b.lotId
+                            );
+                            const labeled = Boolean(
+                              rHu.estadoEtiqueta === 'COLOCADA' ||
+                              b.estadoEtiqueta === 'COLOCADA' ||
+                              receipt?.etiquetasEstado === 'COLOCADAS'
+                            );
+                            return { inRack, labeled };
                           });
-                          return allDone
-                            ? 'Estas cajas reacondicionadas han completado su ciclo operativo: etiquetadas, ubicadas en racks (Putaway) y con existencia activa disponible en inventario WMS.'
-                            : 'Estas cajas reacondicionadas quedan clasificadas como conformes en andén tras la inspección. Una vez etiquetadas y completado el Putaway, pasan a estar disponibles en racks.';
+
+                          const allInRack = statuses.every((s) => s.inRack);
+                          const someInRack = statuses.some((s) => s.inRack);
+                          const allLabeled = statuses.every((s) => s.labeled);
+                          const someLabeled = statuses.some((s) => s.labeled);
+
+                          if (allInRack) {
+                            return 'Estas cajas reacondicionadas han completado su ciclo operativo: etiquetadas, ubicadas en racks (Putaway) y con existencia activa disponible en inventario WMS.';
+                          }
+                          if (someInRack) {
+                            return 'Parte de las cajas reacondicionadas ya se encuentran ubicadas en racks (Putaway); el resto permanece en andén/rampa continuando su ciclo operativo.';
+                          }
+                          if (allLabeled || someLabeled) {
+                            return 'Cajas reacondicionadas con etiquetado colocado, pendientes de traslado físico y alojamiento en racks (Putaway) para activar su inventario.';
+                          }
+                          return 'Cajas conformes generadas tras dictamen en rampa/andén. Pendientes de etiquetado y posterior alojamiento en racks (Putaway).';
                         })()}
                       </p>
                     </div>
@@ -2284,15 +2346,57 @@ export function QualityInspectionModal({
                       style={{
                         fontSize: 12,
                         fontWeight: 700,
-                        backgroundColor: '#EFF6FF',
-                        color: '#1D4ED8',
+                        backgroundColor: (() => {
+                          const recondBoxes: any[] = reportData?.cajasReacondicionadas || [];
+                          const allHus: any[] = receipt?.handlingUnits || reportData?.handlingUnits || [];
+                          if (recondBoxes.length === 0) return '#F1F5F9';
+                          const allInRack = recondBoxes.every((b: any) => {
+                            const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
+                            const ubi = rHu.ubicacionActual || rHu.ubicacion || b.ubicacionActual || b.ubicacion;
+                            return !isNonRackLocation(ubi);
+                          });
+                          const allLabeled = recondBoxes.every((b: any) => {
+                            const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
+                            return rHu.estadoEtiqueta === 'COLOCADA' || b.estadoEtiqueta === 'COLOCADA' || receipt?.etiquetasEstado === 'COLOCADAS';
+                          });
+                          return allInRack ? '#DCFCE7' : allLabeled ? '#EFF6FF' : '#FEF3C7';
+                        })(),
+                        color: (() => {
+                          const recondBoxes: any[] = reportData?.cajasReacondicionadas || [];
+                          const allHus: any[] = receipt?.handlingUnits || reportData?.handlingUnits || [];
+                          if (recondBoxes.length === 0) return '#64748B';
+                          const allInRack = recondBoxes.every((b: any) => {
+                            const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
+                            const ubi = rHu.ubicacionActual || rHu.ubicacion || b.ubicacionActual || b.ubicacion;
+                            return !isNonRackLocation(ubi);
+                          });
+                          const allLabeled = recondBoxes.every((b: any) => {
+                            const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
+                            return rHu.estadoEtiqueta === 'COLOCADA' || b.estadoEtiqueta === 'COLOCADA' || receipt?.etiquetasEstado === 'COLOCADAS';
+                          });
+                          return allInRack ? '#166534' : allLabeled ? '#1D4ED8' : '#92400E';
+                        })(),
                         padding: '4px 10px',
                         borderRadius: 6
                       }}
                     >
                       {(() => {
                         const count = reportData?.cajasReacondicionadas?.length || 0;
-                        return `${count} ${count === 1 ? 'caja lista' : 'cajas listas'}`;
+                        if (count === 0) return '0 cajas';
+                        const recondBoxes: any[] = reportData?.cajasReacondicionadas || [];
+                        const allHus: any[] = receipt?.handlingUnits || reportData?.handlingUnits || [];
+                        const allInRack = count > 0 && recondBoxes.every((b: any) => {
+                          const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
+                          const ubi = rHu.ubicacionActual || rHu.ubicacion || b.ubicacionActual || b.ubicacion;
+                          return !isNonRackLocation(ubi);
+                        });
+                        const allLabeled = count > 0 && recondBoxes.every((b: any) => {
+                          const rHu = allHus.find((h: any) => h.codigo === b.codigo) || b;
+                          return rHu.estadoEtiqueta === 'COLOCADA' || b.estadoEtiqueta === 'COLOCADA' || receipt?.etiquetasEstado === 'COLOCADAS';
+                        });
+                        if (allInRack) return `${count} ${count === 1 ? 'caja en rack' : 'cajas en rack'}`;
+                        if (allLabeled) return `${count} ${count === 1 ? 'caja etiquetada' : 'cajas etiquetadas'}`;
+                        return `${count} ${count === 1 ? 'caja en rampa' : 'cajas en rampa'}`;
                       })()}
                     </span>
                   </div>
@@ -2317,17 +2421,24 @@ export function QualityInspectionModal({
                         const realHu = allHus.find((h: any) => h.codigo === box.codigo) || box;
 
                         // Ubicación y estado post-Putaway
-                        const rawUbi = realHu.ubicacionActual || realHu.ubicacion || box.ubicacion;
-                        const isPutawayDone = Boolean(
-                          (rawUbi && !['ANDEN', 'AREA_CALIDAD', 'CALIDAD'].includes(rawUbi) && rawUbi !== '—') ||
+                        const rawUbi = realHu.ubicacionActual || realHu.ubicacion || box.ubicacionActual || box.ubicacion;
+                        const isTransit = isNonRackLocation(rawUbi);
+                        const isPutawayDone = !isTransit && Boolean(
+                          (rawUbi && rawUbi !== '—') ||
                           receipt?.estado === 'UBICADO' ||
                           receipt?.estado === 'CERRADO' ||
-                          receipt?.estado === 'CERRADA'
+                          receipt?.estado === 'CERRADA' ||
+                          realHu.lotId ||
+                          box.lotId
                         );
                         const rackActual = isPutawayDone
-                          ? (rawUbi && !['ANDEN', 'AREA_CALIDAD', 'CALIDAD'].includes(rawUbi) ? rawUbi : (realHu.lote?.ubicacion?.codigo || 'B01-R01-N1'))
+                          ? (!isTransit ? rawUbi : (realHu.lote?.ubicacion?.codigo || 'Rack de almacenamiento'))
                           : null;
-                        const isLabeled = Boolean(realHu.etiquetaImpresa || realHu.etiquetaGenerada || realHu.estadoEtiqueta === 'COLOCADA');
+                        const isLabelPlaced = Boolean(
+                          realHu.estadoEtiqueta === 'COLOCADA' ||
+                          box.estadoEtiqueta === 'COLOCADA' ||
+                          receipt?.etiquetasEstado === 'COLOCADAS'
+                        );
 
                         return (
                         <div
@@ -2377,28 +2488,49 @@ export function QualityInspectionModal({
                               <span>Cad: <strong>{box.fechaVencimiento ? String(box.fechaVencimiento).slice(0, 10) : 'N/A'}</strong></span>
                             </div>
 
-                            {/* ESTADO ACTUAL Y HISTÓRICO POST-PUTAWAY */}
-                            <div style={{ padding: '8px 10px', backgroundColor: isPutawayDone ? '#F0FDF4' : isLabeled ? '#EFF6FF' : '#FFFBEB', borderRadius: 6, border: `1px solid ${isPutawayDone ? '#BBF7D0' : isLabeled ? '#BFDBFE' : '#FDE68A'}`, marginBottom: 12 }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: isPutawayDone ? '#15803D' : isLabeled ? '#1D4ED8' : '#B45309' }}>
+                            {/* ESTADO ACTUAL Y CICLO OPERATIVO */}
+                            <div
+                              style={{
+                                padding: '8px 10px',
+                                backgroundColor: isPutawayDone ? '#F0FDF4' : isLabelPlaced ? '#EFF6FF' : '#FFFBEB',
+                                borderRadius: 6,
+                                border: `1px solid ${isPutawayDone ? '#BBF7D0' : isLabelPlaced ? '#BFDBFE' : '#FDE68A'}`,
+                                marginBottom: 12
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  color: isPutawayDone ? '#15803D' : isLabelPlaced ? '#1D4ED8' : '#B45309'
+                                }}
+                              >
                                 {isPutawayDone ? (
                                   <>
                                     <MapPin size={13} style={{ color: '#15803D', flexShrink: 0 }} />
                                     <span>Ubicación actual: <strong>{rackActual}</strong> (Activo / Disponible)</span>
                                   </>
-                                ) : isLabeled ? (
+                                ) : isLabelPlaced ? (
                                   <>
                                     <Tag size={13} style={{ color: '#1D4ED8', flexShrink: 0 }} />
-                                    <span>Etiquetada · Pendiente de alojamiento en racks (Putaway)</span>
+                                    <span>Etiquetada · Pendiente de alojamiento en racks</span>
                                   </>
                                 ) : (
                                   <>
                                     <Clock size={13} style={{ color: '#B45309', flexShrink: 0 }} />
-                                    <span>Pendiente de etiquetado y alojamiento</span>
+                                    <span>Pendiente de etiquetado y alojamiento en racks</span>
                                   </>
                                 )}
                               </div>
                               <div style={{ fontSize: 9.5, color: '#64748B', fontStyle: 'italic', marginTop: 3 }}>
-                                Estado al momento del dictamen: pendiente de etiquetado y Putaway
+                                {isPutawayDone
+                                  ? 'Alojamiento en racks verificado · Existencia activa disponible en inventario comercial'
+                                  : isLabelPlaced
+                                  ? `Ubicación operativa: ${rawUbi || 'RAMPA_RECEPCION'} · Pendiente de traslado a racks (Putaway)`
+                                  : `Ubicación operativa: ${rawUbi || 'RAMPA_RECEPCION'} · No disponible para despacho comercial hasta completar Putaway`}
                               </div>
                             </div>
 

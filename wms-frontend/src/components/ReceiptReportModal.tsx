@@ -241,7 +241,8 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
   let cajasElegiblesCajaCerrada = 0;
   boxHus.filter(h => h.estadoHu === 'ACTIVO').forEach(h => {
     const pzas = Number(h.cantidad) || 0;
-    const skuFactor = h.lote?.sku?.capacidadEmpaque || (h.skuCodigo?.includes('ARR') ? 20 : 12);
+    const lineMatch = receipt?.lineas?.find((l: any) => l.sku?.codigo === h.skuCodigo || l.skuId === h.lote?.skuId);
+    const skuFactor = h.lote?.sku?.capacidadEmpaque || h.piezasPorCaja || lineMatch?.sku?.capacidadEmpaque || lineMatch?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
     const standardCap = (h.reacondicionada || h.cajaOrigenId) ? skuFactor : (h.piezasPorCaja || skuFactor);
     if (!h.reacondicionada && !h.cajaOrigenId && pzas >= standardCap) {
       piezasElegiblesCajaCerrada += pzas;
@@ -279,7 +280,8 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
     if (b.reacondicionada && b.estadoHu === 'ACTIVO') return true;
 
     // Prioridad 4: Caja activa con cantidad menor a capacidad de empaque
-    const skuFactor = b.lote?.sku?.capacidadEmpaque || (b.skuCodigo?.includes('ARR') ? 20 : 12);
+    const lineMatchB = receipt?.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo || l.skuId === b.lote?.skuId);
+    const skuFactor = b.lote?.sku?.capacidadEmpaque || b.piezasPorCaja || lineMatchB?.sku?.capacidadEmpaque || lineMatchB?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
     if (b.estadoHu === 'ACTIVO' && Number(b.cantidad) < skuFactor) return true;
 
     return false;
@@ -1208,7 +1210,8 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                             const isDespachado = box.estadoHu === 'DESPACHADO';
                             const isInactive = box.estadoHu === 'INACTIVO' || box.estadoHu === 'DAÑADO';
                             const pzas = Number(box.cantidad) || 0;
-                            const skuFactor = box.lote?.sku?.capacidadEmpaque || (box.skuCodigo?.includes('ARR') ? 20 : 12);
+                            const lineMatchBox = receipt?.lineas?.find((l: any) => l.sku?.codigo === box.skuCodigo || l.skuId === box.lote?.skuId);
+                            const skuFactor = box.lote?.sku?.capacidadEmpaque || box.piezasPorCaja || lineMatchBox?.sku?.capacidadEmpaque || lineMatchBox?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
                             const standardCap = (box.reacondicionada || box.cajaOrigenId) ? skuFactor : (box.piezasPorCaja || skuFactor);
                             const isPartial = !isInactive && !isDespachado && (box.reacondicionada || Boolean(box.cajaOrigenId) || pzas < standardCap);
                             const cadStr = box.fechaVencimiento ? formatCalendarDate(box.fechaVencimiento) : '—';
@@ -1336,7 +1339,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                         Desglose técnico:
                                       </div>
                                       <div style={{ color: '#991B1B', fontSize: 7.5, fontWeight: 700, lineHeight: 1.25 }}>
-                                        {qiRecord ? `${standardCap} originales / ${qiRecord.totalPiezasRescatadas} rescatadas / ${qiRecord.totalPiezasMerma} merma` : '12 originales / 10 rescatadas / 2 merma'}
+                                        {qiRecord ? `${standardCap} originales / ${qiRecord.totalPiezasRescatadas ?? 0} rescatadas / ${qiRecord.totalPiezasMerma ?? 0} merma` : `${standardCap} originales / Inactiva por dictamen técnico`}
                                       </div>
                                     </div>
                                   ) : isDespachado ? (
