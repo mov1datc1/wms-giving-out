@@ -3634,8 +3634,9 @@ export class OperationsController {
       );
     }
 
+    const isMermaHu = (h: any) => h.codigo?.includes('MERMA') || h.codigo?.startsWith('HU-NC-') || h.ubicacionActual === 'DEV-01';
     const activeBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO');
-    const inactiveBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu !== 'ACTIVO');
+    const inactiveBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu !== 'ACTIVO' && !isMermaHu(h));
     const tarimas = receipt.handlingUnits.filter(h => h.tipoHu === 'TARIMA');
 
     // Calcular métricas de merma y faltante de forma consistente y general
@@ -3709,7 +3710,7 @@ export class OperationsController {
           mermaPiezas: totalPiezasMerma,
           faltantePiezas: totalPiezasFaltantes,
           cajasDanadasFueraStock: inactiveBoxes.length,
-          detalle: `${totalPiezasMerma} pzas de merma dictaminadas y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} caja dañada histórica retenida en Calidad.`
+          detalle: `${totalPiezasMerma} pzas de merma dictaminadas y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica' : 'cajas dañadas históricas'} retenida en Calidad.`
         }
       };
     }
@@ -4027,7 +4028,7 @@ export class OperationsController {
           mermaPiezas: totalPiezasMerma,
           faltantePiezas: totalPiezasFaltantes,
           cajasDanadasFueraStock: inactiveBoxes.length,
-          detalle: `${totalPiezasMerma} pzas de merma dictaminadas y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} caja dañada histórica retenida en Calidad.`
+          detalle: `${totalPiezasMerma} pzas de merma dictaminadas y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica' : 'cajas dañadas históricas'} retenida en Calidad.`
         }
       };
     }, {

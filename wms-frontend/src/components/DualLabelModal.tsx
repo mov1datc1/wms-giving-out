@@ -25,6 +25,7 @@ interface LineBreakdown {
   cajasSanasExistentes?: number;
   cajasFaltantes?: number;
   cajasDanadasHistoricas?: number;
+  piezasMerma?: number;
 }
 
 interface DualLabelModalProps {
@@ -136,17 +137,57 @@ export const resolvePackagingCapacity = (hu: any, matchingLine?: any | null): nu
 };
 
 /**
- * Verifica si una HU tiene condición de daño.
- * La fuente principal es el estado persistido en base de datos (estadoHu, motivoDano).
- * La comprobación de includes('DANO') actúa únicamente como compatibilidad histórica secundaria.
+ * Determina si una Handling Unit representa una unidad segregada de Merma en almacén virtual/DEV-01.
+ * La merma dictaminada NUNCA es una caja física activa ni una caja dañada original de tarima.
+ */
+export const isHuMerma = (hu: any): boolean => {
+  if (!hu) return false;
+  const codigo = String(hu.codigo || '').toUpperCase();
+  const ubicacion = String(hu.ubicacionActual || '').toUpperCase();
+  const notas = String(hu.notas || hu.lote?.notas || hu.lot?.notas || '').toUpperCase();
+  return (
+    codigo.startsWith('HU-NC-') ||
+    codigo.includes('MERMA') ||
+    ubicacion === 'DEV-01' ||
+    ubicacion === 'NC-MERMA-01' ||
+    hu.lote?.estadoCalidad === 'MERMA' ||
+    hu.lot?.estadoCalidad === 'MERMA' ||
+    notas.includes('MERMA') ||
+    (hu.estadoHu === 'BLOQUEADO' && Boolean(hu.cajaOrigenId))
+  );
+};
+
+/**
+ * Determina si una Handling Unit corresponde a una caja dañada histórica/inactiva de origen.
+ * Cuenta únicamente las cajas físicas originales que ingresaron dañadas o quedaron inactivas tras la inspección.
+ */
+export const isHuOriginalDamaged = (hu: any): boolean => {
+  if (!hu) return false;
+  if (isHuMerma(hu)) return false;
+  const codigo = String(hu.codigo || '').toUpperCase();
+  const isOriginal = !hu.cajaOrigenId;
+  const isDamagedOrInactive =
+    hu.estadoHu === 'INACTIVO' ||
+    hu.estadoHu === 'DAÑADO' ||
+    hu.estadoHu === 'RETENIDO' ||
+    codigo.includes('DANO') ||
+    codigo.includes('DAÑO') ||
+    Boolean(hu.motivoDano);
+  return isOriginal && isDamagedOrInactive;
+};
+
+/**
+ * Verifica si una HU tiene condición de daño operativo en tarima.
+ * Excluye la merma segregada en DEV-01.
  */
 export const isHuDamaged = (hu: any): boolean => {
   if (!hu) return false;
-  if (hu.estadoHu === 'DAÑADO' || hu.estadoHu === 'RETENIDO' || Boolean(hu.motivoDano)) {
+  if (isHuMerma(hu)) return false;
+  if (hu.estadoHu === 'DAÑADO' || hu.estadoHu === 'RETENIDO') {
     return true;
   }
   // Compatibilidad histórica secundaria controlada
-  return Boolean(hu.codigo && typeof hu.codigo === 'string' && hu.codigo.includes('DANO'));
+  return Boolean(hu.codigo && typeof hu.codigo === 'string' && (hu.codigo.includes('DANO') || hu.codigo.includes('DAÑO')));
 };
 
 export function DualLabelModal({
@@ -204,22 +245,27 @@ export function DualLabelModal({
 
       // 1. HUs conformes/reacondicionadas ya creadas por Calidad (stock activo con ID preexistente)
       const rescuedBoxes = lineBoxes.filter(
-        (b: any) => b.estadoHu === 'ACTIVO' && (b.reacondicionada || b.cajaOrigenId)
+        (b: any) => b.estadoHu === 'ACTIVO' && (b.reacondicionada || b.cajaOrigenId) && !isHuMerma(b)
       );
       const rescuedPieces = rescuedBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
       const cajasRescatadasExistentes = rescuedBoxes.length;
 
       // 2. Cajas sanas estándar que ya fueron generadas previamente en andén
       const existingHealthyBoxes = lineBoxes.filter(
-        (b: any) => b.estadoHu === 'ACTIVO' && !b.reacondicionada && !b.cajaOrigenId && !isHuDamaged(b)
+        (b: any) => b.estadoHu === 'ACTIVO' && !b.reacondicionada && !b.cajaOrigenId && !isHuDamaged(b) && !isHuMerma(b)
       );
       const cajasSanasExistentes = existingHealthyBoxes.length;
 
-      // 3. HUs dañadas originales históricas/inactivas (no operativas, no se reactivan ni se etiquetan)
+      // 3. HUs dañadas originales históricas/inactivas (cajas físicas de origen fuera de la tarima, NO merma)
       const existingDamagedBoxes = lineBoxes.filter(
-        (b: any) => b.estadoHu === 'DAÑADO' || b.estadoHu === 'INACTIVO' || isHuDamaged(b)
+        (b: any) => isHuOriginalDamaged(b)
       );
       const cajasDanadasHistoricas = existingDamagedBoxes.length;
+
+      // 4. Piezas de merma dictaminadas (manejadas por separado, NUNCA contadas como cajas)
+      const mermaBoxes = lineBoxes.filter((b: any) => isHuMerma(b));
+      const piezasMermaHUs = mermaBoxes.reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
+      const piezasMerma = piezasMermaHUs > 0 ? piezasMermaHUs : (Number(line.cantidadDanada) || 0);
 
       // Conciliación física persistida en andén (cantidadRecibida = conformes totales: sanas + rescatadas)
       const totalConformesPiezas = receipt.conteoAndenEstado === 'COMPLETADO'
@@ -260,6 +306,7 @@ export function DualLabelModal({
         cajasSanasExistentes,
         cajasFaltantes,
         cajasDanadasHistoricas,
+        piezasMerma,
       };
     });
   };
@@ -394,6 +441,7 @@ export function DualLabelModal({
   const totalNuevasCrear = breakdown.reduce((sum, b) => sum + (Number(b.cajasSanasNuevas) || 0), 0);
   const totalRescatadasExistentes = breakdown.reduce((sum, b) => sum + (Number(b.cajasRescatadasExistentes) || 0), 0);
   const totalDanadasHistoricas = breakdown.reduce((sum, b) => sum + (Number(b.cajasDanadasHistoricas) || 0), 0);
+  const totalPiezasMerma = breakdown.reduce((sum, b) => sum + (Number(b.piezasMerma) || 0), 0);
   const totalSanasExistentes = breakdown.reduce((sum, b) => sum + (Number(b.cajasSanasExistentes) || 0), 0);
 
   // Separación conceptual estricta:
@@ -1233,13 +1281,13 @@ export function DualLabelModal({
     printWin.document.close();
   };
 
-  // Cajas aplanadas para tab de cajas (excluyendo cajas inactivas reacondicionadas)
+  // Cajas aplanadas para tab de cajas (excluyendo cajas inactivas reacondicionadas y merma de DEV-01)
   const allBoxes: any[] = [];
   if (labelsData?.pallets && Array.isArray(labelsData.pallets)) {
     labelsData.pallets.forEach((p: any) => {
       const palletBoxes = p.boxes || p.cajas || [];
       palletBoxes.forEach((b: any) => {
-        if (b.estadoHu !== 'INACTIVO') {
+        if (b.estadoHu !== 'INACTIVO' && !isHuMerma(b)) {
           allBoxes.push({
             ...b,
             parentPalletId: p.id,
@@ -1252,7 +1300,7 @@ export function DualLabelModal({
   if (allBoxes.length === 0 && (labelsData?.cajas || labelsData?.boxes)) {
     const rootBoxes = labelsData.cajas || labelsData.boxes || [];
     rootBoxes.forEach((b: any) => {
-      if (b.estadoHu !== 'INACTIVO') {
+      if (b.estadoHu !== 'INACTIVO' && !isHuMerma(b)) {
         const parentPallet = labelsData.pallets?.find((p: any) => p.id === b.parentHuId);
         allBoxes.push({
           ...b,
@@ -1704,7 +1752,12 @@ export function DualLabelModal({
                           />
                           {(item.cajasDanadasHistoricas ?? 0) > 0 ? (
                             <div style={{ fontSize: 9.5, color: '#92400E', marginTop: 2 }}>
-                              ({item.cajasDanadasHistoricas} histórica en Calidad)
+                              ({item.cajasDanadasHistoricas === 1 ? '1 histórica en Calidad' : `${item.cajasDanadasHistoricas} históricas en Calidad`})
+                            </div>
+                          ) : null}
+                          {(item.piezasMerma ?? 0) > 0 ? (
+                            <div style={{ fontSize: 9.5, color: '#DC2626', marginTop: 2 }}>
+                              ({item.piezasMerma} {item.piezasMerma === 1 ? 'pza merma DEV-01' : 'pzas merma DEV-01'})
                             </div>
                           ) : null}
                         </td>
@@ -1754,7 +1807,12 @@ export function DualLabelModal({
                 )}
                 {totalDanadasHistoricas > 0 && (
                   <span style={{ color: '#64748B', fontWeight: 600 }}>
-                    • {totalDanadasHistoricas} Dañada histórica / inactiva fuera de la tarima
+                    • {totalDanadasHistoricas === 1 ? '1 caja dañada histórica / inactiva fuera de la tarima' : `${totalDanadasHistoricas} cajas dañadas históricas / inactivas fuera de la tarima`}
+                  </span>
+                )}
+                {totalPiezasMerma > 0 && (
+                  <span style={{ color: '#92400E', fontWeight: 600 }}>
+                    • {totalPiezasMerma} {totalPiezasMerma === 1 ? 'pieza de merma (en DEV-01)' : 'piezas de merma (en DEV-01)'}
                   </span>
                 )}
               </div>
