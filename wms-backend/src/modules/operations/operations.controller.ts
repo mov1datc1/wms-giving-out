@@ -3453,6 +3453,34 @@ export class OperationsController {
     const usuarioResponsable = body.usuario?.trim() || 'Montacarguista';
     const timestamp = new Date().toISOString();
 
+    // CANDADO DE IDEMPOTENCIA: Si la HU ya está validada para esta posición física, devolver validación previa sin duplicar AuditLog
+    const existingAudit = await this.prisma.auditLog.findFirst({
+      where: {
+        entidad: 'HandlingUnit',
+        entidadId: huObj.id,
+        accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
+        detalle: { contains: destLoc.codigo },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingAudit || (huObj.ubicacionActual && huObj.ubicacionActual === destLoc.codigo)) {
+      return {
+        success: true,
+        idempotent: true,
+        message: `Escaneo Dual ya verificado previamente (idempotente): HU ${huObj.codigo} en rack ${destLoc.codigo}.`,
+        huId: huObj.id,
+        huCodigo: huObj.codigo,
+        ubicacionDestinoId: destLoc.id,
+        ubicacionDestinoCodigo: destLoc.codigo,
+        zona: destLoc.zona?.nombre || destLoc.zona?.codigo,
+        huScanValidated: true,
+        rackScanValidated: true,
+        usuario: existingAudit?.usuario || usuarioResponsable,
+        validatedAt: existingAudit?.createdAt?.toISOString() || timestamp,
+      };
+    }
+
     // Registrar bitácora de auditoría inmutable del Escaneo Dual
     await this.prisma.auditLog.create({
       data: {
@@ -3637,7 +3665,7 @@ export class OperationsController {
     const isMermaHu = (h: any) => h.codigo?.includes('MERMA') || h.codigo?.startsWith('HU-NC-') || h.ubicacionActual === 'DEV-01';
     const activeBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO');
     const inactiveBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu !== 'ACTIVO' && !isMermaHu(h));
-    const tarimas = receipt.handlingUnits.filter(h => h.tipoHu === 'TARIMA');
+    const tarimas = receipt.handlingUnits.filter(h => h.tipoHu === 'TARIMA' || h.tipoHu === 'PALLET');
 
     // Calcular métricas de merma y faltante de forma consistente y general
     const totalPiezasMerma = receipt.inspecciones?.reduce((acc: number, insp: any) => acc + (insp.totalPiezasMerma || 0), 0) || 
@@ -3659,7 +3687,14 @@ export class OperationsController {
       h => !h.ubicacionActual || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO'].includes(h.ubicacionActual)
     );
 
-    if (unlocatedActive.length === 0 && (receipt.estado === 'COMPLETO' || receipt.estado === 'UBICADO')) {
+    if (unlocatedActive.length === 0) {
+      if (receipt.estado !== 'COMPLETO' && receipt.estado !== 'UBICADO' && receipt.estado !== 'CERRADA' && receipt.estado !== 'CERRADO') {
+        await this.prisma.receipt.update({
+          where: { id: receipt.id },
+          data: { estado: 'COMPLETO' },
+        });
+      }
+
       const movimientosRealizados = activeBoxes.map(b => {
         const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
           receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
@@ -3710,7 +3745,7 @@ export class OperationsController {
           mermaPiezas: totalPiezasMerma,
           faltantePiezas: totalPiezasFaltantes,
           cajasDanadasFueraStock: inactiveBoxes.length,
-          detalle: `${totalPiezasMerma} pzas de merma dictaminadas y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica' : 'cajas dañadas históricas'} retenida en Calidad.`
+          detalle: `${totalPiezasMerma} pzas de merma en DEV-01 y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0).`
         }
       };
     }
@@ -3979,10 +4014,23 @@ export class OperationsController {
         });
       }
 
-      // 5. Inserción masiva por lote en InventoryMovement (createMany)
-      await tx.inventoryMovement.createMany({
-        data: inventoryMovementsData,
+      // 5. Inserción masiva por lote en InventoryMovement (createMany) filtrando HUs que ya fueron trasladadas para garantizar idempotencia
+      const existingMovements = await tx.inventoryMovement.findMany({
+        where: {
+          documentoOrigen: receipt.codigo,
+          tipoMovimiento: 'TRASIEGO',
+          huId: { in: inventoryMovementsData.map(m => m.huId).filter(Boolean) },
+        },
+        select: { huId: true },
       });
+      const existingHuIds = new Set(existingMovements.map(m => m.huId));
+      const movementsToInsert = inventoryMovementsData.filter(m => !m.huId || !existingHuIds.has(m.huId));
+
+      if (movementsToInsert.length > 0) {
+        await tx.inventoryMovement.createMany({
+          data: movementsToInsert,
+        });
+      }
 
       // 6. Actualizar Receipt a COMPLETO
       await tx.receipt.update({
@@ -3990,16 +4038,26 @@ export class OperationsController {
         data: { estado: 'COMPLETO' },
       });
 
-      // 7. Auditoría formal inmutable
-      await tx.auditLog.create({
-        data: {
-          usuario: usuarioResponsable,
-          accion: 'PUTAWAY_CONFIRMADO_RACKS',
+      // 7. Auditoría formal inmutable (idempotente)
+      const existingPutawayAudit = await tx.auditLog.findFirst({
+        where: {
           entidad: 'Receipt',
           entidadId: receipt.id,
-          detalle: `Fase 4: Alojamiento confirmado para ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas). Stock activado a DISPONIBLE en racks. Operador: ${usuarioResponsable}. Duración: ${Date.now() - tStart}ms`,
+          accion: 'PUTAWAY_CONFIRMADO_RACKS',
         },
       });
+
+      if (!existingPutawayAudit) {
+        await tx.auditLog.create({
+          data: {
+            usuario: usuarioResponsable,
+            accion: 'PUTAWAY_CONFIRMADO_RACKS',
+            entidad: 'Receipt',
+            entidadId: receipt.id,
+            detalle: `Fase 4: Alojamiento confirmado para ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas). Stock activado a DISPONIBLE en racks. Operador: ${usuarioResponsable}. Duración: ${Date.now() - tStart}ms`,
+          },
+        });
+      }
 
       const racksAsignados = [...new Set(movimientosRealizados.map(m => m.ubicacionDestino))];
 
@@ -4028,7 +4086,7 @@ export class OperationsController {
           mermaPiezas: totalPiezasMerma,
           faltantePiezas: totalPiezasFaltantes,
           cajasDanadasFueraStock: inactiveBoxes.length,
-          detalle: `${totalPiezasMerma} pzas de merma dictaminadas y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica' : 'cajas dañadas históricas'} retenida en Calidad.`
+          detalle: `${totalPiezasMerma} pzas de merma en DEV-01 y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0).`
         }
       };
     }, {
@@ -5348,7 +5406,7 @@ export class OperationsController {
         bultosDanados,
         bultosFaltantes,
         diferenciaBultos: receipt.diferenciaBultos !== null && receipt.diferenciaBultos !== undefined ? receipt.diferenciaBultos : (bultosRecibidos - bultosDeclarados),
-        tarimasTotal: receipt.handlingUnits.filter(h => h.tipoHu === 'PALLET').length,
+        tarimasTotal: receipt.handlingUnits.filter(h => h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA').length,
         cajasFinalesRacks: receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO').length,
         cajasDespachadas: receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'DESPACHADO').length,
         cajasHistoricasInactivas: receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && (h.estadoHu === 'INACTIVO' || h.estadoHu === 'DAÑADO')).length,

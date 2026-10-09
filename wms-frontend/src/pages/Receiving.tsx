@@ -5191,14 +5191,38 @@ export function Receiving() {
           const totalRecibidas = totalRecibidasConfirmadas;
           const hasPieceClassification = (piezasConfirmadasConformes > 0 || piezasMermaDictaminada > 0) && piezasPendientesConteo === 0;
 
-          const activasCount = boxHus.filter((b: any) => b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK').length;
+          const isMermaHu = (h: any) => Boolean(
+            h.codigo?.includes('MERMA') ||
+            h.codigo?.startsWith('HU-NC-') ||
+            h.ubicacionActual === 'DEV-01' ||
+            h.estadoHu === 'BLOQUEADO' ||
+            h.estadoCalidad === 'MERMA'
+          );
+          const isDamagedHistoricalHu = (h: any) => Boolean(
+            !isMermaHu(h) && (
+              h.estadoHu === 'INACTIVO' ||
+              h.estadoHu === 'DAÑADO' ||
+              h.estadoHu === 'RETENIDO' ||
+              h.codigo?.includes('DANO') ||
+              h.motivoDano
+            )
+          );
+          const isOperationalActiveHu = (h: any) => Boolean(
+            !isMermaHu(h) &&
+            !isDamagedHistoricalHu(h) &&
+            (h.estadoHu === 'ACTIVO' || h.estadoHu === 'ALMACENADO' || h.estadoHu === 'EN_RACK')
+          );
+
+          const activasCount = boxHus.filter(isOperationalActiveHu).length;
+          const historicasDanadasCount = boxHus.filter(isDamagedHistoricalHu).length;
+          const mermaSegregadaCount = boxHus.filter(isMermaHu).length;
           const despachadasCount = boxHus.filter((b: any) => b.estadoHu === 'DESPACHADO').length;
-          const inactivasCount = boxHus.filter((b: any) => b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO').length;
+          const inactivasCount = historicasDanadasCount;
           const totalBoxesCount = boxHus.length;
 
           // Unidades físicas activas restantes en almacén
           const piezasActivasRestantes = boxHus
-            .filter((b: any) => b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK')
+            .filter(isOperationalActiveHu)
             .reduce((s: number, b: any) => s + (Number(b.cantidad) || 0), 0);
 
           const piezasDespachadas = boxHus
@@ -5209,7 +5233,7 @@ export function Receiving() {
           const isClientCajaCerrada = currentReceipt.cliente?.manejoInventario === 'CAJA' || currentReceipt.cliente?.uomPrincipal === 'CAJA' || currentReceipt.cliente?.reglaInventario === 'CAJA_CERRADA' || currentReceipt.cliente?.nombreComercial?.includes('AlimNorte');
 
           const eligibleBoxes = boxHus.filter((b: any) => {
-            const isActive = b.estadoHu === 'ACTIVO' || b.estadoHu === 'ALMACENADO' || b.estadoHu === 'EN_RACK';
+            const isActive = isOperationalActiveHu(b);
             if (!isActive) return false;
             if (isClientCajaCerrada) {
               const stdCapacity = b.piezasPorCaja || (b.skuCodigo?.includes('ACE') ? 12 : b.skuCodigo?.includes('ARR') ? 20 : 12);
@@ -5737,7 +5761,7 @@ export function Receiving() {
                       whiteSpace: 'nowrap'
                     }}
                   >
-                    <Box size={15} /> Cajas en Almacén ({activasCount} activas · {totalBoxesCount} total)
+                    <Box size={15} /> Cajas en Almacén ({activasCount} activas{historicasDanadasCount > 0 ? ` · ${historicasDanadasCount} hist.` : ''}{mermaSegregadaCount > 0 ? ` · ${mermaSegregadaCount} merma DEV-01` : ''})
                   </button>
                   <button
                     type="button"
@@ -6631,13 +6655,25 @@ export function Receiving() {
                         <span>
                           Desglose físico de unidades de manejo registradas en base de datos para <strong>{currentReceipt.codigo}</strong>:
                         </span>
-                        <div style={{ display: 'flex', gap: 8, fontSize: 11, fontWeight: 700 }}>
+                        <div style={{ display: 'flex', gap: 8, fontSize: 11, fontWeight: 700, flexWrap: 'wrap' }}>
                           <span style={{ background: '#DCFCE7', color: '#166534', padding: '3px 8px', borderRadius: 4 }}>
-                            {activasCount} Activas en Racks ({piezasActivasRestantes} pzas)
+                            {activasCount} Cajas Operativas en Racks ({piezasActivasRestantes} pzas)
                           </span>
-                          <span style={{ background: '#EFF6FF', color: '#1E40AF', padding: '3px 8px', borderRadius: 4 }}>
-                            {despachadasCount} Despachadas ({piezasDespachadas} pzas históricas)
-                          </span>
+                          {historicasDanadasCount > 0 && (
+                            <span style={{ background: '#FEE2E2', color: '#991B1B', padding: '3px 8px', borderRadius: 4 }}>
+                              {historicasDanadasCount} {historicasDanadasCount === 1 ? 'HU Histórica Dañada / Inactiva' : 'HUs Históricas Dañadas / Inactivas'} (0 pzas saldo)
+                            </span>
+                          )}
+                          {mermaSegregadaCount > 0 && (
+                            <span style={{ background: '#FEF3C7', color: '#92400E', padding: '3px 8px', borderRadius: 4 }}>
+                              {mermaSegregadaCount} {mermaSegregadaCount === 1 ? 'HU Merma Segregada en DEV-01' : 'HUs Merma Segregadas en DEV-01'} ({piezasMermaDictaminada} pzas bloqueadas)
+                            </span>
+                          )}
+                          {despachadasCount > 0 && (
+                            <span style={{ background: '#EFF6FF', color: '#1E40AF', padding: '3px 8px', borderRadius: 4 }}>
+                              {despachadasCount} Despachadas ({piezasDespachadas} pzas históricas)
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -6665,7 +6701,7 @@ export function Receiving() {
                             </span>
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <MapPin size={13} style={{ color: '#0D9488' }} />
-                              <strong>Distribución física actual:</strong> {activasCount} {activasCount === 1 ? 'caja activa en rack' : 'cajas activas en racks'}{despachadasCount > 0 ? ` · ${despachadasCount} ${despachadasCount === 1 ? 'caja despachada' : 'cajas despachadas'}` : ''}{inactivasCount > 0 ? ` · ${inactivasCount} ${inactivasCount === 1 ? 'HU histórica dañada/inactiva' : 'HUs históricas dañadas/inactivas'}` : ''}
+                              <strong>Distribución física actual:</strong> {activasCount} {activasCount === 1 ? 'caja operativa activa en rack' : 'cajas operativas activas en racks'}{mermaSegregadaCount > 0 ? ` · ${mermaSegregadaCount} ${mermaSegregadaCount === 1 ? 'HU merma segregada en DEV-01' : 'HUs merma segregadas en DEV-01'}` : ''}{inactivasCount > 0 ? ` · ${inactivasCount} ${inactivasCount === 1 ? 'HU histórica dañada/inactiva (saldo 0)' : 'HUs históricas dañadas/inactivas (saldo 0)'}` : ''}{despachadasCount > 0 ? ` · ${despachadasCount} ${despachadasCount === 1 ? 'caja despachada' : 'cajas despachadas'}` : ''}
                             </span>
                           </div>
                         </div>
@@ -6688,28 +6724,34 @@ export function Receiving() {
                           <tbody>
                             {boxHus.length > 0 ? (
                               boxHus.map((b: any, idx: number) => {
+                                const isMerma = isMermaHu(b);
+                                const isInactive = isDamagedHistoricalHu(b);
                                 const isDespachado = b.estadoHu === 'DESPACHADO';
-                                const isInactive = b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO';
                                 const pzas = Number(b.cantidad) || 0;
                                 const matchedLine = (currentReceipt.lineas || []).find((l: any) => l.sku?.codigo === b.skuCodigo || l.skuId === b.skuCodigo);
                                 const skuFactor = b.lote?.sku?.capacidadEmpaque || matchedLine?.sku?.capacidadEmpaque || (b.skuCodigo?.includes('ARR') ? 20 : 12);
                                 const standardCapacity = (b.reacondicionada || b.cajaOrigenId) ? skuFactor : (b.piezasPorCaja || skuFactor);
-                                const isPartial = !isInactive && !isDespachado && (b.reacondicionada || Boolean(b.cajaOrigenId) || pzas < standardCapacity);
+                                const isPartial = !isInactive && !isMerma && !isDespachado && (b.reacondicionada || Boolean(b.cajaOrigenId) || pzas < standardCapacity);
 
                                 // Relaciones reales de rescate (Point 3)
                                 const originBox = b.cajaOrigenId ? boxHus.find((x: any) => x.id === b.cajaOrigenId) : (isPartial ? boxHus.find((x: any) => x.estadoHu === 'INACTIVO') : null);
                                 const rescuedBoxes = isInactive ? boxHus.filter((x: any) => x.cajaOrigenId === b.id || (x.reacondicionada && x.estadoHu === 'ACTIVO')) : [];
 
                                 // Estado de etiqueta leído estrictamente por HU
-                                const hasLabel = Boolean(b.etiquetaImpresa || b.estadoEtiqueta === 'COLOCADA' || b.estadoEtiqueta === 'IMPRESA') && !isInactive;
+                                const hasLabel = Boolean(b.etiquetaImpresa || b.estadoEtiqueta === 'COLOCADA' || b.estadoEtiqueta === 'IMPRESA') && !isInactive && !isMerma;
 
                                 return (
-                                  <tr key={b.id || idx} style={{ borderBottom: '1px solid #F1F5F9', background: isInactive ? '#FFF5F5' : isPartial ? '#FFFDF5' : 'transparent' }}>
+                                  <tr key={b.id || idx} style={{ borderBottom: '1px solid #F1F5F9', background: isInactive ? '#FFF5F5' : isMerma ? '#FEF2F2' : isPartial ? '#FFFDF5' : 'transparent' }}>
                                     {/* CÓDIGO HU STICKY IZQUIERDA */}
-                                    <td style={{ padding: '9px 12px', fontWeight: 700, fontFamily: 'monospace', position: 'sticky', left: 0, background: isInactive ? '#FFF5F5' : isPartial ? '#FFFDF5' : '#FFFFFF', zIndex: 1, boxShadow: '1px 0 0 #E2E8F0' }}>
-                                      <code style={{ fontSize: 12, color: isDespachado ? '#2563EB' : isInactive ? '#DC2626' : isPartial ? '#D97706' : '#0D9488' }}>
+                                    <td style={{ padding: '9px 12px', fontWeight: 700, fontFamily: 'monospace', position: 'sticky', left: 0, background: isInactive ? '#FFF5F5' : isMerma ? '#FEF2F2' : isPartial ? '#FFFDF5' : '#FFFFFF', zIndex: 1, boxShadow: '1px 0 0 #E2E8F0' }}>
+                                      <code style={{ fontSize: 12, color: isDespachado ? '#2563EB' : (isInactive || isMerma) ? '#DC2626' : isPartial ? '#D97706' : '#0D9488' }}>
                                         {b.codigo}
                                       </code>
+                                      {isMerma && (
+                                        <div style={{ fontSize: 10, color: '#DC2626', fontWeight: 700 }}>
+                                          Merma segregada DEV-01 {b.cajaOrigenId ? `(de ${originBox?.codigo || 'caja dañada'})` : ''}
+                                        </div>
+                                      )}
                                       {isPartial && (
                                         <div style={{ fontSize: 10, color: '#D97706', fontWeight: 700 }}>
                                           Rescate de {originBox?.codigo || 'caja de origen'} {b.inspeccionId ? `(Insp: ${b.inspeccionId})` : ''}
@@ -6741,6 +6783,11 @@ export function Receiving() {
                                             })()}
                                           </div>
                                         </>
+                                      ) : isMerma ? (
+                                        <>
+                                          <span style={{ fontWeight: 800, color: '#DC2626' }}>{pzas} pzas</span>
+                                          <div style={{ fontSize: 10, color: '#B45309', fontWeight: 600 }}>Bloqueadas en DEV-01</div>
+                                        </>
                                       ) : isDespachado ? (
                                         <>
                                           <span style={{ fontWeight: 800, color: '#64748B' }}>0 en rack</span>
@@ -6761,11 +6808,11 @@ export function Receiving() {
                                         fontWeight: 700,
                                         padding: '2px 7px',
                                         borderRadius: 4,
-                                        background: isDespachado ? '#EFF6FF' : isInactive ? '#FEE2E2' : '#DCFCE7',
-                                        color: isDespachado ? '#1E40AF' : isInactive ? '#991B1B' : '#166534',
-                                        border: `1px solid ${isDespachado ? '#BFDBFE' : isInactive ? '#FECACA' : '#BBF7D0'}`
+                                        background: isDespachado ? '#EFF6FF' : (isInactive || isMerma) ? '#FEE2E2' : '#DCFCE7',
+                                        color: isDespachado ? '#1E40AF' : (isInactive || isMerma) ? '#991B1B' : '#166534',
+                                        border: `1px solid ${isDespachado ? '#BFDBFE' : (isInactive || isMerma) ? '#FECACA' : '#BBF7D0'}`
                                       }}>
-                                        {isDespachado ? 'Despachada' : isInactive ? 'Inactiva (Rescatada)' : 'Activa en Rack'}
+                                        {isDespachado ? 'Despachada' : isInactive ? 'Inactiva (Rescatada)' : isMerma ? 'Bloqueado (DEV-01)' : 'Activa en Rack'}
                                       </span>
                                     </td>
                                     <td style={{ padding: '9px 12px' }}>
@@ -6774,16 +6821,32 @@ export function Receiving() {
                                         fontWeight: 700,
                                         padding: '2px 7px',
                                         borderRadius: 4,
-                                        background: isPartial ? '#FEF3C7' : isInactive ? '#FEE2E2' : '#DCFCE7',
-                                        color: isPartial ? '#92400E' : isInactive ? '#991B1B' : '#166534',
-                                        border: `1px solid ${isPartial ? '#FDE68A' : isInactive ? '#FECACA' : '#BBF7D0'}`
+                                        background: isMerma ? '#FEF2F2' : isPartial ? '#FEF3C7' : isInactive ? '#FEE2E2' : '#DCFCE7',
+                                        color: isMerma ? '#991B1B' : isPartial ? '#92400E' : isInactive ? '#991B1B' : '#166534',
+                                        border: `1px solid ${isMerma ? '#FECACA' : isPartial ? '#FDE68A' : isInactive ? '#FECACA' : '#BBF7D0'}`
                                       }}>
-                                        {isPartial ? 'Parcial / Reacondicionada' : isInactive ? 'Dañado / Retenido en Calidad (Histórico)' : 'Conforme / Estándar'}
+                                        {isMerma ? 'No Conforme / Merma DEV-01' : isPartial ? 'Parcial / Reacondicionada' : isInactive ? 'Dañado / Retenido en Calidad (Histórico)' : 'Conforme / Estándar'}
                                       </span>
                                     </td>
-                                    <td style={{ padding: '9px 12px', fontWeight: 600, color: isDespachado ? '#64748B' : isInactive ? '#DC2626' : '#0D9488' }}>
+                                    <td style={{ padding: '9px 12px', fontWeight: 600, color: isDespachado ? '#64748B' : (isInactive || isMerma) ? '#DC2626' : '#0D9488' }}>
                                       {isDespachado ? (
                                         `Salida (era ${b.ubicacionActual})`
+                                      ) : isMerma ? (
+                                        <div>
+                                          <span style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4,
+                                            padding: '2px 7px',
+                                            borderRadius: 4,
+                                            background: '#FEF3C7',
+                                            color: '#92400E',
+                                            fontWeight: 700,
+                                            fontSize: 11
+                                          }}>
+                                            <AlertTriangle size={12} /> DEV-01 (Cuarentena / Merma)
+                                          </span>
+                                        </div>
                                       ) : isInactive ? (
                                         <div>
                                           <span style={{
@@ -6811,6 +6874,10 @@ export function Receiving() {
                                       {isInactive ? (
                                         <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#F1F5F9', color: '#64748B', fontWeight: 700, border: '1px solid #E2E8F0' }}>
                                           NO OPERATIVA / HISTÓRICA
+                                        </span>
+                                      ) : isMerma ? (
+                                        <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#FEF3C7', color: '#92400E', fontWeight: 700, border: '1px solid #FDE68A' }}>
+                                          NO CONFORME (DEV-01)
                                         </span>
                                       ) : hasLabel ? (
                                         <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#F0FDF4', color: '#16A34A', fontWeight: 700 }}>

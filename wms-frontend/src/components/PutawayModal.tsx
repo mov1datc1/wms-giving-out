@@ -344,6 +344,14 @@ export function PutawayModal({
     if (!currentBox) return;
     const key = currentBox.huId || currentBox.huCodigo;
 
+    // Candado estricto: Bloquear si ya está confirmada
+    if (confirmedHUs[key]) {
+      playAudioTone('warning');
+      setErrorMsg('Esta caja ya fue confirmada con Escaneo Dual. Si requiere modificar la ubicación, pulse primero "Reiniciar a Pendiente".');
+      setTimeout(() => setErrorMsg(null), 4000);
+      return;
+    }
+
     // Candado estricto de Escaneo Dual
     if (!boxScanSuccess || !rackScanSuccess) {
       playAudioTone('error');
@@ -812,17 +820,17 @@ export function PutawayModal({
               <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: 12 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>Cajas Físicas Alojadas</span>
                 <div style={{ fontSize: 15, fontWeight: 800, color: '#0284C7', marginTop: 3 }}>
-                  {completedSummary.totalHUsAlojadas || completedSummary.totalBultos} cajas alojadas
+                  {(completedSummary.totalHUsAlojadas ?? completedSummary.totalBultos ?? 0)} cajas alojadas
                 </div>
                 <div style={{ fontSize: 11, color: '#0369A1', marginTop: 2, fontWeight: 600 }}>
-                  {completedSummary.totalHUsAlojadas || completedSummary.totalBultos} HUs activas en racks
+                  {(completedSummary.totalHUsAlojadas ?? completedSummary.totalBultos ?? 0)} HUs activas en racks
                 </div>
               </div>
 
               <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: 12 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>Tarimas Logísticas</span>
                 <div style={{ fontSize: 15, fontWeight: 800, color: '#0D9488', marginTop: 3 }}>
-                  {completedSummary.tarimasMaster || 1} Tarima Master
+                  {completedSummary.tarimasMaster ?? 1} Tarima Master
                 </div>
                 <div style={{ fontSize: 11, color: '#0F766E', marginTop: 2, fontWeight: 600 }}>
                   Contenedor activo consolidado
@@ -832,7 +840,7 @@ export function PutawayModal({
               <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: 12 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>Piezas Disponibles</span>
                 <div style={{ fontSize: 15, fontWeight: 800, color: '#16A34A', marginTop: 3 }}>
-                  {completedSummary.piezasDisponibles || completedSummary.totalPiezas} piezas disponibles
+                  {(completedSummary.piezasDisponibles ?? completedSummary.totalPiezas ?? 0)} piezas disponibles
                 </div>
                 <div style={{ fontSize: 11, color: '#15803D', marginTop: 2, fontWeight: 600 }}>
                   Stock activo en catálogo
@@ -852,10 +860,10 @@ export function PutawayModal({
               <div style={{ backgroundColor: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8, padding: 12 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: '#B45309', textTransform: 'uppercase' }}>Fuera de Stock</span>
                 <div style={{ fontSize: 13, fontWeight: 800, color: '#92400E', marginTop: 3 }}>
-                  {completedSummary.piezasMerma || 2} pzas merma · {completedSummary.piezasFaltantes || 20} pzas faltantes
+                  {(completedSummary.piezasMerma ?? 0)} pzas merma en DEV-01 · {(completedSummary.piezasFaltantes ?? 0)} pzas faltantes
                 </div>
                 <div style={{ fontSize: 10.5, color: '#B45309', marginTop: 2 }}>
-                  1 caja dañada en Calidad
+                  {(completedSummary.cajasDanadasFueraStock ?? 0)} {(completedSummary.cajasDanadasFueraStock === 1) ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0)
                 </div>
               </div>
             </div>
@@ -939,7 +947,7 @@ export function PutawayModal({
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Info size={16} color="#0D9488" />
                 <span>
-                  <strong>Trazabilidad y Balance Físico:</strong> {completedSummary.tarimasMaster || (completedSummary.tarimasTotal ?? 1)} Tarima Master · {completedSummary.totalHUsAlojadas ?? completedSummary.totalBultos ?? 0} cajas físicas activas alojadas ({completedSummary.totalPiezas ?? completedSummary.piezasDisponibles ?? 0} piezas disponibles){Number(completedSummary.cajasDanadasFueraStock) > 0 ? ` · ${completedSummary.cajasDanadasFueraStock} caja dañada histórica retenida en Calidad (fuera de stock)` : ''}{Number(completedSummary.piezasMerma) > 0 ? ` · ${completedSummary.piezasMerma} pzas merma dictaminadas (fuera de stock)` : ''}{Number(completedSummary.piezasFaltantes) > 0 ? ` · ${completedSummary.piezasFaltantes} pzas faltantes (no ingresadas a inventario)` : ''}.
+                  <strong>Trazabilidad y Balance Físico:</strong> {completedSummary.tarimasMaster || (completedSummary.tarimasTotal ?? 1)} Tarima Master · {(completedSummary.totalHUsAlojadas ?? completedSummary.totalBultos ?? 0)} cajas físicas activas alojadas ({(completedSummary.totalPiezas ?? completedSummary.piezasDisponibles ?? 0)} piezas disponibles){Number(completedSummary.cajasDanadasFueraStock) > 0 ? ` · ${completedSummary.cajasDanadasFueraStock} ${(completedSummary.cajasDanadasFueraStock === 1) ? 'caja dañada histórica/inactiva (saldo 0)' : 'cajas dañadas históricas/inactivas (saldo 0)'}` : ''}{Number(completedSummary.piezasMerma) > 0 ? ` · ${completedSummary.piezasMerma} pzas merma en DEV-01 (fuera de stock)` : ''}{Number(completedSummary.piezasFaltantes) > 0 ? ` · ${completedSummary.piezasFaltantes} pzas faltantes (no ingresadas a inventario)` : ''}.
                 </span>
               </div>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>
@@ -1865,25 +1873,48 @@ export function PutawayModal({
                               </span>
 
                               <div style={{ display: 'flex', gap: 10 }}>
-                                <button
-                                  type="button"
-                                  className="btn btn-primary"
-                                  disabled={!boxScanSuccess || !rackScanSuccess || submitting}
-                                  onClick={handleConfirmSingleBox}
-                                  style={{
-                                    backgroundColor: (boxScanSuccess && rackScanSuccess) ? '#0D9488' : '#94A3B8',
-                                    borderColor: (boxScanSuccess && rackScanSuccess) ? '#0D9488' : '#94A3B8',
-                                    padding: '8px 18px',
-                                    fontSize: 12.5,
-                                    fontWeight: 700,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                    cursor: (boxScanSuccess && rackScanSuccess && !submitting) ? 'pointer' : 'not-allowed',
-                                  }}
-                                >
-                                  <Check size={16} /> {submitting ? 'Auditando...' : 'Confirmar Ubicación de esta Caja'}
-                                </button>
+                                {isCurrentBoxConfirmed ? (
+                                  <button
+                                    type="button"
+                                    disabled
+                                    className="btn btn-secondary"
+                                    style={{
+                                      backgroundColor: '#F1F5F9',
+                                      borderColor: '#CBD5E1',
+                                      color: '#64748B',
+                                      padding: '8px 18px',
+                                      fontSize: 12.5,
+                                      fontWeight: 700,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 6,
+                                      cursor: 'not-allowed',
+                                    }}
+                                    title="Esta caja ya fue confirmada con Escaneo Dual. Pulse 'Reiniciar a Pendiente' si requiere modificar su rack."
+                                  >
+                                    <CheckCircle2 size={16} style={{ color: '#16A34A' }} /> Caja ya Confirmada
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    disabled={!boxScanSuccess || !rackScanSuccess || submitting}
+                                    onClick={handleConfirmSingleBox}
+                                    style={{
+                                      backgroundColor: (boxScanSuccess && rackScanSuccess) ? '#0D9488' : '#94A3B8',
+                                      borderColor: (boxScanSuccess && rackScanSuccess) ? '#0D9488' : '#94A3B8',
+                                      padding: '8px 18px',
+                                      fontSize: 12.5,
+                                      fontWeight: 700,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 6,
+                                      cursor: (boxScanSuccess && rackScanSuccess && !submitting) ? 'pointer' : 'not-allowed',
+                                    }}
+                                  >
+                                    <Check size={16} /> {submitting ? 'Auditando...' : 'Confirmar Ubicación de esta Caja'}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>

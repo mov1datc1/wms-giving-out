@@ -4,6 +4,53 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.13] — 2026-10-09
+
+### 🔍 Corrección General de Resumen Putaway, Idempotencia de Escaneo Dual y Desglose de HUs en Almacén
+
+- **1. Erradicación del Falso Faltante de 20 Piezas en Resumen Putaway (`PutawayModal.tsx`):**
+  - Causa raíz: operador falsy `|| 20` (`{completedSummary.piezasFaltantes || 20}`) evaluaba el valor legítimo de 0 faltantes a 20. Reemplazado por nullish coalescing `(completedSummary.piezasFaltantes ?? 0)` y `(completedSummary.piezasMerma ?? 0)`.
+- **2. Desglose Preciso de HUs en Dossier de Almacén (`Receiving.tsx`):**
+  - Desacople transparente entre cajas operativas activas en racks (12), HUs históricas inactivas (1 con saldo 0) y HUs segregadas de merma (1 en DEV-01 con 2 piezas bloqueadas). Contador de pestaña generalizado: `Cajas en Almacén (12 activas · 1 hist. · 1 merma DEV-01)`.
+- **3. Candado de Idempotencia y Bloqueo de Reconfirmación en Putaway (`PutawayModal.tsx`, `operations.controller.ts`):**
+  - En la interfaz de Escaneo Dual, toda caja ya confirmada conmuta a botón inactivo "Caja ya Confirmada", imposibilitando una segunda confirmación accidental. Reubicaciones requieren pulsar explícitamente "Reiniciar a Pendiente".
+  - En backend (`confirmPutawayItem` y transacción de `confirmPutaway`), verificación previa de auditoría y movimientos para evitar duplicación de `InventoryMovement`, `AuditLog` u ocupación de ubicaciones.
+- **4. Ajuste Semántico de Daño/Merma (`PutawayModal.tsx`, `operations.controller.ts`):**
+  - Sustitución del texto confuso "1 caja dañada en Calidad" por "1 caja dañada histórica/inactiva (saldo 0)", preservando de forma independiente "2 piezas de merma en DEV-01".
+- **5. Aislamiento Absoluto de Recepciones:**
+  - Auditoría confirmada de cálculos, reportes y endpoints resueltos estrictamente mediante identificadores formales (`receiptId`, `huId`, `lotId`, `receiptLineId`) sin mezclas por SKU, lote o rack compartido.
+- **6. Auditoría Directa en BD de REC-2026-0006:**
+  - 0 faltantes, 210 piezas comerciales conformes, 2 piezas de merma en DEV-01, 12 HUs activas en racks, 1 Tarima Master, 1 HU dañada histórica inactiva saldo 0, cero movimientos duplicados, `fechaCierre = null`.
+
+## [1.9.12] — 2026-10-09
+
+### 🛡️ Blindaje de Concurrencia, Idempotencia de Cierre y Corrección de Conteo de Cajas Dañadas Históricas
+
+Commits en `dev`: `9821217`, `ed42594`, `1c279a7`. `main` sin cambios (`35ec587`).
+
+- **1. Dictamen de Calidad Transaccional y Atómico (`9821217`):**
+  - La resolución del dictamen de Calidad (`operations.controller.ts`) se ejecuta en una única transacción: creación de HU reacondicionada, segregación de merma e inactivación de la caja dañada original ocurren todas o ninguna.
+  - Correlativo `INSP-` protegido con constraint único + captura `P2002` + recálculo + reintento.
+
+- **2. Protección General de Correlativos ante Concurrencia Real (`ed42594`):**
+  - Nuevo helper reutilizable `withConcurrencyRetry` en `wms-backend/src/common/concurrency.util.ts`: detecta colisiones de llave única (`P2002` / `23505` / `duplicate key`) y reintenta con backoff + jitter (5 intentos por defecto).
+  - Los correlativos `REC-`, `PLT-`, `HU-`/`BOX-`, `PED-`, `CC-` y `ACTA-NC-` pasan de `count()+1` a `maxSeq+1` dentro del helper, evitando tanto la reutilización de folios tras borrados como la colisión de dos operaciones simultáneas.
+
+- **3. Cierre Oficial Idempotente (`ed42594`):**
+  - Un segundo `closeReceipt` (doble clic, timeout o reintento) sobre una recepción ya cerrada devuelve el cierre existente en lugar de un error 403, sin duplicar movimientos ni auditoría.
+  - Ajustes de estados operativos en `inventory.controller.ts`, `Receiving.tsx`, `Inventory.tsx`, `QualityInspectionModal.tsx`, `ReceiptReportModal.tsx` y `DualLabelModal.tsx`.
+
+- **4. Conteo Correcto de Cajas Dañadas Históricas en Doble Etiquetado (`1c279a7`):**
+  - **Problema:** en REC-2026-0006 el modal mostraba "2 Dañada histórica / inactiva fuera de la tarima" y "(2 histórica en Calidad)", cuando solo existe 1 caja dañada (`BOX-REC-2026-0006-0001-DANO`). La HU de merma `HU-NC-REC-2026-0006-MERMA-01` (tipo `CAJA`, con `motivoDano` heredado) se contaba como segunda caja.
+  - **Corrección general en `DualLabelModal.tsx`:**
+    * `isHuMerma(hu)`: identifica HUs de merma (`HU-NC-`, `MERMA`, `DEV-01`, `estadoCalidad === 'MERMA'`, o `BLOQUEADO` con `cajaOrigenId`).
+    * `isHuOriginalDamaged(hu)`: cuenta solo cajas de origen (`!cajaOrigenId`) inactivas o dañadas, excluyendo merma.
+    * `isHuDamaged(hu)` excluye merma; las HUs de merma no aparecen en la pestaña de cajas.
+    * `piezasMerma` se calcula aparte (en piezas) y nunca se usa como contador de cajas.
+    * Textos con singular/plural: "1 caja dañada histórica / inactiva fuera de la tarima", "(1 histórica en Calidad)", "2 piezas de merma (en DEV-01)", "(2 pzas merma DEV-01)".
+  - **Backend (`operations.controller.ts`):** el resumen de putaway (`cajasDanadasFueraStock`) excluye la merma de DEV-01. La validación de cajas activas del putaway no cambia.
+  - Corrección solo de presentación/cálculo: sin cambios de datos en BD, sin generar etiquetas y sin avanzar REC-2026-0006 (sigue en `EN_PROCESO_CONTEO`, Calidad `COMPLETADA`, Etiquetas `PENDIENTE`).
+
 ## [1.9.11] — 2026-10-07
 
 ### 🏷️ Corrección Estructural de Etapa 4 (Etiquetas/Doble Etiquetado), Generador General de Correlativos HU y Normalización Oficial
