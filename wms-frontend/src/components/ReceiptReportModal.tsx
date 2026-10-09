@@ -222,24 +222,92 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
     return true;
   });
 
-  // Conteo de cajas
-  const cajasActivasRacks = boxHus.filter(h => h.estadoHu === 'ACTIVO').length;
-  const cajasDespachadas = boxHus.filter(h => h.estadoHu === 'DESPACHADO').length;
-  const cajasHistoricasInactivas = boxHus.filter(h => h.estadoHu === 'INACTIVO' || h.estadoHu === 'DAÑADO').length;
+  // Clasificación operativa y formal de HUs (Regla General para Anexo A y Existencias)
+  const isHuMerma = (h: any): boolean => {
+    if (!h) return false;
+    const cod = String(h.codigo || '').toUpperCase();
+    const ubi = String(h.ubicacionActual || h.lote?.ubicacion?.codigo || '').toUpperCase();
+    const estCal = String(h.estadoCalidad || '').toUpperCase();
+    return cod.includes('MERMA') || cod.startsWith('HU-NC-') || ubi === 'DEV-01' || ubi.startsWith('DEV-') || estCal === 'MERMA';
+  };
+
+  const isHuQuarantine = (h: any): boolean => {
+    if (!h || isHuMerma(h)) return false;
+    const ubi = String(h.ubicacionActual || h.lote?.ubicacion?.codigo || '').toUpperCase();
+    const estHu = String(h.estadoHu || '').toUpperCase();
+    const estCal = String(h.estadoCalidad || '').toUpperCase();
+    return ubi.includes('CUARENTENA') || estHu === 'RETENIDO' || estHu === 'CUARENTENA' || estCal === 'CUARENTENA';
+  };
+
+  const isHuInactive = (h: any): boolean => {
+    if (!h) return false;
+    const estHu = String(h.estadoHu || '').toUpperCase();
+    return estHu === 'INACTIVO' || estHu === 'DAÑADO' || estHu === 'DANADO';
+  };
+
+  const isHuDispatched = (h: any): boolean => {
+    if (!h) return false;
+    return String(h.estadoHu || '').toUpperCase() === 'DESPACHADO';
+  };
+
+  const isHuSegregatedOther = (h: any): boolean => {
+    if (!h || isHuMerma(h) || isHuQuarantine(h) || isHuInactive(h) || isHuDispatched(h)) return false;
+    const estHu = String(h.estadoHu || '').toUpperCase();
+    const estCal = String(h.estadoCalidad || '').toUpperCase();
+    const ubi = String(h.ubicacionActual || h.lote?.ubicacion?.codigo || '').toUpperCase();
+    return estHu === 'BLOQUEADO' || estCal === 'BLOQUEADO' || estCal === 'RECHAZADO' || ubi.startsWith('NC-') || ubi.startsWith('VIR-');
+  };
+
+  const isHuCommercialActive = (h: any): boolean => {
+    if (!h) return false;
+    return !isHuMerma(h) && !isHuQuarantine(h) && !isHuInactive(h) && !isHuDispatched(h) && !isHuSegregatedOther(h) && h.estadoHu === 'ACTIVO';
+  };
+
+  // Conteo de cajas y unidades de manejo desglosado
+  const cajasActivasRacks = boxHus.filter(h => isHuCommercialActive(h)).length;
+  const cajasDespachadas = boxHus.filter(h => isHuDispatched(h)).length;
+  const cajasHistoricasInactivas = boxHus.filter(h => isHuInactive(h)).length;
+  const husMermaBloqueadas = boxHus.filter(h => isHuMerma(h)).length;
+  const husCuarentenaBloqueadas = boxHus.filter(h => isHuQuarantine(h)).length;
+  const husOtrasSegregadas = boxHus.filter(h => isHuSegregatedOther(h)).length;
   const cajasConformesAlCierre = cajasActivasRacks + cajasDespachadas;
 
-  // Métricas de inventario actual en racks
+  // Desglose general para el encabezado del Anexo A
+  const anexoAHeaderParts: string[] = [];
+  if (cajasActivasRacks > 0) {
+    anexoAHeaderParts.push(`${cajasActivasRacks} ${cajasActivasRacks === 1 ? 'caja activa en rack' : 'cajas activas en racks'}`);
+  }
+  if (cajasDespachadas > 0) {
+    anexoAHeaderParts.push(`${cajasDespachadas} ${cajasDespachadas === 1 ? 'caja despachada' : 'cajas despachadas'}`);
+  }
+  if (cajasHistoricasInactivas > 0) {
+    anexoAHeaderParts.push(`${cajasHistoricasInactivas} ${cajasHistoricasInactivas === 1 ? 'HU histórica dañada/inactiva' : 'HUs históricas dañadas/inactivas'}`);
+  }
+  if (husMermaBloqueadas > 0) {
+    anexoAHeaderParts.push(`${husMermaBloqueadas} ${husMermaBloqueadas === 1 ? 'HU de merma bloqueada en DEV-01' : 'HUs de merma bloqueadas en DEV-01'}`);
+  }
+  if (husCuarentenaBloqueadas > 0) {
+    anexoAHeaderParts.push(`${husCuarentenaBloqueadas} ${husCuarentenaBloqueadas === 1 ? 'HU en cuarentena' : 'HUs en cuarentena'}`);
+  }
+  if (husOtrasSegregadas > 0) {
+    anexoAHeaderParts.push(`${husOtrasSegregadas} ${husOtrasSegregadas === 1 ? 'HU segregada / no comercial' : 'HUs segregadas / no comerciales'}`);
+  }
+  if (anexoAHeaderParts.length === 0) {
+    anexoAHeaderParts.push(`${boxHus.length} HUs registradas`);
+  }
+
+  // Métricas de inventario actual en racks (exclusivamente cajas comerciales activas)
   const piezasActivasEnRacks = boxHus
-    .filter(h => h.estadoHu === 'ACTIVO')
+    .filter(h => isHuCommercialActive(h))
     .reduce((acc, h) => acc + (Number(h.cantidad) || 0), 0);
   const piezasDespachadas = boxHus
-    .filter(h => h.estadoHu === 'DESPACHADO')
+    .filter(h => isHuDispatched(h))
     .reduce((acc, h) => acc + (Number(h.cantidad) || 0), 0);
 
   // Elegibilidad para pedidos de caja cerrada
   let piezasElegiblesCajaCerrada = 0;
   let cajasElegiblesCajaCerrada = 0;
-  boxHus.filter(h => h.estadoHu === 'ACTIVO').forEach(h => {
+  boxHus.filter(h => isHuCommercialActive(h)).forEach(h => {
     const pzas = Number(h.cantidad) || 0;
     const lineMatch = receipt?.lineas?.find((l: any) => l.sku?.codigo === h.skuCodigo || l.skuId === h.lote?.skuId);
     const skuFactor = h.lote?.sku?.capacidadEmpaque || h.piezasPorCaja || lineMatch?.sku?.capacidadEmpaque || lineMatch?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
@@ -263,8 +331,9 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
   const originDamagedBoxCodigo = originDamagedBox?.codigo || qiRecord?.cajaOrigenCodigo || (qiRecord?.detalles?.[0]?.cajaOrigenCodigo) || '—';
 
   // 2. Identificar la caja destino del rescate (reacondicionada, activa y conforme en inventario)
-  // Regla general: Excluir estrictamente la caja dañada de origen y cualquier HU inactiva o con sufijo DANO.
+  // Regla general: Excluir estrictamente la caja dañada de origen, merma y cualquier HU inactiva o con sufijo DANO.
   const reconditionedBox = boxHus.find((b: any) => {
+    if (isHuMerma(b) || isHuQuarantine(b)) return false;
     if (originDamagedBox && b.id === originDamagedBox.id) return false;
     if (typeof b.codigo === 'string' && b.codigo.includes('DANO')) return false;
     if (b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO') return false;
@@ -1160,7 +1229,12 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', fontSize: 9.5, color: '#0F172A', fontWeight: 700 }}>
-                        {cajasActivasRacks} {cajasActivasRacks === 1 ? 'caja activa en rack' : 'cajas activas en racks'}{cajasDespachadas > 0 ? ` · ${cajasDespachadas} ${cajasDespachadas === 1 ? 'caja despachada' : 'cajas despachadas'}` : ''}{cajasHistoricasInactivas > 0 ? ` · ${cajasHistoricasInactivas} ${cajasHistoricasInactivas === 1 ? 'HU histórica dañada/inactiva' : 'HUs históricas dañadas/inactivas'}` : ''}
+                        <div>
+                          {anexoAHeaderParts.join(' · ')}
+                        </div>
+                        <div style={{ fontSize: 8.5, color: '#64748B', fontWeight: 600, marginTop: 1 }}>
+                          Total histórico registrado: {boxHus.length} {boxHus.length === 1 ? 'HU' : 'HUs'}
+                        </div>
                       </div>
                     </div>
 
@@ -1207,30 +1281,45 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                         </thead>
                         <tbody>
                           {boxHus.map((box: any, idx: number) => {
-                            const isDespachado = box.estadoHu === 'DESPACHADO';
-                            const isInactive = box.estadoHu === 'INACTIVO' || box.estadoHu === 'DAÑADO';
+                            const isDespachado = isHuDispatched(box);
+                            const isInactive = isHuInactive(box);
+                            const isMerma = isHuMerma(box);
+                            const isQuarantine = isHuQuarantine(box);
+                            const isSegregated = isHuSegregatedOther(box);
+                            const isCommercial = isHuCommercialActive(box);
+
                             const pzas = Number(box.cantidad) || 0;
                             const lineMatchBox = receipt?.lineas?.find((l: any) => l.sku?.codigo === box.skuCodigo || l.skuId === box.lote?.skuId);
                             const skuFactor = box.lote?.sku?.capacidadEmpaque || box.piezasPorCaja || lineMatchBox?.sku?.capacidadEmpaque || lineMatchBox?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
                             const standardCap = (box.reacondicionada || box.cajaOrigenId) ? skuFactor : (box.piezasPorCaja || skuFactor);
-                            const isPartial = !isInactive && !isDespachado && (box.reacondicionada || Boolean(box.cajaOrigenId) || pzas < standardCap);
+                            const isPartial = isCommercial && (box.reacondicionada || Boolean(box.cajaOrigenId) || pzas < standardCap);
                             const cadStr = box.fechaVencimiento ? formatCalendarDate(box.fechaVencimiento) : '—';
                             const ubi = isDespachado
                               ? `Salida / Despacho (era ${box.ubicacionActual || 'rack'})`
                               : isInactive
                               ? `${box.ubicacionActual || 'AREA_CALIDAD'} (Retención)`
+                              : isMerma
+                              ? `${box.ubicacionActual || 'DEV-01'} (Merma)`
+                              : isQuarantine
+                              ? `${box.ubicacionActual || 'CUARENTENA'} (Retención)`
                               : (box.lote?.ubicacion?.codigo || box.ubicacionActual || 'En Rack');
 
-                            // Resolución limpia del folio de origen para la caja rescatada
+                            // Resolución limpia del folio de origen para la caja rescatada o merma segregada
                             const originBox = box.cajaOrigenId ? boxHus.find((b: any) => b.id === box.cajaOrigenId) : null;
-                            const originFolio = box.cajaOrigenCodigo || originBox?.codigo || (box.cajaOrigenId?.startsWith('BOX-') ? box.cajaOrigenId : (isPartial ? (originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : null) : null));
+                            const originFolio = box.cajaOrigenCodigo || originBox?.codigo || (box.cajaOrigenId?.startsWith('BOX-') ? box.cajaOrigenId : ((isPartial || isMerma) ? (originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : null) : null));
 
                             return (
                               <tr
                                 key={idx}
                                 style={{
                                   borderBottom: '1px solid #CBD5E1',
-                                  backgroundColor: isInactive ? '#FEF2F2' : isPartial ? '#FFFBEB' : (idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC'),
+                                  backgroundColor: (isInactive || isMerma)
+                                    ? '#FEF2F2'
+                                    : (isQuarantine || isSegregated)
+                                    ? '#FFFBEB'
+                                    : isPartial
+                                    ? '#FFFDF5'
+                                    : (idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC'),
                                   height: 'auto',
                                 }}
                               >
@@ -1245,12 +1334,30 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                     overflowWrap: 'anywhere',
                                     whiteSpace: 'normal',
                                     height: 'auto',
-                                    color: isDespachado ? '#1D4ED8' : isInactive ? '#DC2626' : isPartial ? '#B45309' : '#0F172A',
+                                    color: isDespachado
+                                      ? '#1D4ED8'
+                                      : (isInactive || isMerma)
+                                      ? '#DC2626'
+                                      : (isQuarantine || isSegregated || isPartial)
+                                      ? '#B45309'
+                                      : '#0F172A',
                                   }}
                                 >
                                   <div style={{ fontSize: 8.5, lineHeight: 1.25, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                                     {box.codigo}
                                   </div>
+                                  {isMerma && originFolio && (
+                                    <div style={{ fontSize: 7.5, color: '#DC2626', fontWeight: 700, marginTop: 3, lineHeight: 1.2 }}>
+                                      Segregada de:
+                                      <div style={{ fontFamily: 'monospace', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{originFolio}</div>
+                                    </div>
+                                  )}
+                                  {(isQuarantine || isSegregated) && originFolio && (
+                                    <div style={{ fontSize: 7.5, color: '#B45309', fontWeight: 700, marginTop: 3, lineHeight: 1.2 }}>
+                                      Segregada de:
+                                      <div style={{ fontFamily: 'monospace', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{originFolio}</div>
+                                    </div>
+                                  )}
                                   {isPartial && originFolio && (
                                     <div style={{ fontSize: 7.5, color: '#B45309', fontWeight: 700, marginTop: 3, lineHeight: 1.2 }}>
                                       Rescate de:
@@ -1286,10 +1393,37 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                         Inactiva por reacondicionamiento
                                       </div>
                                     </div>
+                                  ) : isMerma ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#DC2626', fontSize: 8.5, lineHeight: 1.25 }}>
+                                        Merma / No Conforme ({pzas} pz)
+                                      </div>
+                                      <div style={{ color: '#991B1B', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Segregada en almacén virtual DEV-01
+                                      </div>
+                                    </div>
+                                  ) : isQuarantine ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.25 }}>
+                                        Cuarentena / En Inspección ({pzas} pz)
+                                      </div>
+                                      <div style={{ color: '#92400E', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Retenida fuera de inventario comercial
+                                      </div>
+                                    </div>
+                                  ) : isSegregated ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.25 }}>
+                                        Segregada / No Disponible ({pzas} pz)
+                                      </div>
+                                      <div style={{ color: '#92400E', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Bloqueada en {box.ubicacionActual || 'Almacén Virtual'}
+                                      </div>
+                                    </div>
                                   ) : isPartial ? (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                                       <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.25 }}>
-                                        Parcial: {pzas} de {standardCap} piezas · Reacondicionada
+                                        Parcial comercial: {pzas} de {standardCap} pz · Reacondicionada
                                       </div>
                                     </div>
                                   ) : (
@@ -1312,10 +1446,13 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                   <div style={{ fontWeight: 800, color: '#0F172A', fontFamily: 'monospace', fontSize: 8.5, lineHeight: 1.25 }}>
                                     {box.skuCodigo || box.lote?.sku?.codigo || '—'}
                                   </div>
-                                  <div style={{ fontSize: 8, color: isInactive ? '#DC2626' : '#475569', marginTop: 2, lineHeight: 1.25 }}>
+                                  <div style={{ fontSize: 8, color: (isInactive || isMerma) ? '#DC2626' : (isQuarantine || isSegregated) ? '#B45309' : '#475569', marginTop: 2, lineHeight: 1.25 }}>
                                     {(() => {
                                       const rawDesc = box.skuDescripcion || box.lote?.sku?.descripcion || '—';
-                                      return isInactive && !rawDesc.includes('[DAÑO EXTERIOR]') ? `[DAÑO EXTERIOR] ${rawDesc}` : rawDesc;
+                                      if (isInactive && !rawDesc.includes('[DAÑO EXTERIOR]')) return `[DAÑO EXTERIOR] ${rawDesc}`;
+                                      if (isMerma && !rawDesc.includes('[MERMA DICTAMINADA]')) return `[MERMA DICTAMINADA] ${rawDesc}`;
+                                      if (isQuarantine && !rawDesc.includes('[EN CUARENTENA]')) return `[EN CUARENTENA] ${rawDesc}`;
+                                      return rawDesc;
                                     })()}
                                   </div>
                                 </td>
@@ -1354,13 +1491,31 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                         Pedido: <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{box.pedidoCodigo || box.ordenCodigo || '—'}</span>
                                       </div>
                                     </div>
+                                  ) : isMerma ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, color: '#DC2626', fontSize: 8.5, lineHeight: 1.2 }}>
+                                        Saldo no comercial: {pzas} pz
+                                      </div>
+                                      <div style={{ color: '#991B1B', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Bloqueado (Merma en DEV-01)
+                                      </div>
+                                    </div>
+                                  ) : (isQuarantine || isSegregated) ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.2 }}>
+                                        Saldo no disponible: {pzas} pz
+                                      </div>
+                                      <div style={{ color: '#92400E', fontSize: 7.5, fontWeight: 700, lineHeight: 1.2 }}>
+                                        Bloqueado en almacén virtual
+                                      </div>
+                                    </div>
                                   ) : isPartial ? (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                                       <div style={{ fontWeight: 800, color: '#B45309', fontSize: 8.5, lineHeight: 1.2 }}>
                                         Saldo actual: {pzas} pz
                                       </div>
                                       <div style={{ color: '#78350F', fontSize: 7.5, fontWeight: 600, lineHeight: 1.2 }}>
-                                        En rack (caja no estándar)
+                                        En rack (disponible parcial)
                                       </div>
                                     </div>
                                   ) : (
@@ -1428,6 +1583,33 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                         })()}
                                       </div>
                                     </div>
+                                  ) : isMerma ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, fontSize: 8.5, color: '#DC2626', fontFamily: 'monospace', lineHeight: 1.25 }}>
+                                        {box.ubicacionActual || 'DEV-01'}
+                                      </div>
+                                      <div style={{ fontSize: 7.5, color: '#991B1B', fontWeight: 600, lineHeight: 1.2 }}>
+                                        (Almacén Virtual / Merma)
+                                      </div>
+                                    </div>
+                                  ) : isQuarantine ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, fontSize: 8.5, color: '#B45309', fontFamily: 'monospace', lineHeight: 1.25 }}>
+                                        {box.ubicacionActual || 'CUARENTENA'}
+                                      </div>
+                                      <div style={{ fontSize: 7.5, color: '#92400E', fontWeight: 600, lineHeight: 1.2 }}>
+                                        (Cuarentena / Calidad)
+                                      </div>
+                                    </div>
+                                  ) : isSegregated ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                      <div style={{ fontWeight: 800, fontSize: 8.5, color: '#B45309', fontFamily: 'monospace', lineHeight: 1.25 }}>
+                                        {box.ubicacionActual || 'VIRTUAL'}
+                                      </div>
+                                      <div style={{ fontSize: 7.5, color: '#92400E', fontWeight: 600, lineHeight: 1.2 }}>
+                                        (Segregada fuera de rack)
+                                      </div>
+                                    </div>
                                   ) : (
                                     <div style={{ fontWeight: 800, fontSize: 8.5, color: '#0F172A', fontFamily: 'monospace', lineHeight: 1.25 }}>
                                       {box.lote?.ubicacion?.codigo || box.ubicacionActual || 'En Rack'}
@@ -1457,9 +1639,35 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                       boxSizing: 'border-box',
                                       textAlign: 'center',
                                       lineHeight: 1.2,
-                                      backgroundColor: isDespachado ? '#DBEAFE' : isInactive ? '#FEE2E2' : isPartial ? '#FEF3C7' : '#DCFCE7',
-                                      color: isDespachado ? '#1E40AF' : isInactive ? '#991B1B' : isPartial ? '#92400E' : '#166534',
-                                      border: `1px solid ${isDespachado ? '#93C5FD' : isInactive ? '#FCA5A5' : isPartial ? '#FCD34D' : '#86EFAC'}`,
+                                      backgroundColor: isDespachado
+                                        ? '#DBEAFE'
+                                        : (isInactive || isMerma)
+                                        ? '#FEE2E2'
+                                        : (isQuarantine || isSegregated)
+                                        ? '#FEF3C7'
+                                        : isPartial
+                                        ? '#FEF3C7'
+                                        : '#DCFCE7',
+                                      color: isDespachado
+                                        ? '#1E40AF'
+                                        : (isInactive || isMerma)
+                                        ? '#991B1B'
+                                        : (isQuarantine || isSegregated)
+                                        ? '#92400E'
+                                        : isPartial
+                                        ? '#92400E'
+                                        : '#166534',
+                                      border: `1px solid ${
+                                        isDespachado
+                                          ? '#93C5FD'
+                                          : isMerma
+                                          ? '#F87171'
+                                          : isInactive
+                                          ? '#FCA5A5'
+                                          : (isQuarantine || isSegregated || isPartial)
+                                          ? '#FCD34D'
+                                          : '#86EFAC'
+                                      }`,
                                     }}
                                   >
                                     {isDespachado ? (
@@ -1471,6 +1679,21 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                       <>
                                         <div>HISTÓRICA</div>
                                         <div style={{ fontSize: 6.5, fontWeight: 700 }}>INACTIVA</div>
+                                      </>
+                                    ) : isMerma ? (
+                                      <>
+                                        <div>BLOQUEADA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>MERMA DEV-01</div>
+                                      </>
+                                    ) : isQuarantine ? (
+                                      <>
+                                        <div>BLOQUEADA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>CUARENTENA</div>
+                                      </>
+                                    ) : isSegregated ? (
+                                      <>
+                                        <div>BLOQUEADA</div>
+                                        <div style={{ fontSize: 6.5, fontWeight: 700 }}>SEGREGADA</div>
                                       </>
                                     ) : isPartial ? (
                                       <>

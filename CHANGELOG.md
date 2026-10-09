@@ -21,6 +21,10 @@ El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.co
   - Auditoría confirmada de cálculos, reportes y endpoints resueltos estrictamente mediante identificadores formales (`receiptId`, `huId`, `lotId`, `receiptLineId`) sin mezclas por SKU, lote o rack compartido.
 - **6. Auditoría Directa en BD de REC-2026-0006:**
   - 0 faltantes, 210 piezas comerciales conformes, 2 piezas de merma en DEV-01, 12 HUs activas en racks, 1 Tarima Master, 1 HU dañada histórica inactiva saldo 0, cero movimientos duplicados, `fechaCierre = null`.
+- **7. Clasificación Formal y Semántica de No Conformidades en Anexo A (`ReceiptReportModal.tsx`, `operations.controller.ts`):**
+  - Erradicación del falso estatus comercial "ACTIVA PARCIAL" en HUs no disponibles o ubicadas en almacén virtual (`DEV-01`).
+  - Matriz de estatus según condición y disponibilidad física: `ACTIVA / EN RACK` (comercial estándar), `ACTIVA PARCIAL` (comercial disponible), `HISTÓRICA / INACTIVA` (saldo 0), `BLOQUEADA · MERMA DEV-01` (merma dictaminada), `BLOQUEADA · CUARENTENA` (retención de calidad), `BLOQUEADA · SEGREGADA` (almacenes virtuales).
+  - Encabezado de Anexo A con desglose íntegro por tipo de HU (`12 cajas activas en racks · 1 HU histórica dañada/inactiva · 1 HU de merma bloqueada en DEV-01`) y total histórico registrado (14 HUs) sin contar merma como caja comercial operativa.
 
 ## [1.9.12] — 2026-10-09
 
