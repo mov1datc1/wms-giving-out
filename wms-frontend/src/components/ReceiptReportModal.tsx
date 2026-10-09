@@ -118,7 +118,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
     ? formatDateTime(reportData?.qualityInspection?.fechaInspeccion || inspectionData?.inspeccion?.fechaInspeccion)
     : null;
   // Cierre oficial formal: solo se certifica si existe fechaCierre o AuditLog de cierre persistido
-  const auditCierre = auditLogs.find((a: any) => a.accion === 'CIERRE_RECEPCION');
+  const auditCierre = auditLogs.find((a: any) => a.accion === 'CIERRE_RECEPCION' || a.accion === 'CERRAR_RECEPCION');
   const isOfficiallyClosed = Boolean(receipt.fechaCierre || auditCierre || receipt.estado === 'CERRADO' || receipt.estado === 'CERRADA');
   const fechaCierreRecepcion = isOfficiallyClosed ? (receipt.fechaCierre ? formatDateTime(receipt.fechaCierre) : (auditCierre ? formatDateTime(auditCierre.createdAt) : null)) : null;
   const fechaEmisionReporte = formatDateTime(new Date());

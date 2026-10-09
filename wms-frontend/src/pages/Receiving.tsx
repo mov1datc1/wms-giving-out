@@ -2518,7 +2518,7 @@ export function Receiving() {
 
   // Cálculo de etapa operativa (6 etapas de recepción Giving Out: Previo, Rampa, Calidad, Etiquetas, Ubicación, Cierre)
   const computeReceiptStage = (r: any) => {
-    const isClosed = r.estado === 'CERRADA' || r.estado === 'CERRADO';
+    const isClosed = r.estado === 'CERRADA' || r.estado === 'CERRADO' || Boolean(r.fechaCierre);
     if (isClosed) {
       return {
         index: 5,

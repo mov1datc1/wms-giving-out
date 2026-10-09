@@ -5454,7 +5454,7 @@ export class OperationsController {
       }
 
       // 1. CANDADO DE IDEMPOTENCIA TOTAL: Si ya se encuentra cerrada oficialmente, devolver estado existente sin duplicar escrituras
-      if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO') {
+      if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO' || receipt.fechaCierre) {
         const fullReceipt = await this.prisma.receipt.findUnique({
           where: { id: receipt.id },
           include: {
