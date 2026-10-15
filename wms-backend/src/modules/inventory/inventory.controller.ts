@@ -187,6 +187,236 @@ export class InventoryController {
     });
   }
 
+  // ============ INVENTARIO CONSOLIDADO / GENERAL ============
+  @Get('consolidated')
+  @ApiOperation({ summary: 'Consultar inventario general consolidado (conforme, merma, exceso y cuarentena) en una sola consulta' })
+  @ApiQuery({ name: 'clienteId', required: false, description: 'Filtrar por cliente depositante' })
+  @ApiQuery({ name: 'skuId', required: false, description: 'Filtrar por SKU' })
+  @ApiQuery({ name: 'clasificacion', required: false, enum: ['TODOS', 'CONFORME', 'MERMA', 'EXCESO', 'CUARENTENA', 'EXPIRADO', 'BLOQUEADO'], description: 'Filtrar por clasificación' })
+  @ApiQuery({ name: 'search', required: false, description: 'Búsqueda por texto (SKU, lote, ubicación, cliente, etc.)' })
+  async getConsolidatedInventory(
+    @Query('clienteId') clienteId?: string,
+    @Query('skuId') skuId?: string,
+    @Query('clasificacion') clasificacion?: string,
+    @Query('search') search?: string,
+  ) {
+    const where: any = {
+      OR: [
+        { cantidadDisponible: { gt: 0 } },
+        { cantidadBloqueada: { gt: 0 } },
+      ],
+    };
+    if (clienteId) where.clienteId = clienteId;
+    if (skuId) where.skuId = skuId;
+
+    const allLots = await this.prisma.lotInventory.findMany({
+      where,
+      include: {
+        sku: {
+          select: {
+            id: true,
+            codigo: true,
+            descripcion: true,
+            categoria: true,
+            subcategoria: true,
+            marca: true,
+            color: true,
+            talla: true,
+            uomBase: true,
+            capacidadEmpaque: true,
+            temperaturaRequerida: true,
+          },
+        },
+        cliente: {
+          select: {
+            id: true,
+            codigo: true,
+            nombreComercial: true,
+            razonSocial: true,
+            giro: true,
+            uomPrincipal: true,
+            manejoInventario: true,
+            reglaInventario: true,
+          },
+        },
+        ubicacion: {
+          select: {
+            id: true,
+            codigo: true,
+            pasillo: true,
+            rack: true,
+            nivel: true,
+            posicion: true,
+            tipoUbicacion: true,
+            temperatura: true,
+            zona: {
+              select: {
+                id: true,
+                codigo: true,
+                nombre: true,
+                tipoZona: true,
+              },
+            },
+          },
+        },
+        handlingUnits: {
+          select: {
+            id: true,
+            codigo: true,
+            tipoHu: true,
+            cantidad: true,
+            ubicacionActual: true,
+            estadoHu: true,
+            loteTexto: true,
+            reacondicionada: true,
+            piezasPorCaja: true,
+            cajaOrigenId: true,
+          },
+        },
+      },
+      orderBy: [
+        { cliente: { nombreComercial: 'asc' } },
+        { sku: { codigo: 'asc' } },
+        { fechaVencimiento: 'asc' },
+      ],
+    });
+
+    const now = new Date();
+
+    let totalFisico = 0;
+    let totalDisponibleVendible = 0;
+    let totalReservado = 0;
+    let totalBloqueado = 0;
+    let totalMerma = 0;
+    let totalExceso = 0;
+    let totalCuarentenaOtros = 0;
+    let totalExpirado = 0;
+
+    const items = allLots.map((l) => {
+      const disp = Number(l.cantidadDisponible || 0);
+      const res = Number(l.cantidadReservada || 0);
+      const bloq = Number(l.cantidadBloqueada || 0);
+
+      // Físico Total exacto: disponible + bloqueada (evitando doble conteo de reserva)
+      const fisico = disp + bloq;
+      const isExpired = Boolean(l.fechaVencimiento && new Date(l.fechaVencimiento) <= now);
+      const isBlocked = l.estadoCalidad !== 'LIBERADO';
+
+      // Disponible vendible (solo stock liberado no expirado menos reserva)
+      const disponibleVendible = (!isExpired && !isBlocked) ? Math.max(0, disp - res) : 0;
+
+      // Clasificación semántica de la fila
+      let tipoClasificacion: 'CONFORME' | 'MERMA' | 'EXCESO' | 'CUARENTENA' | 'EXPIRADO' = 'CONFORME';
+      const isExceso = l.ubicacion?.codigo === 'NC-EXCESO-01' || (l.notas && (l.notas.includes('PRODUCTO_EXCESO') || l.notas.includes('EXCESO')));
+      const isMerma = l.ubicacion?.codigo === 'DEV-01' || l.ubicacion?.codigo === 'NC-MERMA-01' || l.ubicacion?.tipoUbicacion === 'DEVOLUCION' || (l.notas && (l.notas.includes('MERCANCIA_DANADA') || l.notas.includes('MERMA')));
+
+      if (bloq > 0) {
+        if (isExceso) {
+          tipoClasificacion = 'EXCESO';
+          totalExceso += bloq;
+        } else if (isMerma) {
+          tipoClasificacion = 'MERMA';
+          totalMerma += bloq;
+        } else {
+          tipoClasificacion = 'CUARENTENA';
+          totalCuarentenaOtros += bloq;
+        }
+      } else if (isExpired) {
+        tipoClasificacion = 'EXPIRADO';
+        totalExpirado += disp;
+      } else if (isBlocked) {
+        tipoClasificacion = 'CUARENTENA';
+        totalCuarentenaOtros += disp;
+      } else {
+        tipoClasificacion = 'CONFORME';
+      }
+
+      totalFisico += fisico;
+      totalDisponibleVendible += disponibleVendible;
+      totalReservado += res;
+      totalBloqueado += bloq;
+
+      return {
+        id: l.id,
+        skuId: l.skuId,
+        sku: l.sku,
+        clienteId: l.clienteId,
+        cliente: l.cliente,
+        lote: l.lote,
+        serie: l.serie,
+        fechaVencimiento: l.fechaVencimiento,
+        fechaProduccion: l.fechaProduccion,
+        ubicacionId: l.ubicacionId,
+        ubicacion: l.ubicacion,
+        estadoCalidad: l.estadoCalidad,
+        clasificacion: tipoClasificacion,
+        cantidadFisica: fisico,
+        cantidadDisponible: disp,
+        cantidadDisponibleVendible: disponibleVendible,
+        cantidadReservada: res,
+        cantidadBloqueada: bloq,
+        isExpired,
+        isBlocked,
+        esVendible: disponibleVendible > 0,
+        notas: l.notas,
+        handlingUnits: l.handlingUnits || [],
+        createdAt: l.createdAt,
+        updatedAt: l.updatedAt,
+      };
+    });
+
+    // Filtrar items según query params
+    const filteredItems = items.filter(item => {
+      if (clasificacion && clasificacion !== 'TODOS') {
+        if (clasificacion === 'BLOQUEADO') {
+          if (item.cantidadBloqueada <= 0) return false;
+        } else if (item.clasificacion !== clasificacion) {
+          return false;
+        }
+      }
+      if (search && search.trim()) {
+        const q = search.toLowerCase().trim();
+        const match =
+          item.sku?.codigo?.toLowerCase().includes(q) ||
+          item.sku?.descripcion?.toLowerCase().includes(q) ||
+          item.lote?.toLowerCase().includes(q) ||
+          item.ubicacion?.codigo?.toLowerCase().includes(q) ||
+          item.cliente?.nombreComercial?.toLowerCase().includes(q) ||
+          (item.notas && item.notas.toLowerCase().includes(q));
+        if (!match) return false;
+      }
+      return true;
+    });
+
+    const uniqueSkus = new Set(allLots.map(l => l.skuId)).size;
+    const uniqueLotes = new Set(allLots.map(l => `${l.skuId}-${l.lote || 'SL'}`)).size;
+
+    return {
+      kpis: {
+        totalFisico,
+        totalDisponibleVendible,
+        totalReservado,
+        totalBloqueado,
+        desgloseBloqueado: {
+          totalMerma,
+          totalExceso,
+          totalCuarentenaOtros,
+        },
+        totalExpirado,
+        totalSkus: uniqueSkus,
+        totalLotes: uniqueLotes,
+        reglaCalculo: {
+          totalFisico: 'cantidadDisponible + cantidadBloqueada',
+          disponibleVendible: 'cantidadDisponible - cantidadReservada (solo LIBERADO y no vencido)',
+          reservado: 'cantidadReservada',
+          bloqueadoTotal: 'cantidadBloqueada (Merma + Exceso + Cuarentena)',
+        },
+      },
+      totalItems: filteredItems.length,
+      items: filteredItems,
+    };
+  }
+
   // ============ SUBFLUJO: DESVIAR A ALMACÉN VIRTUAL NO CONFORME / MERMA ============
   @Post('divert-to-virtual')
   @HttpCode(HttpStatus.OK)

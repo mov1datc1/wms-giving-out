@@ -4,7 +4,8 @@ import { API } from '../config/api';
 import {
   Download, RefreshCw, Tag, Box, Search, MapPin, Calendar,
   ShieldAlert, AlertTriangle, CheckCircle2, XCircle, Lock,
-  Printer, Boxes, PlusCircle, ArrowRightLeft, ShieldCheck, CheckSquare, Square
+  Printer, Boxes, PlusCircle, ArrowRightLeft, ShieldCheck, CheckSquare, Square,
+  Layers, Eye, X
 } from 'lucide-react';
 import { DivertToVirtualModal } from '../components/DivertToVirtualModal';
 import { TransferToVirtualModal } from '../components/TransferToVirtualModal';
@@ -58,7 +59,7 @@ const demoLots = [
 
 export function Inventory() {
   const { token } = useAuth();
-  const [mainTab, setMainTab] = useState<'commercial' | 'virtual'>('commercial');
+  const [mainTab, setMainTab] = useState<'commercial' | 'virtual' | 'consolidated'>('consolidated');
   const [commercialView, setCommercialView] = useState<'lots' | 'hus'>('lots');
   
   // Commercial Data
@@ -71,6 +72,12 @@ export function Inventory() {
   const [virtualData, setVirtualData] = useState<any[]>([]);
   const [virtualStats, setVirtualStats] = useState({ totalItems: 0, totalUnidades: 0, totalMerma: 0, totalExceso: 0, lotesMerma: 0, lotesExceso: 0 });
   const [virtualTipoFilter, setVirtualTipoFilter] = useState<'TODOS' | 'MERMA' | 'EXCESO'>('TODOS');
+
+  // Consolidated Inventory Data (Etapa 1 - Inventario General Consolidado)
+  const [consolidatedData, setConsolidatedData] = useState<any[]>([]);
+  const [consolidatedKpis, setConsolidatedKpis] = useState<any | null>(null);
+  const [consolidatedClasificacionFilter, setConsolidatedClasificacionFilter] = useState<string>('TODOS');
+  const [selectedConsolidatedItem, setSelectedConsolidatedItem] = useState<any | null>(null);
   
   // Shared filters & UI states
   const [loading, setLoading] = useState(true);
@@ -98,7 +105,22 @@ export function Inventory() {
   async function loadData() {
     setLoading(true);
     try {
-      if (mainTab === 'commercial') {
+      if (mainTab === 'consolidated') {
+        let url = `${API}/inventory/consolidated?`;
+        if (filterClient) url += `clienteId=${filterClient}&`;
+
+        const [cRes, clientsRes] = await Promise.all([
+          fetch(url, { headers }),
+          clients.length === 0 ? fetch(`${API}/clients`, { headers }) : Promise.resolve(null),
+        ]);
+
+        if (cRes.ok) {
+          const resJson = await cRes.json();
+          setConsolidatedData(resJson.items || []);
+          setConsolidatedKpis(resJson.kpis || null);
+        }
+        if (clientsRes && clientsRes.ok) setClients(await clientsRes.json());
+      } else if (mainTab === 'commercial') {
         const [lotsRes, husRes, clientsRes] = await Promise.all([
           fetch(`${API}/inventory/lots?tipoStock=DISPONIBLE`, { headers }),
           fetch(`${API}/inventory/handling-units?estado=TODOS`, { headers }),
@@ -149,6 +171,21 @@ export function Inventory() {
     }
     setLoading(false);
   }
+
+  // Filtrado Consolidado Local
+  const filteredConsolidated = consolidatedData.filter(item => {
+    const q = search.toLowerCase().trim();
+    const matchSearch = !q ||
+      item.sku?.codigo?.toLowerCase().includes(q) ||
+      item.sku?.descripcion?.toLowerCase().includes(q) ||
+      item.lote?.toLowerCase().includes(q) ||
+      item.ubicacion?.codigo?.toLowerCase().includes(q) ||
+      item.cliente?.nombreComercial?.toLowerCase().includes(q) ||
+      (item.notas && item.notas.toLowerCase().includes(q));
+    const matchClient = !filterClient || item.clienteId === filterClient;
+    const matchClasif = consolidatedClasificacionFilter === 'TODOS' || item.clasificacion === consolidatedClasificacionFilter;
+    return matchSearch && matchClient && matchClasif;
+  });
 
   // Filtrado Comercial
   const filteredLots = lots.filter(l => {
@@ -263,7 +300,13 @@ export function Inventory() {
     let csv = '';
     let filename = '';
 
-    if (mainTab === 'virtual') {
+    if (mainTab === 'consolidated') {
+      csv = 'Clasificación,SKU,Descripción,Cliente,Lote,Vencimiento,Ubicación,Físico Total,Disponible Vendible,Reservado,Bloqueado,Estado Calidad,Notas\n';
+      filteredConsolidated.forEach(item => {
+        csv += `"${item.clasificacion}","${item.sku?.codigo || ''}","${item.sku?.descripcion || ''}","${item.cliente?.nombreComercial || ''}","${item.lote || ''}","${item.fechaVencimiento ? formatCalendarDate(item.fechaVencimiento) : ''}","${item.ubicacion?.codigo || ''}",${item.cantidadFisica},${item.cantidadDisponibleVendible},${item.cantidadReservada},${item.cantidadBloqueada},"${item.estadoCalidad}","${item.notas || ''}"\n`;
+      });
+      filename = `inventario_general_consolidado_${new Date().toISOString().slice(0, 10)}.csv`;
+    } else if (mainTab === 'virtual') {
       csv = 'Folio Acta,Tipo Desvío,SKU,Descripción,Cliente,Lote,Cant. Bloqueada,Cant. Disponible,Ubicación Virtual,Estado Calidad,Fecha Ingreso\n';
       filteredVirtual.forEach(v => {
         csv += `"${v.folioActa || ''}","${v.tipoDesvio || ''}","${v.sku?.codigo || ''}","${v.sku?.nombre || ''}","${v.cliente?.nombreComercial || ''}","${v.lote || ''}",${v.cantidadBloqueada},${v.cantidadDisponible},"${v.ubicacion?.codigo || ''}","${v.estadoCalidad}","${v.fechaIngreso ? new Date(v.fechaIngreso).toLocaleDateString('es-MX') : ''}"\n`;
@@ -305,7 +348,20 @@ export function Inventory() {
             <h1 className="page-title">Inventario & Control de Existencias</h1>
           </div>
           <p className="page-subtitle">
-            {mainTab === 'commercial' ? (
+            {mainTab === 'consolidated' ? (
+              <>
+                <strong style={{ color: 'var(--text-primary)' }}>
+                  {(consolidatedKpis?.totalFisico ?? 0).toLocaleString()} pzas físicas totales
+                </strong>
+                <span style={{ color: '#10B981', fontWeight: 700 }}> · {(consolidatedKpis?.totalDisponibleVendible ?? 0).toLocaleString()} stock libre vendible</span>
+                <span style={{ color: '#6366F1' }}> · {(consolidatedKpis?.totalReservado ?? 0).toLocaleString()} reservadas</span>
+                <span style={{ color: '#EF4444' }}> · {(consolidatedKpis?.totalBloqueado ?? 0).toLocaleString()} bloqueadas ({consolidatedKpis?.desgloseBloqueado?.totalMerma ?? 0} merma en DEV-01, {consolidatedKpis?.desgloseBloqueado?.totalExceso ?? 0} exceso)</span>
+                {Boolean(consolidatedKpis?.totalExpirado > 0) && (
+                  <span style={{ color: '#F59E0B', fontWeight: 600 }}> · {consolidatedKpis.totalExpirado} vencidas</span>
+                )}
+                {search ? ` · filtrado: "${search}"` : ''}
+              </>
+            ) : mainTab === 'commercial' ? (
               commercialView === 'hus' ? (
                 <>
                   <strong style={{ color: 'var(--primary)' }}>Stock físico actual: {activeHus.length} cajas activas · {activeHuUnits.toLocaleString()} piezas</strong>
@@ -362,14 +418,51 @@ export function Inventory() {
         </div>
       </div>
 
-      {/* Selector de Pestaña Principal: Comercial vs Almacén Virtual */}
+      {/* Selector de Pestaña Principal: Consolidado General vs Comercial vs Almacén Virtual */}
       <div style={{
         display: 'flex',
         gap: 8,
         marginBottom: 16,
         borderBottom: '1px solid var(--border)',
-        paddingBottom: 8
+        paddingBottom: 8,
+        flexWrap: 'wrap'
       }}>
+        {/* Pestaña 1: Consolidado General */}
+        <button
+          type="button"
+          onClick={() => setMainTab('consolidated')}
+          style={{
+            padding: '10px 18px',
+            borderRadius: 8,
+            border: mainTab === 'consolidated' ? '1px solid var(--teal)' : '1px solid transparent',
+            background: mainTab === 'consolidated' ? 'rgba(13, 148, 136, 0.12)' : 'transparent',
+            color: mainTab === 'consolidated' ? '#0D9488' : '#64748B',
+            fontWeight: 800,
+            fontSize: 13,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            boxShadow: mainTab === 'consolidated' ? '0 1px 3px rgba(13, 148, 136, 0.2)' : 'none'
+          }}
+        >
+          <Layers size={16} color={mainTab === 'consolidated' ? '#0D9488' : '#94A3B8'} />
+          <span>Inventario General Consolidado</span>
+          {Boolean((consolidatedKpis?.totalFisico ?? 0) > 0) && (
+            <span style={{
+              background: '#0D9488',
+              color: '#FFFFFF',
+              fontSize: 11,
+              fontWeight: 800,
+              padding: '2px 7px',
+              borderRadius: 12
+            }}>
+              {(consolidatedKpis?.totalFisico ?? 0).toLocaleString()}
+            </span>
+          )}
+        </button>
+
+        {/* Pestaña 2: Stock Operativo Comercial */}
         <button
           type="button"
           onClick={() => setMainTab('commercial')}
@@ -377,8 +470,8 @@ export function Inventory() {
             padding: '10px 18px',
             borderRadius: 8,
             border: mainTab === 'commercial' ? '1px solid var(--primary)' : '1px solid transparent',
-            background: mainTab === 'commercial' ? 'rgba(13, 148, 136, 0.12)' : 'transparent',
-            color: mainTab === 'commercial' ? '#2DD4BF' : '#94A3B8',
+            background: mainTab === 'commercial' ? 'rgba(37, 99, 235, 0.1)' : 'transparent',
+            color: mainTab === 'commercial' ? '#2563EB' : '#64748B',
             fontWeight: 800,
             fontSize: 13,
             cursor: 'pointer',
@@ -387,9 +480,11 @@ export function Inventory() {
             gap: 8
           }}
         >
-          <Box size={16} /> Stock Operativo Comercial
+          <Box size={16} color={mainTab === 'commercial' ? '#2563EB' : '#94A3B8'} />
+          <span>Stock Operativo Comercial</span>
         </button>
 
+        {/* Pestaña 3: Almacén Virtual de No Conforme / Merma */}
         <button
           type="button"
           onClick={() => setMainTab('virtual')}
@@ -397,8 +492,8 @@ export function Inventory() {
             padding: '10px 18px',
             borderRadius: 8,
             border: mainTab === 'virtual' ? '1px solid #EF4444' : '1px solid transparent',
-            background: mainTab === 'virtual' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
-            color: mainTab === 'virtual' ? '#F87171' : '#94A3B8',
+            background: mainTab === 'virtual' ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
+            color: mainTab === 'virtual' ? '#EF4444' : '#64748B',
             fontWeight: 800,
             fontSize: 13,
             cursor: 'pointer',
@@ -418,11 +513,81 @@ export function Inventory() {
               padding: '2px 7px',
               borderRadius: 12
             }}>
-              {virtualStats.totalUnidades}
+              {virtualStats.totalUnidades.toLocaleString()}
             </span>
           )}
         </button>
       </div>
+
+      {/* KPI STRIP: INVENTARIO GENERAL CONSOLIDADO */}
+      {mainTab === 'consolidated' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginBottom: 18 }}>
+          {/* Card 1: Físico Total Global */}
+          <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid var(--teal)' }}>
+            <div style={{ fontSize: 11, color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>Físico Total Global</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text-primary)', marginTop: 4 }}>
+              {(consolidatedKpis?.totalFisico ?? 0).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500, color: '#64748B' }}>pzas</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+              {consolidatedKpis?.totalSkus ?? 0} SKUs · {consolidatedKpis?.totalLotes ?? 0} lotes registrados
+            </div>
+          </div>
+
+          {/* Card 2: Disponible Vendible */}
+          <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #10B981' }}>
+            <div style={{ fontSize: 11, color: '#059669', fontWeight: 700, textTransform: 'uppercase' }}>Disponible Vendible</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: '#10B981', marginTop: 4 }}>
+              {(consolidatedKpis?.totalDisponibleVendible ?? 0).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500, color: '#059669' }}>pzas</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#059669', marginTop: 2, fontWeight: 600 }}>
+              Libre para pedidos y surtido
+            </div>
+          </div>
+
+          {/* Card 3: Reservado */}
+          <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #6366F1' }}>
+            <div style={{ fontSize: 11, color: '#4F46E5', fontWeight: 700, textTransform: 'uppercase' }}>Stock Reservado</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: '#6366F1', marginTop: 4 }}>
+              {(consolidatedKpis?.totalReservado ?? 0).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500, color: '#4F46E5' }}>pzas</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+              Comprometido en pedidos de salida
+            </div>
+          </div>
+
+          {/* Card 4: Bloqueado Total con Desglose */}
+          <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #EF4444' }}>
+            <div style={{ fontSize: 11, color: '#DC2626', fontWeight: 700, textTransform: 'uppercase' }}>Bloqueado Total</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: '#EF4444', marginTop: 4 }}>
+              {(consolidatedKpis?.totalBloqueado ?? 0).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500, color: '#DC2626' }}>pzas</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#64748B', marginTop: 2, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ color: '#EF4444', fontWeight: 600 }}>Merma: {consolidatedKpis?.desgloseBloqueado?.totalMerma ?? 0}</span>
+              <span>·</span>
+              <span style={{ color: '#0284C7', fontWeight: 600 }}>Exceso: {consolidatedKpis?.desgloseBloqueado?.totalExceso ?? 0}</span>
+              {Boolean((consolidatedKpis?.desgloseBloqueado?.totalCuarentenaOtros ?? 0) > 0) && (
+                <>
+                  <span>·</span>
+                  <span style={{ color: '#7C3AED', fontWeight: 600 }}>Cuarentena: {consolidatedKpis.desgloseBloqueado.totalCuarentenaOtros}</span>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Card 5: Caducado / No vendible (si aplica) */}
+          {Boolean((consolidatedKpis?.totalExpirado ?? 0) > 0) && (
+            <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #F59E0B' }}>
+              <div style={{ fontSize: 11, color: '#D97706', fontWeight: 700, textTransform: 'uppercase' }}>Caducado / Vencido</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: '#F59E0B', marginTop: 4 }}>
+                {(consolidatedKpis?.totalExpirado ?? 0).toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500, color: '#D97706' }}>pzas</span>
+              </div>
+              <div style={{ fontSize: 11, color: '#D97706', marginTop: 2, fontWeight: 600 }}>
+                Aislado por fecha de caducidad
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* KPI STRIP CUANDO SE ENCUENTRA EN ALMACÉN VIRTUAL */}
       {mainTab === 'virtual' && (
@@ -465,7 +630,46 @@ export function Inventory() {
       {/* Barra de Filtros y Búsqueda */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, padding: '14px 18px', flexWrap: 'wrap', alignItems: 'center' }}>
-          {mainTab === 'commercial' ? (
+          {mainTab === 'consolidated' ? (
+            <div className="btn-group" style={{ flexWrap: 'wrap' }}>
+              <button
+                className={`btn btn-sm ${consolidatedClasificacionFilter === 'TODOS' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setConsolidatedClasificacionFilter('TODOS')}
+              >
+                Todos ({consolidatedData.length})
+              </button>
+              <button
+                className={`btn btn-sm ${consolidatedClasificacionFilter === 'CONFORME' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setConsolidatedClasificacionFilter('CONFORME')}
+                style={{ color: consolidatedClasificacionFilter === 'CONFORME' ? '#FFF' : '#059669' }}
+              >
+                <CheckCircle2 size={13} /> Conforme ({consolidatedData.filter(x => x.clasificacion === 'CONFORME').length})
+              </button>
+              <button
+                className={`btn btn-sm ${consolidatedClasificacionFilter === 'MERMA' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setConsolidatedClasificacionFilter('MERMA')}
+                style={{ color: consolidatedClasificacionFilter === 'MERMA' ? '#FFF' : '#EF4444' }}
+              >
+                <AlertTriangle size={13} /> Merma DEV-01 ({consolidatedData.filter(x => x.clasificacion === 'MERMA').length})
+              </button>
+              <button
+                className={`btn btn-sm ${consolidatedClasificacionFilter === 'EXCESO' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setConsolidatedClasificacionFilter('EXCESO')}
+                style={{ color: consolidatedClasificacionFilter === 'EXCESO' ? '#FFF' : '#0284C7' }}
+              >
+                <Boxes size={13} /> Exceso ({consolidatedData.filter(x => x.clasificacion === 'EXCESO').length})
+              </button>
+              {consolidatedData.some(x => x.clasificacion === 'EXPIRADO') && (
+                <button
+                  className={`btn btn-sm ${consolidatedClasificacionFilter === 'EXPIRADO' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setConsolidatedClasificacionFilter('EXPIRADO')}
+                  style={{ color: consolidatedClasificacionFilter === 'EXPIRADO' ? '#FFF' : '#D97706' }}
+                >
+                  <Calendar size={13} /> Vencidos ({consolidatedData.filter(x => x.clasificacion === 'EXPIRADO').length})
+                </button>
+              )}
+            </div>
+          ) : mainTab === 'commercial' ? (
             <div className="btn-group">
               <button
                 className={`btn btn-sm ${commercialView === 'lots' ? 'btn-primary' : 'btn-ghost'}`}
@@ -508,7 +712,7 @@ export function Inventory() {
           <div className="search-box" style={{ flex: 1, minWidth: 220 }}>
             <Search size={16} />
             <input
-              placeholder={mainTab === 'commercial' ? "Buscar SKU, lote, código HU..." : "Buscar SKU, lote, folio acta NC, HU..."}
+              placeholder={mainTab === 'consolidated' ? "Buscar en inventario general (SKU, lote, ubicación, cliente)..." : mainTab === 'commercial' ? "Buscar SKU, lote, código HU..." : "Buscar SKU, lote, folio acta NC, HU..."}
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
@@ -532,6 +736,284 @@ export function Inventory() {
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-secondary)' }}>
           <RefreshCw className="animate-spin" size={24} /> Cargando inventario...
+        </div>
+      ) : mainTab === 'consolidated' ? (
+        /* VISTA TABLA: INVENTARIO CONSOLIDADO GENERAL */
+        <div className="card">
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Clasificación</th>
+                  <th>SKU</th>
+                  <th>Descripción</th>
+                  <th>Depositante</th>
+                  <th>Lote</th>
+                  <th>Vencimiento</th>
+                  <th>Ubicación Física</th>
+                  <th style={{ textAlign: 'right' }}>Físico Total</th>
+                  <th style={{ textAlign: 'right' }}>Disp. Vendible</th>
+                  <th style={{ textAlign: 'right' }}>Reservado</th>
+                  <th style={{ textAlign: 'right' }}>Bloqueado</th>
+                  <th>Estado Calidad</th>
+                  <th>HUs / Bultos</th>
+                  <th style={{ textAlign: 'center' }}>Acción</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredConsolidated.map((item, idx) => {
+                  const isMerma = item.clasificacion === 'MERMA';
+                  const isExceso = item.clasificacion === 'EXCESO';
+                  const isExpired = item.clasificacion === 'EXPIRADO';
+                  const isConforme = item.clasificacion === 'CONFORME';
+
+                  return (
+                    <tr
+                      key={item.id || idx}
+                      className="animate-fade-in"
+                      style={{
+                        animationDelay: `${idx * 0.015}s`,
+                        backgroundColor: isMerma
+                          ? 'rgba(239, 68, 68, 0.05)'
+                          : isExceso
+                          ? 'rgba(2, 132, 199, 0.05)'
+                          : isExpired
+                          ? 'rgba(217, 119, 6, 0.05)'
+                          : 'transparent'
+                      }}
+                    >
+                      <td>
+                        {isConforme && (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                            color: '#059669',
+                            border: '1px solid rgba(16, 185, 129, 0.3)'
+                          }}>
+                            <CheckCircle2 size={12} /> Conforme
+                          </span>
+                        )}
+                        {isMerma && (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                            color: '#DC2626',
+                            border: '1px solid rgba(239, 68, 68, 0.3)'
+                          }}>
+                            <AlertTriangle size={12} /> Merma DEV-01
+                          </span>
+                        )}
+                        {isExceso && (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            backgroundColor: 'rgba(2, 132, 199, 0.15)',
+                            color: '#0284C7',
+                            border: '1px solid rgba(2, 132, 199, 0.3)'
+                          }}>
+                            <Boxes size={12} /> Excedente NC
+                          </span>
+                        )}
+                        {isExpired && (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            backgroundColor: 'rgba(217, 119, 6, 0.15)',
+                            color: '#D97706',
+                            border: '1px solid rgba(217, 119, 6, 0.3)'
+                          }}>
+                            <Calendar size={12} /> Vencido
+                          </span>
+                        )}
+                        {!isConforme && !isMerma && !isExceso && !isExpired && (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            backgroundColor: 'rgba(139, 92, 246, 0.15)',
+                            color: '#7C3AED',
+                            border: '1px solid rgba(139, 92, 246, 0.3)'
+                          }}>
+                            <Lock size={12} /> Retenido
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <code style={{ fontSize: 12, background: 'var(--bg-secondary)', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                          {item.sku?.codigo || '—'}
+                        </code>
+                      </td>
+                      <td style={{ fontWeight: 500, whiteSpace: 'normal', minWidth: 170 }}>
+                        {item.sku?.descripcion || item.sku?.nombre || '—'}
+                        {item.sku?.talla && <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}> · Talla {item.sku.talla}</span>}
+                        {item.sku?.color && <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}> · {item.sku.color}</span>}
+                      </td>
+                      <td>
+                        <span className="badge badge-info">{item.cliente?.nombreComercial || '—'}</span>
+                      </td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>
+                        {item.lote || '—'}
+                      </td>
+                      <td style={{ fontSize: 12 }}>
+                        {item.fechaVencimiento ? (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            color: item.isExpired ? '#DC2626' : 'var(--text-secondary)',
+                            fontWeight: item.isExpired ? 700 : 400
+                          }}>
+                            <Calendar size={12} /> {formatCalendarDate(item.fechaVencimiento)}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-tertiary)' }}>Sin caducidad</span>
+                        )}
+                      </td>
+                      <td>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: isMerma ? '#DC2626' : isExceso ? '#0284C7' : '#2563EB'
+                        }}>
+                          <MapPin size={12} /> {item.ubicacion?.codigo || '—'}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: 800, fontSize: 13, color: '#0F172A' }}>
+                        {item.cantidadFisica?.toLocaleString() ?? 0}
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 13, color: item.cantidadDisponibleVendible > 0 ? '#059669' : '#94A3B8' }}>
+                        {item.cantidadDisponibleVendible?.toLocaleString() ?? 0}
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: item.cantidadReservada > 0 ? 700 : 400, color: item.cantidadReservada > 0 ? '#D97706' : 'var(--text-tertiary)' }}>
+                        {item.cantidadReservada > 0 ? item.cantidadReservada.toLocaleString() : '—'}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {item.cantidadBloqueada > 0 ? (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            fontWeight: 700,
+                            color: '#DC2626',
+                            fontSize: 12
+                          }}>
+                            <Lock size={11} /> {item.cantidadBloqueada.toLocaleString()}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <span style={{
+                          fontSize: 10,
+                          fontWeight: 800,
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          background: item.estadoCalidad === 'LIBERADO' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                          color: item.estadoCalidad === 'LIBERADO' ? '#059669' : '#DC2626',
+                          border: `1px solid ${item.estadoCalidad === 'LIBERADO' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                        }}>
+                          {item.estadoCalidad}
+                        </span>
+                      </td>
+                      <td>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          fontSize: 12,
+                          color: item.totalHus > 0 ? 'var(--text-primary)' : 'var(--text-tertiary)'
+                        }}>
+                          <Box size={12} /> {item.totalHus > 0 ? `${item.totalHus} bulto${item.totalHus > 1 ? 's' : ''}` : 'Sin HU'}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setSelectedConsolidatedItem(item)}
+                          title="Ver trazabilidad completa y HUs asociadas"
+                          style={{
+                            padding: '4px 9px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: '#2563EB',
+                            border: '1px solid rgba(37, 99, 235, 0.25)',
+                            borderRadius: 6
+                          }}
+                        >
+                          <Eye size={13} />
+                          <span>Detalle</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredConsolidated.length === 0 && (
+                  <tr>
+                    <td colSpan={14} style={{ textAlign: 'center', padding: 50, color: 'var(--text-tertiary)' }}>
+                      No se encontraron registros en el inventario general con los filtros aplicados.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div style={{
+            padding: '12px 20px',
+            borderTop: '1px solid var(--border)',
+            fontSize: 12,
+            color: 'var(--text-secondary)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 10,
+            background: 'var(--bg-secondary)'
+          }}>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <span><b>Partidas:</b> {filteredConsolidated.length}</span>
+              <span><b>Físico Total:</b> {filteredConsolidated.reduce((s, x) => s + (x.cantidadFisica || 0), 0).toLocaleString()} uds</span>
+              <span style={{ color: '#059669' }}><b>Disponible Vendible:</b> {filteredConsolidated.reduce((s, x) => s + (x.cantidadDisponibleVendible || 0), 0).toLocaleString()} uds</span>
+              <span style={{ color: '#D97706' }}><b>Reservado:</b> {filteredConsolidated.reduce((s, x) => s + (x.cantidadReservada || 0), 0).toLocaleString()} uds</span>
+              <span style={{ color: '#DC2626' }}><b>Bloqueado Total:</b> {filteredConsolidated.reduce((s, x) => s + (x.cantidadBloqueada || 0), 0).toLocaleString()} uds</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+              Fórmula Oficial: Físico Total = Disp. + Bloq. (Merma y Exceso son desglose de Bloqueado, 0 doble conteo)
+            </div>
+          </div>
         </div>
       ) : mainTab === 'virtual' ? (
         /* VISTA TABLA: ALMACÉN VIRTUAL DE NO CONFORME / MERMA */
@@ -1241,21 +1723,280 @@ export function Inventory() {
         />
       )}
 
-      {/* Modal de Liberación desde Almacén Virtual (Requerimiento 3) */}
-      {releaseModalOpen && (
-        <ReleaseFromVirtualModal
-          isOpen={releaseModalOpen}
-          onClose={() => {
-            setReleaseModalOpen(false);
-            setItemToRelease(null);
-          }}
-          onSuccess={() => {
-            setReleaseModalOpen(false);
-            setItemToRelease(null);
-            loadData();
-          }}
-          item={itemToRelease}
-        />
+      {/* Modal de Detalle de Partida Consolidada */}
+      {selectedConsolidatedItem && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.75)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          padding: 20
+        }}>
+          <div className="card animate-fade-in" style={{
+            maxWidth: 720,
+            width: '100%',
+            maxHeight: '90vh',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+            border: '1px solid var(--border)'
+          }}>
+            {/* Cabecera del Modal */}
+            <div style={{
+              padding: '16px 24px',
+              borderBottom: '1px solid var(--border)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              backgroundColor: 'var(--bg-secondary)'
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Layers size={18} style={{ color: 'var(--primary)' }} />
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Ficha Técnica de Partida · Inventario General</h3>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  SKU: <strong style={{ color: 'var(--text-primary)' }}>{selectedConsolidatedItem.sku?.codigo}</strong> · Lote: <strong style={{ color: 'var(--text-primary)' }}>{selectedConsolidatedItem.lote || '—'}</strong>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => setSelectedConsolidatedItem(null)}
+                style={{ padding: 6, borderRadius: '50%' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Cuerpo del Modal con scroll */}
+            <div style={{ padding: '20px 24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {/* Banner de Clasificación Operativa */}
+              <div style={{
+                padding: '12px 16px',
+                borderRadius: 8,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                backgroundColor: selectedConsolidatedItem.clasificacion === 'CONFORME'
+                  ? 'rgba(16, 185, 129, 0.12)'
+                  : selectedConsolidatedItem.clasificacion === 'MERMA'
+                  ? 'rgba(239, 68, 68, 0.12)'
+                  : selectedConsolidatedItem.clasificacion === 'EXCESO'
+                  ? 'rgba(2, 132, 199, 0.12)'
+                  : 'rgba(217, 119, 6, 0.12)',
+                border: `1px solid ${
+                  selectedConsolidatedItem.clasificacion === 'CONFORME'
+                    ? 'rgba(16, 185, 129, 0.3)'
+                    : selectedConsolidatedItem.clasificacion === 'MERMA'
+                    ? 'rgba(239, 68, 68, 0.3)'
+                    : selectedConsolidatedItem.clasificacion === 'EXCESO'
+                    ? 'rgba(2, 132, 199, 0.3)'
+                    : 'rgba(217, 119, 6, 0.3)'
+                }`
+              }}>
+                {selectedConsolidatedItem.clasificacion === 'CONFORME' ? (
+                  <CheckCircle2 size={24} style={{ color: '#059669', flexShrink: 0 }} />
+                ) : selectedConsolidatedItem.clasificacion === 'MERMA' ? (
+                  <AlertTriangle size={24} style={{ color: '#DC2626', flexShrink: 0 }} />
+                ) : selectedConsolidatedItem.clasificacion === 'EXCESO' ? (
+                  <Boxes size={24} style={{ color: '#0284C7', flexShrink: 0 }} />
+                ) : (
+                  <Calendar size={24} style={{ color: '#D97706', flexShrink: 0 }} />
+                )}
+                <div>
+                  <div style={{
+                    fontWeight: 700,
+                    fontSize: 13,
+                    color: selectedConsolidatedItem.clasificacion === 'CONFORME'
+                      ? '#059669'
+                      : selectedConsolidatedItem.clasificacion === 'MERMA'
+                      ? '#DC2626'
+                      : selectedConsolidatedItem.clasificacion === 'EXCESO'
+                      ? '#0284C7'
+                      : '#D97706'
+                  }}>
+                    {selectedConsolidatedItem.clasificacion === 'CONFORME' && 'Stock Comercial Conforme · 100% Vendible'}
+                    {selectedConsolidatedItem.clasificacion === 'MERMA' && 'Merma Operativa Segregada en DEV-01 · Retenido'}
+                    {selectedConsolidatedItem.clasificacion === 'EXCESO' && 'Excedente de Recepción en NC-EXCESO-01 · Retenido'}
+                    {selectedConsolidatedItem.clasificacion === 'EXPIRADO' && 'Lote Caducado · Retención Automática por Vencimiento'}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    Ubicación asignada: <strong>{selectedConsolidatedItem.ubicacion?.codigo || '—'}</strong> · Estado de calidad: <strong>{selectedConsolidatedItem.estadoCalidad}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Grid de 4 KPIs Físicos / Lógicos */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                <div style={{ padding: 12, borderRadius: 8, backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border)', textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 700, textTransform: 'uppercase' }}>Físico Total</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: '#0F172A' }}>
+                    {selectedConsolidatedItem.cantidadFisica?.toLocaleString() || 0}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>piezas en nave</div>
+                </div>
+                <div style={{ padding: 12, borderRadius: 8, backgroundColor: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)', textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, color: '#059669', fontWeight: 700, textTransform: 'uppercase' }}>Vendible</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: '#059669' }}>
+                    {selectedConsolidatedItem.cantidadDisponibleVendible?.toLocaleString() || 0}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#059669' }}>disponible picking</div>
+                </div>
+                <div style={{ padding: 12, borderRadius: 8, backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, color: '#D97706', fontWeight: 700, textTransform: 'uppercase' }}>Reservado</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: '#D97706' }}>
+                    {selectedConsolidatedItem.cantidadReservada?.toLocaleString() || 0}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#D97706' }}>comprometido</div>
+                </div>
+                <div style={{ padding: 12, borderRadius: 8, backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, color: '#DC2626', fontWeight: 700, textTransform: 'uppercase' }}>Bloqueado</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: '#DC2626' }}>
+                    {selectedConsolidatedItem.cantidadBloqueada?.toLocaleString() || 0}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#DC2626' }}>cuarentena / merma</div>
+                </div>
+              </div>
+
+              {/* Atributos y Trazabilidad */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, 1fr)',
+                gap: 12,
+                fontSize: 12,
+                padding: 14,
+                borderRadius: 8,
+                backgroundColor: 'var(--bg-secondary)',
+                border: '1px solid var(--border)'
+              }}>
+                <div>
+                  <span style={{ color: 'var(--text-tertiary)' }}>Descripción Producto:</span>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginTop: 2 }}>
+                    {selectedConsolidatedItem.sku?.descripcion || selectedConsolidatedItem.sku?.nombre || '—'}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-tertiary)' }}>Depositante / Cliente:</span>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginTop: 2 }}>
+                    {selectedConsolidatedItem.cliente?.nombreComercial || '—'}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-tertiary)' }}>Fecha de Caducidad / Vencimiento:</span>
+                  <div style={{ fontWeight: 600, color: selectedConsolidatedItem.isExpired ? '#DC2626' : 'var(--text-primary)', marginTop: 2 }}>
+                    {selectedConsolidatedItem.fechaVencimiento ? formatCalendarDate(selectedConsolidatedItem.fechaVencimiento) : 'Sin fecha registrada'}
+                    {selectedConsolidatedItem.isExpired && ' (VENCIDO)'}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-tertiary)' }}>Fecha de Ingreso a Planta:</span>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginTop: 2 }}>
+                    {selectedConsolidatedItem.fechaIngreso ? new Date(selectedConsolidatedItem.fechaIngreso).toLocaleString('es-MX') : '—'}
+                  </div>
+                </div>
+                {selectedConsolidatedItem.motivoBloqueo && (
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <span style={{ color: 'var(--text-tertiary)' }}>Motivo de Retención / Bloqueo:</span>
+                    <div style={{ fontWeight: 600, color: '#DC2626', marginTop: 2 }}>
+                      {selectedConsolidatedItem.motivoBloqueo}
+                    </div>
+                  </div>
+                )}
+                {selectedConsolidatedItem.notas && (
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <span style={{ color: 'var(--text-tertiary)' }}>Notas Operativas:</span>
+                    <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: 2 }}>
+                      {selectedConsolidatedItem.notas}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Lista de Bultos / Handling Units */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: 13 }}>
+                    <Box size={14} style={{ color: 'var(--primary)' }} />
+                    Bultos / Handling Units Asociadas ({selectedConsolidatedItem.handlingUnits?.length || 0})
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Contenedores físicos que integran esta partida</span>
+                </div>
+
+                {selectedConsolidatedItem.handlingUnits && selectedConsolidatedItem.handlingUnits.length > 0 ? (
+                  <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+                    <table className="data-table" style={{ fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          <th>Código HU</th>
+                          <th style={{ textAlign: 'right' }}>Piezas</th>
+                          <th>Tipo</th>
+                          <th>Estado</th>
+                          <th>Ubicación</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedConsolidatedItem.handlingUnits.map((hu: any) => (
+                          <tr key={hu.id}>
+                            <td><code style={{ fontWeight: 700 }}>{hu.codigo}</code></td>
+                            <td style={{ textAlign: 'right', fontWeight: 700 }}>{hu.cantidad}</td>
+                            <td><span className="badge badge-neutral">{hu.tipo || 'CAJA'}</span></td>
+                            <td>
+                              <span style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                padding: '1px 5px',
+                                borderRadius: 4,
+                                backgroundColor: hu.estado === 'ACTIVA' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                                color: hu.estado === 'ACTIVA' ? '#059669' : '#64748B'
+                              }}>
+                                {hu.estado}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
+                                <MapPin size={11} /> {hu.ubicacionCodigo || selectedConsolidatedItem.ubicacion?.codigo || '—'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div style={{ padding: 20, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-tertiary)', fontSize: 12 }}>
+                    Esta partida no tiene Handling Units (HUs) individuales registradas.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Pie del Modal */}
+            <div style={{
+              padding: '14px 24px',
+              borderTop: '1px solid var(--border)',
+              display: 'flex',
+              justifyContent: 'flex-end',
+              backgroundColor: 'var(--bg-secondary)'
+            }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setSelectedConsolidatedItem(null)}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
