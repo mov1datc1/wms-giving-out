@@ -146,6 +146,15 @@ function isExcelCaducidadHeader(h: string): boolean {
   return false;
 }
 
+function isExcelPzCjaHeader(h: string): boolean {
+  return h.includes('piezas por caja') || h.includes('pz cja') || h.includes('pzas cja') || h.includes('pzas por caja');
+}
+
+function isExcelCjasHeader(h: string): boolean {
+  if (isExcelPzCjaHeader(h)) return false;
+  return h.includes('cajas empaque') || h.includes('cajas') || h.includes('bultos');
+}
+
 export const DISCREPANCY_STATUS_OPTIONS = [
   { value: 'FALTANTE_PROVEEDOR', label: 'Faltante de Origen (Factura incompleta / Proveedor no surtió)' },
   { value: 'DANO_TRANSPORTE', label: 'Daño / Merma en Tránsito (Responsabilidad transportista / seguro)' },
@@ -830,6 +839,7 @@ export function Receiving() {
     }
   }, [searchParams, receipts]);
 
+
   function handleOpenReceiptDossier(receipt: any) {
     setSelectedReceiptId(receipt.id);
     setActiveDossierTab('PARTIDAS');
@@ -909,6 +919,19 @@ export function Receiving() {
   const [reportModalReceipt, setReportModalReceipt] = useState<any | null>(null);
   const [reportData, setReportData] = useState<any | null>(null);
   const [loadingReport, setLoadingReport] = useState(false);
+
+  // Manejo de tecla Escape para cerrar modal de cierre de recepción
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && closingReceipt) {
+        setClosingReceipt(null);
+      }
+    }
+    if (closingReceipt) {
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }
+  }, [closingReceipt]);
 
   // Subflujo Desvío a Almacén Virtual de No Conforme / Merma
   const [divertModalData, setDivertModalData] = useState<{
@@ -2004,6 +2027,8 @@ export function Receiving() {
           let rowQty: number | null = null;
           let rowLote = '';
           let rowCaducidad = '';
+          let rowPzCja: number | null = null;
+          let rowCjas: number | null = null;
 
           Object.keys(row).forEach(key => {
             const h = normalizeExcelHeader(key);
@@ -2029,6 +2054,12 @@ export function Receiving() {
               } else {
                 rowCaducidad = val;
               }
+            } else if (isExcelPzCjaHeader(h) && rowPzCja === null) {
+              const parsed = parseFloat(val);
+              if (!isNaN(parsed) && parsed > 0) rowPzCja = parsed;
+            } else if (isExcelCjasHeader(h) && rowCjas === null) {
+              const parsed = parseFloat(val);
+              if (!isNaN(parsed) && parsed > 0) rowCjas = parsed;
             }
           });
 
@@ -2117,6 +2148,59 @@ export function Receiving() {
               });
             }
             return;
+          }
+
+          if (matchedSku.activo === false) {
+            parsedLines.push({
+              rowNum: filaNum,
+              factura: rowFactura,
+              codeOrEan: rowCodeOrEan,
+              descripcion: matchedSku.descripcion || rowDesc,
+              cantidadEsperada: rowQty,
+              lote: rowLote,
+              caducidad: rowCaducidad,
+              sku: matchedSku,
+              status: 'INVALID_DATA',
+              rejectionReason: `El SKU "${matchedSku.codigo}" se encuentra INACTIVO en el catálogo maestro y no puede utilizarse en nuevos arribos o previos. Reactívelo antes de continuar.`
+            });
+            return;
+          }
+
+          // Validación de empaque ASN vs Catálogo Maestro
+          const masterCap = matchedSku.capacidadEmpaque;
+          if (rowPzCja !== null && masterCap && rowPzCja !== masterCap) {
+            parsedLines.push({
+              rowNum: filaNum,
+              factura: rowFactura,
+              codeOrEan: rowCodeOrEan,
+              descripcion: matchedSku.descripcion || rowDesc,
+              cantidadEsperada: rowQty,
+              lote: rowLote,
+              caducidad: rowCaducidad,
+              sku: matchedSku,
+              status: 'INVALID_DATA',
+              rejectionReason: `Empaque no coincide: el ASN declara ${rowPzCja} pzas/caja, pero el SKU ${matchedSku.codigo} está configurado en ${masterCap} pzas/caja. Corrija el archivo o revise el catálogo antes de crear el previo.`
+            });
+            return;
+          }
+
+          if (rowCjas !== null && masterCap) {
+            const expectedCjas = Math.ceil(rowQty / masterCap);
+            if (rowCjas !== expectedCjas) {
+              parsedLines.push({
+                rowNum: filaNum,
+                factura: rowFactura,
+                codeOrEan: rowCodeOrEan,
+                descripcion: matchedSku.descripcion || rowDesc,
+                cantidadEsperada: rowQty,
+                lote: rowLote,
+                caducidad: rowCaducidad,
+                sku: matchedSku,
+                status: 'INVALID_DATA',
+                rejectionReason: `Discrepancia en bultos declarados: el ASN declara ${rowCjas} caja(s), pero con el factor maestro de ${masterCap} pz/cja para ${rowQty} piezas corresponden ${expectedCjas} caja(s). Corrija el archivo o el catálogo antes de crear el previo.`
+              });
+              return;
+            }
           }
 
           // Partida válida
@@ -3261,7 +3345,7 @@ export function Receiving() {
                   required
                 >
                   <option value="">Seleccionar del catálogo...</option>
-                  {skus.filter(s => s.clienteId === showAddLineModal.clienteId).map(s => (
+                  {skus.filter(s => s.clienteId === showAddLineModal.clienteId && s.activo !== false).map(s => (
                     <option key={s.id} value={s.id}>{s.descripcion} ({s.codigo})</option>
                   ))}
                 </select>
@@ -4140,7 +4224,7 @@ export function Receiving() {
                         style={{ fontSize: 13 }}
                       >
                         <option value="">Seleccionar SKU...</option>
-                        {(newPrevio.clienteId ? skus.filter(s => s.clienteId === newPrevio.clienteId) : skus).map(s => (
+                        {(newPrevio.clienteId ? skus.filter(s => s.clienteId === newPrevio.clienteId && s.activo !== false) : skus.filter(s => s.activo !== false)).map(s => (
                           <option key={s.id} value={s.id}>{s.codigo} — {s.descripcion}</option>
                         ))}
                       </select>
@@ -4449,7 +4533,9 @@ export function Receiving() {
                     </div>
                     <div>
                       <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Líneas de SKU Registradas</span>
-                      <strong style={{ fontSize: 14, color: '#059669', fontWeight: 700 }}>{activeLines.length} líneas de producto</strong>
+                      <strong style={{ fontSize: 14, color: '#059669', fontWeight: 700 }}>
+                        {activeLines.length} {activeLines.length === 1 ? 'línea de producto' : 'líneas de producto'}
+                      </strong>
                     </div>
                     <div>
                       <span style={{ fontSize: 11, color: '#64748B', display: 'block' }}>Línea de Transporte / Chofer</span>

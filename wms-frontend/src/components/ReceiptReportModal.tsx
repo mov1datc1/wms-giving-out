@@ -24,13 +24,26 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
   // Modo de vista en pantalla: Solo Reporte Principal vs Vista con Anexos
   const [viewMode, setViewMode] = useState<'MAIN_ONLY' | 'WITH_ANNEXES'>('MAIN_ONLY');
 
-  // Selección de anexos a incluir
-  const [includeAnnexA, setIncludeAnnexA] = useState<boolean>(true); // Manifiesto de HUs
-  const [includeAnnexB, setIncludeAnnexB] = useState<boolean>(true); // Bitácora de Inspección y Rescate
-  const [includeAnnexC, setIncludeAnnexC] = useState<boolean>(true); // Salidas y Existencia Actual
+  // Selección manual de anexos del usuario (activos cuando aplican operacionalmente)
+  const [userSelectedAnnexes, setUserSelectedAnnexes] = useState<Record<string, boolean>>({
+    ANNEX_A: true,
+    ANNEX_B: true,
+    ANNEX_C: true,
+  });
 
   // Alcance de impresión: 'MAIN_ONLY' | 'FULL'
   const [printScope, setPrintScope] = useState<'MAIN_ONLY' | 'FULL'>('MAIN_ONLY');
+
+  // Manejo de tecla Escape para cerrar modal de reporte según estándar global
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   // Estados de datos enriquecidos desde backend
   const [loadingDetails, setLoadingDetails] = useState<boolean>(true);
@@ -128,8 +141,13 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
   
   // Responsable de cierre: nombre formal con usuario/correo como dato complementario
   const rawCerradoPor = receipt.cerradoPor || receipt.bloqueadoPor || null;
-  const responsableCierreNombre = receipt.nombreReceptor || 'Jonathan Palacios';
-  const responsableCierreEmail = rawCerradoPor && rawCerradoPor.includes('@') ? rawCerradoPor : null;
+  const responsableCierreNombre =
+    receipt.cerradoPorNombre ||
+    receipt.nombreReceptor ||
+    auditCierre?.usuario ||
+    (rawCerradoPor && !rawCerradoPor.includes('@') ? rawCerradoPor : null) ||
+    'Supervisor de Almacén';
+  const responsableCierreEmail = rawCerradoPor && rawCerradoPor.includes('@') ? rawCerradoPor : (auditCierre?.usuario && auditCierre.usuario.includes('@') ? auditCierre.usuario : null);
 
   // Renderizado de código de barras Code-128
   useEffect(() => {
@@ -216,7 +234,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
   );
   const palletHu = palletHus[0] || null;
   const boxHus = handlingUnits.filter(h => {
-    if (palletHu && h.id === palletHu.id) return false;
+    if (palletHus.some(p => p.id === h.id)) return false;
     if (h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA') return false;
     if (typeof h.codigo === 'string' && (h.codigo.startsWith('PLT-') || h.codigo.startsWith('TAR-'))) return false;
     return true;
@@ -375,16 +393,87 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
     ? (hasDiscrepancies ? 'FINIQUITADO CON RESERVAS' : 'CONCILIADO 100%')
     : (hasDiscrepancies ? 'BORRADOR / PRE-CIERRE CON RESERVAS' : 'BORRADOR / PRE-CIERRE');
 
-  // Cómputo dinámico de páginas para numeración real
-  let runningPageCount = 1;
+  // =========================================================================
+  // ARQUITECTURA DINÁMICA DE ANEXOS BASADA EN DATOS REALES (REGLA GENERAL)
+  // =========================================================================
+
+  // Anexo A — Manifiesto de HUs y Tarimas
+  const hasAnnexAContent = boxHus.length > 0 || palletHus.length > 0;
+  const annexA = {
+    id: 'ANNEX_A' as const,
+    code: 'A' as const,
+    titulo: 'Manifiesto de HUs y Tarimas',
+    aplica: hasAnnexAContent,
+    seleccionable: hasAnnexAContent,
+    seleccionado: hasAnnexAContent && Boolean(userSelectedAnnexes.ANNEX_A),
+    tieneContenido: hasAnnexAContent,
+    cantidadRegistros: boxHus.length,
+    motivoNoAplica: 'No aplica — sin unidades de manejo (HUs) ni tarimas registradas',
+  };
+
+  // Anexo B — Inspección, Calidad y Rescate (100% Condicional)
+  const hasQualityInspection = Boolean(qiRecord || inspectionData?.inspeccion);
+  const hasDamagedBoxes = bultosDanados > 0 || boxHus.some((b: any) => isHuInactive(b) || (typeof b.codigo === 'string' && b.codigo.includes('DANO')));
+  const hasRescue = boxHus.some((b: any) => b.reacondicionada || Boolean(b.cajaOrigenId));
+  const hasMerma = totalMermaPiezas > 0 || husMermaBloqueadas > 0 || boxHus.some((b: any) => isHuMerma(b));
+  const hasQuarantine = husCuarentenaBloqueadas > 0 || boxHus.some((b: any) => isHuQuarantine(b) || isHuSegregatedOther(b));
+  const hasAnnexBContent = Boolean(hasQualityInspection || hasDamagedBoxes || hasRescue || hasMerma || hasQuarantine);
+
+  const annexB = {
+    id: 'ANNEX_B' as const,
+    code: 'B' as const,
+    titulo: 'Inspección y Rescate',
+    aplica: hasAnnexBContent,
+    seleccionable: hasAnnexBContent,
+    seleccionado: hasAnnexBContent && Boolean(userSelectedAnnexes.ANNEX_B),
+    tieneContenido: hasAnnexBContent,
+    cantidadRegistros: qiRecord?.detalles?.length || (hasAnnexBContent ? 1 : 0),
+    motivoNoAplica: 'No aplica — sin inspección, daño exterior ni rescate registrado',
+  };
+
+  // Anexo C — Salidas y Existencia Actual
+  const hasAnnexCContent = totalConformePiezas > 0 || piezasActivasEnRacks > 0 || piezasDespachadas > 0 || boxHus.length > 0;
+  const annexC = {
+    id: 'ANNEX_C' as const,
+    code: 'C' as const,
+    titulo: 'Salidas y Existencia Actual',
+    aplica: hasAnnexCContent,
+    seleccionable: hasAnnexCContent,
+    seleccionado: hasAnnexCContent && Boolean(userSelectedAnnexes.ANNEX_C),
+    tieneContenido: hasAnnexCContent,
+    cantidadRegistros: cajasActivasRacks + cajasDespachadas,
+    motivoNoAplica: 'No aplica — sin inventario ni existencia vigente',
+  };
+
+  // Cómputo dinámico de páginas para numeración real de documentos ("Hoja X de Y")
+  const isPrintingFull = printScope === 'FULL' || viewMode === 'WITH_ANNEXES';
+
+  const willRenderAnnexA = isPrintingFull && annexA.seleccionado;
+  const willRenderAnnexB = isPrintingFull && annexB.seleccionado;
+  const willRenderAnnexC = isPrintingFull && annexC.seleccionado;
+
+  let pageCounter = 1; // Página 1: Reporte Principal
   const pageMainNum = 1;
+
   let pageAnnexANum = 0;
-  if (includeAnnexA) { runningPageCount++; pageAnnexANum = runningPageCount; }
+  if (willRenderAnnexA) {
+    pageCounter++;
+    pageAnnexANum = pageCounter;
+  }
+
   let pageAnnexBNum = 0;
-  if (includeAnnexB && qiRecord) { runningPageCount++; pageAnnexBNum = runningPageCount; }
+  if (willRenderAnnexB) {
+    pageCounter++;
+    pageAnnexBNum = pageCounter;
+  }
+
   let pageAnnexCNum = 0;
-  if (includeAnnexC) { runningPageCount++; pageAnnexCNum = runningPageCount; }
-  const totalPagesFull = runningPageCount;
+  if (willRenderAnnexC) {
+    pageCounter++;
+    pageAnnexCNum = pageCounter;
+  }
+
+  const totalPagesFull = isPrintingFull ? pageCounter : 1;
 
   // Acciones de impresión con sincronización de estado y renderizado limpio
   const handlePrint = (scope: 'MAIN_ONLY' | 'FULL') => {
@@ -670,7 +759,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
               title="Imprime únicamente el acta de cierre principal"
             >
               <Printer size={14} />
-              Imprimir Principal
+              Imprimir Principal (1 pág)
             </button>
 
             {/* BOTÓN IMPRIMIR CON ANEXOS */}
@@ -690,10 +779,10 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                 borderRadius: 6,
                 cursor: 'pointer',
               }}
-              title="Imprime el acta principal y los anexos seleccionados"
+              title={`Imprime el acta principal y los anexos seleccionados (${totalPagesFull} ${totalPagesFull === 1 ? 'página' : 'páginas'} en total)`}
             >
               <Printer size={14} />
-              Imprimir con Anexos
+              Imprimir con Anexos ({totalPagesFull} {totalPagesFull === 1 ? 'pág' : 'págs'})
             </button>
 
             {/* CERRAR */}
@@ -709,7 +798,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                 display: 'flex',
                 alignItems: 'center',
               }}
-              title="Cerrar ventana"
+              title="Cerrar ventana (Esc)"
             >
               <X size={20} />
             </button>
@@ -726,37 +815,84 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
               borderBottom: '1px solid #E2E8F0',
               display: 'flex',
               alignItems: 'center',
-              gap: 20,
+              justifyContent: 'space-between',
               fontSize: 11.5,
               color: '#334155',
               flexWrap: 'wrap',
+              gap: 12,
             }}
           >
-            <span style={{ fontWeight: 700, color: '#0F172A' }}>Anexos a incluir en impresión:</span>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={includeAnnexA}
-                onChange={(e) => setIncludeAnnexA(e.target.checked)}
-              />
-              Anexo A: Manifiesto de HUs y Tarimas ({boxHus.length} registros)
-            </label>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={includeAnnexB}
-                onChange={(e) => setIncludeAnnexB(e.target.checked)}
-              />
-              Anexo B: Inspección y Rescate {qiRecord ? `(${qiRecord.folio})` : ''}
-            </label>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={includeAnnexC}
-                onChange={(e) => setIncludeAnnexC(e.target.checked)}
-              />
-              Anexo C: Salidas y Existencia Actual ({piezasActivasEnRacks} pz en racks)
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, color: '#0F172A' }}>Anexos aplicables a la recepción:</span>
+
+              {/* ANEXO A: HUs Y TARIMAS */}
+              {annexA.aplica ? (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={annexA.seleccionado}
+                    onChange={(e) => setUserSelectedAnnexes(prev => ({ ...prev, ANNEX_A: e.target.checked }))}
+                  />
+                  <span>
+                    <strong>Anexo A:</strong> Manifiesto de HUs y Tarimas ({boxHus.length} {boxHus.length === 1 ? 'HU' : 'HUs'}{palletHus.length > 0 ? ` · ${palletHus.length} ${palletHus.length === 1 ? 'tarima' : 'tarimas'}` : ''})
+                  </span>
+                </label>
+              ) : (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#94A3B8', fontSize: 11 }}>
+                  <span style={{ textDecoration: 'line-through' }}>Anexo A (HUs/Tarimas)</span>
+                  <span style={{ fontSize: 10, backgroundColor: '#F1F5F9', padding: '1px 6px', borderRadius: 3, border: '1px solid #E2E8F0' }}>
+                    {annexA.motivoNoAplica}
+                  </span>
+                </div>
+              )}
+
+              {/* ANEXO B: INSPECCIÓN, CALIDAD Y RESCATE (100% CONDICIONAL) */}
+              {annexB.aplica ? (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={annexB.seleccionado}
+                    onChange={(e) => setUserSelectedAnnexes(prev => ({ ...prev, ANNEX_B: e.target.checked }))}
+                  />
+                  <span>
+                    <strong>Anexo B:</strong> Inspección y Rescate {qiRecord ? `(${qiRecord.folio})` : (totalMermaPiezas > 0 ? `(${totalMermaPiezas} pz merma)` : '(Calidad/Daño)')}
+                  </span>
+                </label>
+              ) : (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#94A3B8', fontSize: 11 }}>
+                  <span style={{ textDecoration: 'line-through' }}>Anexo B (Calidad/Rescate)</span>
+                  <span style={{ fontSize: 10, backgroundColor: '#F1F5F9', padding: '1px 6px', borderRadius: 3, border: '1px solid #E2E8F0' }}>
+                    {annexB.motivoNoAplica}
+                  </span>
+                </div>
+              )}
+
+              {/* ANEXO C: SALIDAS Y EXISTENCIA ACTUAL */}
+              {annexC.aplica ? (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={annexC.seleccionado}
+                    onChange={(e) => setUserSelectedAnnexes(prev => ({ ...prev, ANNEX_C: e.target.checked }))}
+                  />
+                  <span>
+                    <strong>Anexo C:</strong> Salidas y Existencia Actual ({piezasActivasEnRacks} pz en racks{piezasDespachadas > 0 ? ` · ${piezasDespachadas} despachadas` : ''})
+                  </span>
+                </label>
+              ) : (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#94A3B8', fontSize: 11 }}>
+                  <span style={{ textDecoration: 'line-through' }}>Anexo C (Existencias)</span>
+                  <span style={{ fontSize: 10, backgroundColor: '#F1F5F9', padding: '1px 6px', borderRadius: 3, border: '1px solid #E2E8F0' }}>
+                    {annexC.motivoNoAplica}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* BADGE TOTAL PÁGINAS */}
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#0F766E', backgroundColor: '#F0FDFA', border: '1px solid #99F6E4', padding: '2px 8px', borderRadius: 4 }}>
+              Documento final: {totalPagesFull} {totalPagesFull === 1 ? 'página (solo Principal)' : `páginas (Principal + ${totalPagesFull - 1} ${totalPagesFull - 1 === 1 ? 'anexo' : 'anexos'})`}
+            </div>
           </div>
         )}
 
@@ -910,6 +1046,13 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                               <div style={{ fontSize: 8.5, color: '#0F766E', fontWeight: 700 }}>
                                 Resp: {responsableCierreNombre} {responsableCierreEmail ? `(${responsableCierreEmail})` : ''}
                               </div>
+                              {reportData?.reconciliacionesPostCierre?.length > 0 && (
+                                <div style={{ fontSize: 8, color: '#1D4ED8', fontWeight: 700, marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  <span style={{ backgroundColor: '#DBEAFE', color: '#1E40AF', padding: '1px 4px', borderRadius: 2 }}>
+                                    ADENDA POST-CIERRE REGISTRADA
+                                  </span>
+                                </div>
+                              )}
                             </>
                           ) : (
                             <>
@@ -1198,6 +1341,20 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                       </div>
                     </div>
 
+                    {/* ADENDA NOTICE SI EXISTE RECONCILIACIÓN POST-CIERRE */}
+                    {reportData?.reconciliacionesPostCierre?.length > 0 && (
+                      <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 4, backgroundColor: '#EFF6FF', border: '1px solid #93C5FD', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontSize: 10, fontWeight: 900, color: '#1E40AF', textTransform: 'uppercase' }}>
+                            ⚖️ RECONCILIACIÓN POST-CIERRE DE PUTAWAY REGISTRADA
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 8.5, color: '#1E40AF' }}>
+                          Fecha: <strong>{formatDateTime(reportData.reconciliacionesPostCierre[0].createdAt)}</strong> · Sup: <strong>{reportData.reconciliacionesPostCierre[0].usuario}</strong> · <em>(Cierre original {fechaCierreRecepcion} preservado)</em>
+                        </div>
+                      </div>
+                    )}
+
                   </div>
                 </div>
 
@@ -1216,7 +1373,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                 {/* ------------------------------------------------------------------- */}
                 {/* ANEXO A: MANIFIESTO DE UNIDADES DE MANEJO (HUs) Y TARIMAS           */}
                 {/* ------------------------------------------------------------------- */}
-                {includeAnnexA && (
+                {willRenderAnnexA && (
                   <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
                     {/* ENCABEZADO DE ANEXO */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
@@ -1238,30 +1395,34 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                       </div>
                     </div>
 
-                    {/* TARIMA CONTENEDOR (ACLARACIÓN PUNTUAL PUNTO 4) */}
-                    {palletHu && (
-                      <div className="border-box" style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 10px', backgroundColor: '#F8FAFC', marginBottom: 8, fontSize: 9.5 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <span style={{ fontWeight: 800, color: '#0F766E' }}>TARIMA MASTER: {palletHu.codigo}</span>
-                            <span style={{ marginLeft: 8, fontSize: 8.5, color: '#64748B' }}>(Contenedor logístico de arribo)</span>
-                          </div>
-                          <span style={{ fontSize: 8.5, fontWeight: 600, color: '#475569' }}>
-                            Andén de arribo: {receipt.andenAsignado || 'REC-01 (Rampa)'} (Histórico)
-                          </span>
-                        </div>
-                        <div style={{ marginTop: 3, fontSize: 8.5, color: '#334155' }}>
-                          <strong>{isOfficiallyClosed ? 'Composición al cierre:' : 'Composición actual previa al cierre:'}</strong>{' '}
-                          {isOfficiallyClosed ? (
-                            <>
-                              {cajasConformesAlCierre} {cajasConformesAlCierre === 1 ? 'caja física activa asociada' : 'cajas físicas activas asociadas'} a la Tarima Master. No se duplica su conteo con las cajas contenidas.
-                            </>
-                          ) : (
-                            <>
-                              {cajasActivasRacks} {cajasActivasRacks === 1 ? 'caja física activa asociada' : 'cajas físicas activas asociadas'} a la Tarima Master.{bultosFaltantes > 0 ? ` ${bultosDeclarados} ${bultosDeclarados === 1 ? 'bulto declarado' : 'bultos declarados'} originalmente · ${bultosFaltantes} ${bultosFaltantes === 1 ? 'faltante no arribado' : 'faltantes no arribados'}.` : ''} No se duplica su conteo con las cajas contenidas.
-                            </>
-                          )}
-                        </div>
+                    {/* TARIMAS CONTENEDORAS (SOPORTE DE 1 O VARIAS TARIMAS) */}
+                    {palletHus.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                        {palletHus.map((plt: any, pIdx: number) => {
+                          const associatedBoxes = boxHus.filter((b: any) => b.parentHuId === plt.id || (!b.parentHuId && palletHus.length === 1));
+                          const numAssoc = associatedBoxes.length > 0 ? associatedBoxes.length : (palletHus.length === 1 ? cajasActivasRacks : 0);
+                          return (
+                            <div key={plt.id || pIdx} className="border-box" style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 10px', backgroundColor: '#F8FAFC', fontSize: 9.5 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div>
+                                  <span style={{ fontWeight: 800, color: '#0F766E' }}>TARIMA {palletHus.length > 1 ? `#${pIdx + 1}: ` : 'MASTER: '}{plt.codigo}</span>
+                                  <span style={{ marginLeft: 8, fontSize: 8.5, color: '#64748B' }}>(Contenedor logístico de arribo)</span>
+                                </div>
+                                <span style={{ fontSize: 8.5, fontWeight: 600, color: '#475569' }}>
+                                  Andén de arribo: {receipt.andenAsignado || 'REC-01 (Rampa)'} (Histórico)
+                                </span>
+                              </div>
+                              <div style={{ marginTop: 3, fontSize: 8.5, color: '#334155' }}>
+                                <strong>{isOfficiallyClosed ? 'Composición al cierre:' : 'Composición actual previa al cierre:'}</strong>{' '}
+                                {numAssoc > 0 ? (
+                                  <>{numAssoc} {numAssoc === 1 ? 'caja física asociada' : 'cajas físicas asociadas'} a esta tarima. No se duplica su conteo con las cajas contenidas.</>
+                                ) : (
+                                  <>Tarima contenedora de recepción. Cajas distribuidas según manifiesto inferior.</>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -1725,60 +1886,111 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                 {/* ------------------------------------------------------------------- */}
                 {/* ANEXO B: BITÁCORA TÉCNICA DE INSPECCIÓN Y RESCATE (CALIDAD)         */}
                 {/* ------------------------------------------------------------------- */}
-                {includeAnnexB && qiRecord && (
+                {willRenderAnnexB && (
                   <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 900, color: '#0F172A', textTransform: 'uppercase' }}>
-                          ANEXO B · BITÁCORA TÉCNICA DE INSPECCIÓN Y RESCATE
+                          ANEXO B · {qiRecord ? 'BITÁCORA TÉCNICA DE INSPECCIÓN Y RESCATE' : 'DOCUMENTACIÓN OPERATIVA DE CALIDAD Y NO CONFORMIDAD'}
                         </div>
                         <div style={{ fontSize: 9.5, color: '#64748B' }}>
-                          Folio Inspección: <strong>{qiRecord.folio}</strong> · Recepción: <strong>{folioTransporte}</strong>
+                          {qiRecord ? (
+                            <>Folio Inspección: <strong>{qiRecord.folio}</strong> · Recepción: <strong>{folioTransporte}</strong></>
+                          ) : (
+                            <>Registro de Control de Calidad y Discrepancias · Recepción: <strong>{folioTransporte}</strong></>
+                          )}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', fontSize: 9.5, color: '#0F172A', fontWeight: 700 }}>
-                        Fecha: {fechaInspeccionCalidad || '—'} · Inspector: <strong>{qiRecord.inspectorNombre || qiRecord.firmadoPor}</strong>
+                        {qiRecord ? (
+                          <>Fecha: {fechaInspeccionCalidad || '—'} · Inspector: <strong>{qiRecord.inspectorNombre || qiRecord.firmadoPor || 'Inspector de Calidad'}</strong></>
+                        ) : (
+                          <>Fecha dictamen: {fechaCierreRecepcion || fechaEmisionReporte} · Responsable: <strong>{responsableCierreNombre}</strong></>
+                        )}
                       </div>
                     </div>
 
-                    <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
-                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Origen Dañada</div>
-                          <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#DC2626' }}>
-                            {originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || '—')}
+                    {qiRecord ? (
+                      <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Origen Dañada</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#DC2626' }}>
+                              {originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || '—')}
+                            </div>
+                            <div style={{ fontSize: 8, color: '#64748B' }}>
+                              Contenido inspeccionado: {qiRecord.totalPiezasInspeccionadas || ((qiRecord.totalPiezasRescatadas || 0) + (qiRecord.totalPiezasMerma || 0)) || '—'} piezas
+                            </div>
                           </div>
-                          <div style={{ fontSize: 8, color: '#64748B' }}>Contenido histórico: {qiRecord.totalPiezasInspeccionadas || 12} piezas</div>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Destino Rescate</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#15803D' }}>
+                              {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || '—')}
+                            </div>
+                            <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700 }}>{qiRecord.totalPiezasRescatadas || 0} piezas conformes rescatadas</div>
+                          </div>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Merma Dictaminada</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
+                              {qiRecord.totalPiezasMerma || totalMermaPiezas} piezas
+                            </div>
+                            <div style={{ fontSize: 8, color: '#DC2626' }}>Envases no aptos / daño físico</div>
+                          </div>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Dictamen Operativo</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
+                              {qiRecord.dictamen || (reconditionedBox ? 'REACONDICIONADO' : 'INSPECCIONADO')}
+                            </div>
+                            <div style={{ fontSize: 8, color: '#64748B' }}>
+                              Horas maquila: {qiRecord.horasMaquila && Number(qiRecord.horasMaquila) > 0 ? `${qiRecord.horasMaquila} hrs` : 'No registrado'}
+                            </div>
+                          </div>
                         </div>
-                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Destino Rescate</div>
-                          <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#15803D' }}>
-                            {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || '—')}
-                          </div>
-                          <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700 }}>{qiRecord.totalPiezasRescatadas} piezas conformes rescatadas</div>
-                        </div>
-                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Merma Dictaminada</div>
-                          <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
-                            {qiRecord.totalPiezasMerma} piezas
-                          </div>
-                          <div style={{ fontSize: 8, color: '#DC2626' }}>Envases no aptos por daño físico</div>
-                        </div>
-                        <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                          <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Dictamen Operativo</div>
-                          <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
-                            REACONDICIONADO
-                          </div>
-                          <div style={{ fontSize: 8, color: '#64748B' }}>
-                            Horas maquila: {qiRecord.horasMaquila && Number(qiRecord.horasMaquila) > 0 ? `${qiRecord.horasMaquila} hrs` : 'No registrado'}
-                          </div>
-                        </div>
-                      </div>
 
-                      <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
-                        <strong>Observaciones de la Inspección Técnica:</strong> {qiRecord.observaciones || 'Inspección interna pieza por pieza y reacondicionamiento conforme a protocolo Giving Out 3PL.'}
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
+                          <strong>Observaciones de la Inspección Técnica:</strong> {qiRecord.observaciones || 'Inspección interna pieza por pieza y reacondicionamiento conforme a protocolo Giving Out 3PL.'}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Bultos Dañados en Arribo</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
+                              {bultosDanados} {bultosDanados === 1 ? 'bulto' : 'bultos'}
+                            </div>
+                            <div style={{ fontSize: 8, color: '#64748B' }}>Identificado en rampa</div>
+                          </div>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Piezas Merma Segregada</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
+                              {totalMermaPiezas} PZA
+                            </div>
+                            <div style={{ fontSize: 8, color: '#991B1B', fontWeight: 700 }}>Ubicación: DEV-01 (Virtual)</div>
+                          </div>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>HUs Cuarentena / Retenidas</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#B45309' }}>
+                              {husCuarentenaBloqueadas} {husCuarentenaBloqueadas === 1 ? 'HU' : 'HUs'}
+                            </div>
+                            <div style={{ fontSize: 8, color: '#92400E' }}>Fuera de stock comercial</div>
+                          </div>
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Estatus de Calidad</div>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
+                              {totalMermaPiezas > 0 ? 'MERMA SEGREGADA' : (husCuarentenaBloqueadas > 0 ? 'RETENCIÓN ACTIVA' : 'REVISIÓN RAMPA')}
+                            </div>
+                            <div style={{ fontSize: 8, color: '#64748B' }}>
+                              Dictamen operativo WMS
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
+                          <strong>Detalle y Dictamen Operativo:</strong> Se documenta registro de no conformidad / daño exterior durante la recepción {folioTransporte}. {totalMermaPiezas > 0 ? `Se dictaminaron ${totalMermaPiezas} piezas en merma segregadas formalmente en el almacén virtual DEV-01 para devolución o disposición final.` : ''} {bultosDanados > 0 ? `Se identificaron ${bultosDanados} bultos con impacto físico exterior reportados en el acta de rampa.` : ''}
+                        </div>
+                      </div>
+                    )}
 
                     {/* PIE INSTITUCIONAL ANEXO B */}
                     <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
@@ -1790,7 +2002,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                 {/* ------------------------------------------------------------------- */}
                 {/* ANEXO C: TRAZABILIDAD DE SALIDAS Y EXISTENCIA ACTUAL                */}
                 {/* ------------------------------------------------------------------- */}
-                {includeAnnexC && (
+                {willRenderAnnexC && (
                   <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
                       <div>
@@ -1843,13 +2055,75 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                       </div>
 
                       <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
-                        <strong>Balance matemático de existencia:</strong> {totalConformePiezas} piezas conformes {isOfficiallyClosed ? 'al cierre' : 'al pre-cierre'} = {piezasActivasEnRacks} piezas actuales en racks + {piezasDespachadas} piezas despachadas en pedidos posteriores.{cajasDespachadas === 0 ? ' No se registran salidas ni despachos posteriores vinculados a esta recepción.' : ''} Bajo la regla de caja cerrada de {clienteNombre}, únicamente {piezasElegiblesCajaCerrada} piezas son elegibles para asignación automática estándar; {piezasActivasEnRacks - piezasElegiblesCajaCerrada > 0 ? `las ${piezasActivasEnRacks - piezasElegiblesCajaCerrada} piezas restantes corresponden a la caja parcial reacondicionada ${reconditionedBoxCodigo}.` : 'la totalidad de las piezas en inventario corresponden a cajas cerradas estándar.'}
+                        <strong>Balance matemático de existencia:</strong> {totalConformePiezas} piezas conformes {isOfficiallyClosed ? 'al cierre' : 'al pre-cierre'} = {piezasActivasEnRacks} piezas actuales en racks + {piezasDespachadas} piezas despachadas en pedidos posteriores.{cajasDespachadas === 0 ? ' No se registran salidas ni despachos posteriores vinculados a esta recepción.' : ''} Bajo la regla operativa de caja cerrada de {clienteNombre}, {piezasElegiblesCajaCerrada > 0 ? `${piezasElegiblesCajaCerrada} piezas son elegibles para asignación automática estándar (${cajasElegiblesCajaCerrada} cajas cerradas);` : 'no hay cajas cerradas completas;'}{' '}
+                        {piezasActivasEnRacks - piezasElegiblesCajaCerrada > 0 ? (
+                          reconditionedBoxCodigo !== '—'
+                            ? `las ${piezasActivasEnRacks - piezasElegiblesCajaCerrada} piezas restantes corresponden a la caja parcial reacondicionada ${reconditionedBoxCodigo}.`
+                            : `las ${piezasActivasEnRacks - piezasElegiblesCajaCerrada} piezas restantes corresponden a saldos en cajas parciales.`
+                        ) : (
+                          'la totalidad de las piezas activas en inventario corresponden a cajas cerradas estándar.'
+                        )}
                       </div>
                     </div>
 
                     {/* PIE INSTITUCIONAL ANEXO C */}
                     <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
                       Giving Out WMS · Folio {folioTransporte} · Hoja {pageAnnexCNum} de {totalPagesFull}
+                    </div>
+                  </div>
+                )}
+
+                {/* ------------------------------------------------------------------- */}
+                {/* ADENDA: RECONCILIACIÓN POST-CIERRE DE PUTAWAY                       */}
+                {/* ------------------------------------------------------------------- */}
+                {reportData?.reconciliacionesPostCierre && reportData.reconciliacionesPostCierre.length > 0 && (
+                  <div className="annex-page" style={{ marginTop: 24, paddingTop: 16, borderTop: '2px dashed #94A3B8' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #1E3A8A', paddingBottom: 6, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: '#1E3A8A', textTransform: 'uppercase' }}>
+                          ADENDA OFICIAL · RECONCILIACIÓN POST-CIERRE DE PUTAWAY
+                        </div>
+                        <div style={{ fontSize: 9.5, color: '#64748B' }}>
+                          Expediente: <strong>{folioTransporte}</strong> · Estado: <strong style={{ color: '#0F766E' }}>CERRADA (Inmutable)</strong>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', fontSize: 9.5, color: '#1E3A8A', fontWeight: 700 }}>
+                        <div>AUDITORÍA 3PL CERTIFICADA</div>
+                        <div style={{ fontSize: 8.5, color: '#64748B', fontWeight: 600 }}>Trazabilidad Post-Cierre</div>
+                      </div>
+                    </div>
+
+                    <div className="border-box" style={{ border: '1.5px solid #1E3A8A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#F8FAFC' }}>
+                      <div style={{ backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 4, padding: '8px 10px', marginBottom: 10, color: '#1E40AF', lineHeight: 1.45 }}>
+                        <strong>Nota de Integridad Histórica:</strong> Este expediente fue cerrado originalmente el <strong>{fechaCierreRecepcion || 'en su fecha original'}</strong> por <strong>{responsableCierreNombre}</strong>. Con posterioridad al cierre formal, se identificó evidencia física en racks no consolidada canónicamente en inventario debido a la lógica anterior. Esta adenda formal documenta la subsanación autorizada por supervisión, preservando intacta la fecha de cierre original.
+                      </div>
+
+                      {reportData.reconciliacionesPostCierre.map((rec: any, rIdx: number) => (
+                        <div key={rec.id || rIdx} style={{ backgroundColor: '#FFFFFF', border: '1px solid #CBD5E1', borderRadius: 4, padding: '10px 12px', marginBottom: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, borderBottom: '1px solid #E2E8F0', paddingBottom: 4 }}>
+                            <span style={{ fontWeight: 800, color: '#0F172A', fontSize: 10 }}>
+                              Evento #{rIdx + 1}: {rec.accion}
+                            </span>
+                            <span style={{ fontSize: 9, color: '#64748B', fontFamily: 'monospace' }}>
+                              Fecha y Hora: <strong>{formatDateTime(rec.createdAt)}</strong>
+                            </span>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 8, fontSize: 9, marginBottom: 6 }}>
+                            <div>
+                              <span style={{ color: '#64748B' }}>Supervisor Responsable:</span><br />
+                              <strong>{rec.usuario}</strong>
+                            </div>
+                            <div>
+                              <span style={{ color: '#64748B' }}>Dictamen / Detalle de Auditoría:</span><br />
+                              <div style={{ color: '#334155', lineHeight: 1.35 }}>{rec.detalle}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ textAlign: 'center', marginTop: 8, fontSize: 8, color: '#64748B' }}>
+                      Giving Out WMS · Sistema de Gestión de Almacenes 3PL · Folio {folioTransporte} · Adenda de Reconciliación Post-Cierre
                     </div>
                   </div>
                 )}

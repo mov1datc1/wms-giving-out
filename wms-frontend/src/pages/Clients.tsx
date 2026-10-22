@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   Users, Search, RefreshCw, Building2, Phone, Mail, MapPin, ChevronDown, ChevronUp,
   Plus, X, Settings2, Edit3, ShieldCheck, Package, Layers, Calendar, CheckCircle2,
   FileText, ArrowRight, Lock, Unlock, AlertTriangle, Trash2, Globe, ShieldAlert,
-  Zap, Info, Shirt, Utensils, Pill, Factory, Cpu, Sparkles, RotateCcw
+  Zap, Info, Shirt, Utensils, Pill, Factory, Cpu, Sparkles, RotateCcw, ExternalLink
 } from 'lucide-react';
 
 interface ClientForm {
@@ -130,6 +131,7 @@ export function getRulesByGiro(giro: string) {
 }
 
 export function Clients() {
+  const navigate = useNavigate();
   const { token, user } = useAuth();
   const [clients, setClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -775,12 +777,42 @@ export function Clients() {
 
                     {/* Métricas y Acciones Dark */}
                     <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-                      <div style={{ textAlign: 'center', minWidth: 46 }}>
-                        <div style={{ fontSize: 20, fontWeight: 800, color: '#0D9488' }}>
+                      {/* Acceso directo a Catálogo de SKUs del Depositante */}
+                      <button 
+                        type="button"
+                        onClick={() => navigate(`/maestros?tab=skus&clienteId=${c.id}`)}
+                        title={`Ver catálogo de SKUs de ${c.nombreComercial}`}
+                        style={{ 
+                          textAlign: 'center', 
+                          minWidth: 56,
+                          background: 'rgba(13, 148, 136, 0.08)',
+                          border: '1px solid rgba(13, 148, 136, 0.25)',
+                          borderRadius: 8,
+                          padding: '6px 8px',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                        onMouseEnter={e => {
+                          e.currentTarget.style.background = 'rgba(13, 148, 136, 0.16)';
+                          e.currentTarget.style.borderColor = '#0D9488';
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.background = 'rgba(13, 148, 136, 0.08)';
+                          e.currentTarget.style.borderColor = 'rgba(13, 148, 136, 0.25)';
+                        }}
+                      >
+                        <div style={{ fontSize: 18, fontWeight: 800, color: '#0D9488', lineHeight: 1 }}>
                           {c.stats?.totalSkus ?? (c._count?.skus || 0)}
                         </div>
-                        <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>SKUs</div>
-                      </div>
+                        <div style={{ fontSize: 10.5, color: '#0D9488', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3, marginTop: 3 }}>
+                          <span>SKUs</span>
+                          <ExternalLink size={10} />
+                        </div>
+                      </button>
 
                       <div style={{ textAlign: 'center', minWidth: 46 }}>
                         <div style={{ fontSize: 20, fontWeight: 800, color: '#6366F1' }}>

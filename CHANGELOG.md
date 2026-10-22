@@ -4,6 +4,375 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.19] — 2026-10-21 (Release Candidate 4 — Consolidación de Inventario, Transferencia HU-Aware, Kárdex Auditado, Despacho E2E y Dashboard Ejecutivo)
+
+### 🚀 Release Candidate: Consolidación de Inventario, Transferencia Blindada HU-Aware, Kárdex Auditado, Despacho E2E y Dashboard Ejecutivo Canónico
+
+Esta versión consolida el cierre de jornada con validación integral de cinco módulos centrales del WMS: unificación del Inventario en vista canónica única con acciones contextuales, motor de transferencia/reubicación con validación de capacidad real y blindaje de inconsistencias HU vs saldo, auditoría exhaustiva e inmutable de 237 movimientos de Kárdex, culminación del flujo Outbound E2E (PED-2026-0008 hasta entrega conforme) y rediseño ejecutivo del Dashboard WMS basado 100% en datos canónicos.
+
+### Added
+- **Transferencia / Reubicación HU-Aware (`TransferModal.tsx`, `inventory.controller.ts`):** Motor de movimiento entre celdas con validación transaccional de capacidad física libre (`capacidadMaxPiezas - piezasActuales >= piezas_a_mover`), compatibilidad estricta (zona, depositante, producto) y locks pesimistas de concurrencia.
+- **Cuarentena Preventiva Separada de Merma (`QuarantineModal.tsx`, `inventory.controller.ts`):** Flujo de retención preventiva por inspección que traslada la partida a celda de cuarentena sin degradarla contablemente a no conforme ni generar merma destructiva prematura.
+- **Menú Contextual de Acciones en Inventario (`Inventory.tsx`):** Menú desplegable por partida para `Transferir / Mover` y `Enviar a Cuarentena`, eliminando botones flotantes desconectados.
+- **Detalle Técnico Read-Only en Trazabilidad (`Traceability.tsx`):** Modal de auditoría profunda para inspeccionar UUIDs, documento origen, timestamps precisos, lotes, HUs y usuarios de cada movimiento sin permitir edición.
+- **Filtros Temporales en Kárdex (`Traceability.tsx`):** Selector de rango por fecha (Hoy, Últimos 7 días, Últimos 30 días, Todo el historial) acoplado con buscador y selectores de tipo y depositante.
+- **Exportación Formal a CSV de Movimientos (`Traceability.tsx`):** Descarga de bitácora completa en formato compatible con auditoría contable y Excel.
+- **Detección Conservadora de Posibles Reintentos Históricos (`Traceability.tsx`):** Algoritmo de diagnóstico pasivo de 9 factores que identifica 34 movimientos simultáneos de suites QA automatizadas del 19-oct-2026 con badge neutral `Posible reintento histórico`, sin alterar la inmutabilidad de la base de datos.
+- **Dashboard Ejecutivo Canónico (`Dashboard.tsx`):** Panel gerencial con 6 KPIs canónicos que responden en <30 segundos el estado del almacén (Físico Total, Disponible Vendible, Tránsito Inbound, Pedidos en Proceso, Posiciones de Rack Ocupadas y Retenciones/Excepciones).
+- **Actividad Comercial Reciente (`Dashboard.tsx`):** Feed dinámico de transacciones operativas de negocio alimentado desde `Receipt` y `SalesOrder` (Recepciones y Pedidos), con navegación segura al módulo correspondiente.
+
+### Changed
+- **Simplificación Integral de Inventario (`Inventory.tsx`):** Eliminadas las vistas redundantes y desincronizadas de "Stock Operativo" y "Almacén Virtual", estableciendo el Inventario Consolidado (`/api/inventory/consolidated`) como vista única principal.
+- **Clasificación Operacional Consolidada (`inventory-operational-state.util.ts`):** Reglas mutuamente excluyentes por estricta precedencia funcional (Merma > Exceso > Expirado > Tránsito > Staging > Conforme).
+- **Compatibilidad Rígida de Ubicaciones (`inventory.controller.ts`):** Rechazo a nivel backend de alojamientos cruzados entre zonas exclusivas de Textil y Alimentos.
+- **Hard-Cap de Capacidad en Racks:** Prohibición absoluta de sobrecupo en trasiegos y putaway cuando la celda destino no disponga de espacio libre verificado.
+- **Nomenclatura Homologada Dashboard / Ubicaciones:** El porcentaje de celdas comerciales con existencia en Dashboard se denomina formalmente `Posiciones de Rack Ocupadas` (33.3%), mientras que en el módulo de Ubicaciones el porcentaje volumétrico por celda se titula `Uso de capacidad`.
+- **KPIs Canónicos del Dashboard:** Erradicadas las fórmulas paralelas; ahora se nutre directamente de los agregados canónicos de inventario.
+- **Semántica de TRASIEGO en Kárdex:** Clasificado como movimiento neutro de reubicación física (cero incremento o decremento neto en balances globales).
+- **Clientes → Depositantes:** Corrección de terminología WMS 3PL en Dashboard e Inventario para distinguir a los depositantes propietarios de inventario de los clientes finales destinatarios (`EndCustomer`).
+
+### Fixed
+- **Destino Textil / Alimentos Incompatible:** Corregida la asignación de racks para evitar que productos alimenticios de AlimNorte se sugieran o alojen en racks de ropa de Fashion Forward.
+- **`undefined bultos disp.` en Ubicaciones:** Resuelto el renderizado de capacidad en celdas sin cota nominal de bultos configurada.
+- **Transferencias Legacy con Cantidad Precargada:** Eliminado el autollenado desfasado que proponía transferir saldos desalineados con las Handling Units físicas.
+- **Conflicto Visual Cuarentena vs Merma:** Separación estricta de badges, motivos y áreas físicas entre producto dañado en `DEV-01` y producto en revisión en `NC-EXCESO-01`.
+- **UUID Mostrado como Ubicación:** Corregida la resolución de relaciones en frontend para mostrar el código amigable de rack (`A01-R02-N1`) en lugar de su identificador UUID.
+- **Selector Saturado de Destinos Imposibles:** El modal de transferencia filtra automáticamente origen, zonas incompatibles y celdas sin capacidad libre.
+- **Transferencia Configurable con Inconsistencia HU / LotInventory:** Implementado el modo BLOQUEADO Operativo en `TransferModal` ante discrepancias físicas entre HUs y saldos registrados (caso auditado: `CAM-BLA-M` con 100 pza de saldo vs `HU-2026-00003` de 200 pza).
+- **Trazabilidad Limitada a 200 Movimientos:** Desbloqueado el límite arbitrario de consulta para auditar con fidelidad los 237 movimientos históricos registrados.
+- **Ubicación `—` en Movimientos Recientes:** Corregido el endpoint backend `/dashboard/stats` para incluir `fromLocation` y `toLocation` en el query Prisma.
+- **KPI Dashboard `Unidades Stock` Ambiguo:** Sustituido el valor engañoso de disponibilidad bruta (5,598 pza) por Físico Total Global (5,909 pza) y Disponible Vendible (1,552 pza).
+- **KPI Falso `0 Alertas Activas`:** Reemplazado el contador de la tabla desconectada `Alert` por la métrica auditable de `Retenciones / Excepciones` (585 pza: 311 bloqueadas + 274 vencidas).
+- **Error Matemático Previo de Ocupación de Racks:** Corregido el desfase de población para derivar el porcentaje de la misma base comercial (16 ocupados / 48 celdas comerciales = 33.3%, excluyendo las 6 celdas especiales).
+
+### Validated
+- **Outbound E2E Completo (`PED-2026-0008`):** Surtido HU-managed, traslado a Staging, despacho con manifiesto `MAN-PED-2026-0008` y entrega `ENTREGADO` por Roberto Hernández en Recepción CEDIS validado con PASS definitivo.
+- **Expediente Inbound Preservado (`REC-2026-0017`):** 3 HUs físicas en `A01-R02-N1` conservadas e íntegras en base de datos.
+- **Conciliación Matemática de Inventario:** Físico Total Global = 5,909 PZA con diferencia de conciliación exactamente en 0.
+- **Kárdex Histórico Intacto:** 237 movimientos auditados con cero mutaciones ni alteración de bitácora.
+- **Módulos con PASS:** Dashboard, Inventario Consolidado, Ubicaciones / Layout, Trazabilidad & Kárdex y Picking / Despacho.
+- **Compilaciones Limpias:** Builds de TypeScript frontend (`tsc -b && vite build`) y backend (`nest build`) aprobados sin errores.
+
+### Pending
+- **Auditoría Completa de Conteo Cíclico:** Revisión arquitectónica de `CC-2026-001`, snapshot, conteo ciego, reconteo, aplicación de ajustes y trazabilidad.
+- **Control Positivo Real de Transferencia:** Ensayo de movimiento físico de rack a rack utilizando una Handling Unit limpia creada por flujo formal.
+- **Ensayo General Previo a Reunión con Cliente:** Recorrido cronometrado de la demo comercial.
+- **Revisión Final Git:** Inspección exhaustiva de `git status` y `git diff` antes de cualquier commit o push formal.
+
+## [1.9.18] — 2026-10-20 (Release Candidate 3 — Picking HU-Managed, Movimiento Físico a Staging y Clasificación Operativa)
+
+### 🚀 Release Candidate: Picking HU-Managed, Movimiento Físico a Staging, Allocation Indivisible y Clasificación Operativa de Consolidación
+
+Esta versión implementa la arquitectura integral de surtido de salida (Picking) gestionado por unidades de manejo (Handling Units), el traslado físico transaccional de racks a Staging, el blindaje contra fraccionamiento de HUs y la reclasificación operativa de mercancía en consolidación para despacho.
+
+#### 1. 📦 Picking HU-Managed y Doble Escaneo Obligatorio (`picking-validation.util.ts`, `Picking.tsx`, `operations.controller.ts`)
+- **Modo HU-Managed Estricto:** Exigencia obligatoria de código de Handling Unit (`HandlingUnit.codigo`, Code-128) para el surtido en lotes administrados por cajas.
+- **Rechazo de SKU o Lote como Falsa HU:** Prohibición estricta de usar códigos de SKU (`GAL-CHO-1K`) o números de lote (`LOT-FASE5-A-...`) en el paso de escaneo de caja/HU con rechazo formal `CODIGO_NO_ES_HU`.
+- **Inventario Legado sin HU Protegido:** Identificación de partidas con saldo en `LotInventory` pero sin HUs físicas registradas, impidiendo su manipulación en la terminal hasta su formal regularización en almacén.
+- **Doble Escaneo Canónico Secuencial (Rack + HU):** Protocolo en dos pasos indivisibles:
+  1. Escaneo y confirmación del rack origen físico (`Rack validado`).
+  2. Escaneo y validación de la Handling Unit individual en dicho rack.
+- **Deshabilitación de Ajustes Manuales y Surtir Todo:** Erradicación del bypass operativo (-1 / cantidad manual / +1 / Surtir Todo). Cualquier mutación de cantidad requiere rol de supervisor, justificación obligatoria y revalidación canónica integral idéntica a `record-pick`.
+
+#### 2. 🧩 Allocation HU-Aware e Indivisibilidad de Cajas (`operations.controller.ts`, `order-sla.util.ts`)
+- **Regla General de HU Indivisible:** Prohibición de fraccionar Handling Units en Picking o Allocation a menos que exista un proceso formal de split/desconsolidación.
+- **Algoritmo de Combinación Exacta (Subset-Sum):** El motor de Allocation selecciona combinaciones exactas de HUs físicas completas que sumen la cantidad solicitada (ej. 4 + 4 = 8 pzas; 4 pzas = 1 HU). Si el pedido no puede cubrirse con HUs enteras (ej. 6 o 10 pzas en cajas de 4), Allocation rechaza o alerta la imposibilidad física de surtido.
+- **Prevención de Doble Compromiso:** Marcado y persistencia canónica de las HUs asignadas a cada orden (`assignedOrderId` / `assignedOrderLineId`), evitando que dos pedidos concurrentes reserven la misma caja física.
+- **Alerta de Cita Vencida y SLA Operativo:** Validación preventiva de vigencia de citas de entrega con indicadores visuales de alerta si la fecha programada ha expirado.
+
+#### 3. 🚚 Movimiento Físico Rack → Staging con Traslado de Reserva (`picking-staging-transfer.util.ts`, `operations.controller.ts`)
+- **Traslado Atómico a Staging en Confirmación de Pick:** Al confirmar el surtido de una HU en `record-pick`, la transacción atómica:
+  1. Relee y bloquea pesimistamente la HU, el lote origen, la orden y la línea.
+  2. Revalida `validatePickingEligibility`.
+  3. Identifica la ubicación `STAGING` activa asignada al almacén (`STG-01` dinámica, sin hardcoding).
+  4. Mueve físicamente la HU (`HandlingUnit.ubicacionId = stagingLoc.id`, `ubicacionActual = stagingLoc.codigo`).
+  5. Descuenta cantidad física y reserva del rack origen (`A01-R02-N1`), incrementando simultáneamente el lote en `STG-01` con su reserva correspondiente.
+  6. Registra movimiento formal de Kardex tipo `TRASIEGO` con subtipo `PICKING_A_STAGING`.
+- **Staging Persistente por Orden:** Persistencia del área de consolidación asignada en la cabecera de la orden (`Order.stagingLocationId`), garantizando que todas las HUs de un pedido converjan al mismo andén de embarque.
+- **Erradicación del `updateMany` Peligroso en Despacho:** Corrección del endpoint de despacho para operar exclusivamente sobre las HUs pickeadas en Staging de la orden, eliminando consultas globales por lote que ponían en riesgo inventario ajeno.
+
+#### 4. 🏷️ Clasificación Operativa de Staging en Inventario General (`inventory-operational-state.util.ts`, `inventory.controller.ts`, `Inventory.tsx`)
+- **Estado Operativo Propio `EN STAGING / CONSOLIDACIÓN`:** Clasificación principal independiente para cualquier mercancía en ubicaciones `STAGING` / `NO_ELEGIBLE_SURTIDO`.
+- **Badge Visual Neutral Operativo:** Badge en color cian/sky (`#0284C7`) con icono `<Layers size={12} />` e información secundaria `"Reservado para despacho"`. Excluido terminantemente del color verde comercial.
+- **Disponibilidad Comercial Nula:** `Disponible Vendible = 0` (la mercancía no es vendible para nuevos pedidos).
+- **Preservación de Magnitud de Reserva y Calidad:** La columna Reservado conserva su valor real (ej. 4 pzas) y la columna Calidad preserva su valor real (`LIBERADO`) en su columna independiente.
+- **Exclusión del Filtro Conforme:** La partida en staging ya no incrementa el contador de "Conforme Comercial". Se integra en un botón de filtro propio: `Staging / Consolidación`.
+
+#### 5. 🧮 Conciliación Matemática y Precedencia Operativa Global
+- **Contadores Excluyentes por Precedencia Estricta (1 Partida = 1 Clasificación):**
+  $$\text{Merma DEV-01 (32)} > \text{Exceso NC (6)} > \text{Vencidos (7)} > \text{Tránsito Inbound (50)} > \text{Staging (1)} > \text{Conforme Comercial (49)} = \mathbf{145\text{ Partidas}}$$
+- **Fórmula de Conciliación Aclarada en Footer:**
+  * En base de datos, `cantidadDisponible` incluye existencias físicas aptas (incluyendo las ya reservadas), satisfaciendo `Físico Total = Disp. + Bloq.`.
+  * La disponibilidad vendible libre se calcula como `Vendible libre = cantidadDisponible - cantidadReservada`.
+  * La conciliación física visual excluyente es:
+    $$\text{Físico Total} = \text{Vendible libre} + \text{Reservado} + \text{Bloqueado} + \text{Expirado} + \text{Tránsito Inbound libre} + \text{Staging libre}$$
+- **Aclaración Canónica de Expirados:**
+  * **249 piezas en REC-01 (Andén de recepción)** + **25 piezas en B01-R02-N1 (Rack comercial)** = **274 piezas contabilizadas en Expirado**.
+  * Las **12 piezas vencidas en DEV-01** (zona de merma) pertenecen por precedencia 1 a **Merma**, garantizando 0 doble conteo.
+  * Se corrigió el diagnóstico del reporte anterior ($237/37$), el cual se debió a un filtro ad-hoc en script de verificación que agrupó incorrectamente las 12 piezas de DEV-01 con las 25 de rack. El inventario en BD y el backend siempre han estado íntegros con 249/25.
+
+#### 6. 🧪 Control Positivo QA Validado (`PED-2026-0008`)
+- **Estado Actual:** Orden en `EN_PICKING` con 4/4 piezas recolectadas.
+- **Rack Origen (`A01-R02-N1`):** 8 piezas físicas, 8 vendibles, 0 reservadas, 2 HUs activas (`...0002` y `...0003`), estado `PARCIAL`.
+- **Staging (`STG-01`):** 4 piezas físicas, 0 vendibles, 4 reservadas, 1 HU activa (`BOX-REC-2026-0017-0001`), pendiente de despacho.
+- **Físico Global:** 5,913 piezas conservadas intactas sin salida prematura de almacén.
+
+## [1.9.17] — 2026-10-19 (Release Candidate 2)
+
+### 🚀 Release Candidate: Precedencia Operativa Global, Blindaje Transversal de Caducidad, Reconciliación Post-Cierre, Persistencia Canónica de Putaway y Reportes con Anexos Dinámicos
+
+Esta versión consolida el Release Candidate 2 (RC2) de Giving Out WMS, integrando la arquitectura de precedencia operativa centralizada del inventario, la regla unificada de caducidad, el flujo transaccional de reconciliación post-cierre de expedientes, los reportes imprimibles con anexos condicionales y la estandarización transversal de modales.
+
+#### 1. 🧠 Motor Putaway Inteligente y Validación Dual (`putaway-engine.service.ts`, `operations.controller.ts`, `PutawayModal.tsx`)
+- **Scoring y Ranking Configurable:** Motor multicriterio transparente (0-100 pts) basado en compatibilidad 3PL de depositante, control térmico, zona preferente, función de nivel y proximidad física.
+- **Consolidación de Mismo SKU y Lote:** Bonificación prioritaria para consolidación en celdas con el mismo SKU (`+35 pts`) y mismo lote (`+50 pts`), preservando celdas vacías (`+25 pts`) antes de permitir mezclas de SKU.
+- **Recomendaciones y Alternativas Explicables:** Sugerencia óptima con desglose de "Razones favorables" y "Advertencias", acompañada de las mejores 3 ubicaciones alternativas viables con su respectivo puntaje y capacidad.
+- **Recálculo Posterior a Cada HU:** Evaluación dinámica del estado físico de la celda tras cada acomodo individual sin depender de contadores legados.
+- **Protocolo de Escaneo Dual (HU + Rack):** Exigencia física estricta donde el operador debe escanear tanto la etiqueta del bulto como el código de barras físico del rack de destino antes de habilitar la confirmación. La sugerencia del sistema no constituye evidencia física.
+- **Modo Histórico / Solo Lectura para HUs Confirmadas:** Bloques de visualización en verde con badge `CONFIRMADA`, fecha, hora y operador, deshabilitando reescaneos accidentales.
+- **Confirmación Final y Activación Canónica de Stock:** Actualización atómica en base de datos: transición de HU a rack definitivo, creación o incremento de `LotInventory` e inserción en kardex `InventoryMovement`.
+- **Concurrencia y Locks Transaccionales:** Protocolo determinista `BEGIN → Bloqueo pesimista (SELECT ... FOR UPDATE) → Revalidación fresca de capacidad → Mutación → COMMIT` con orden lexicográfico anti-deadlock y hasta 2 reintentos con backoff exponencial (`maxRetries = 2`, completando hasta 3 intentos totales).
+- **Honestidad Física en Capacidad de Bultos:** Eliminación de supuestos artificiales (1 o 5 bultos). Si la celda carece de capacidad física configurada en BD, se maneja como `capacidadBultos = NO_CONFIGURADA` (`null`), reportando los bultos reales alojados sin inventar topes ficticios.
+
+#### 2. 🛡️ Corrección General de Persistencia Canónica de Putaway (`operations.controller.ts`, `putaway-engine.service.ts`)
+- **Idempotencia Basada en Evidencia Canónica:** La detección de bultos ya alojados no se fundamenta únicamente en la cadena `HandlingUnit.ubicacionActual`, sino en la existencia de `LotInventory` activo vinculado, `HandlingUnit.lotId` y movimientos de kardex `PUTAWAY` confirmados.
+- **Evidencia Canónica de Contabilización:** Prevención de creaciones huérfanas o duplicadas de lotes comerciales mediante relectura determinista bajo lock pesimista.
+- **Candado de Inmutabilidad para Expedientes Cerrados:** El endpoint estándar de Putaway rechaza cualquier mutación sobre recepciones en estado `CERRADA` con `HTTP 400 Bad Request`, obligando al uso del canal auditado de Reconciliación Post-Cierre.
+
+#### 3. ⚖️ Reconciliación Post-Cierre de Recepciones (`operations.controller.ts`, `PutawayModal.tsx`, `ReceiptReportModal.tsx`)
+- **Preview Estrictamente Read-Only (`GET /receipts/:id/post-closure-reconciliation/preview`):** Inspecciona y diagnostica el estado del expediente cerrado sin realizar mutaciones, identificando HUs pendientes de activación, rack físico de destino sugerido o confirmado, y piezas por contabilizar.
+- **Ejecución Transaccional Autorizada (`POST /receipts/:id/post-closure-reconciliation/execute`):** Mutación transaccional protegida que exige motivo justificado y usuario responsable, registrando bitácora formal `PUTAWAY_RECONCILIACION_POST_CIERRE`.
+- **Preservación de Estado Histórico:** El expediente permanece en estado `CERRADA` con su fecha de cierre y usuario cerrador originales intactos.
+- **Adenda Histórica en Reporte Oficial:** Incorporación de sección auditada en el acuse/reporte de recepción detallando fecha, operador, motivo y piezas regularizadas.
+- **Expediente Piloto REC-2026-0017 Reconciliado Exitosamente:** Regularización canónica de 3 HUs (`BOX-REC-2026-0017-0001..0003`), 12 piezas de chamarra `CHA-CUE-L`, lote `LOT-QA-FF-002` en rack físico `A01-R02-N1` para Fashion Forward, con saldo e inventario cuadrado al 100%.
+
+#### 4. 📄 Reportes Oficiales de Recepción con Anexos Dinámicos y Condicionales (`ReceiptReportModal.tsx`)
+- **Anexos Dinámicos y Condicionales (A, B, C):**
+  * **Anexo A (Manifiesto de HUs y Tarimas):** Manifiesto detallado de unidades de manejo (cajas y bultos) y tarimas registradas en la recepción.
+  * **Anexo B (Inspección / Calidad / Rescate):** Se activa y genera condicionalmente cuando existen dictámenes de inspección técnica, mercancía dañada, rescate de producto o mermas/cuarentenas segregadas (`DEV-01`).
+  * **Anexo C (Salidas y Existencia Actual):** Trazabilidad de existencias vigentes en racks, saldo conforme, ubicaciones activas y piezas despachadas en pedidos de salida vinculados.
+- **Adenda Oficial de Reconciliación Post-Cierre:** Sección documental y auditada condicional adicional incorporada al reporte oficial cuando el expediente cuenta con regularizaciones autorizadas por supervisión, preservando intacto el Anexo C sin reemplazarlo.
+- **Múltiples Tarimas y Desglose por Bulto:** Agrupación visual clara de bultos asociados a cada Tarima Master `PLT-*`.
+- **Numeración Dinámica "Hoja X de Y":** Conteo de páginas dinámico y exacto calculado según los anexos y adendas efectivamente impresos.
+- **Opciones de Impresión Flexible:** Alternador para imprimir la carátula ejecutiva principal o el expediente completo con anexos.
+- **Erradicación de Hojas en Blanco:** Supresión total de páginas vacías o secciones no aplicables al expediente.
+
+#### 5. 📊 Inventario General Consolidado y Clasificación Estructural (`inventory.controller.ts`, `location-classifier.util.ts`, `Inventory.tsx`)
+- **Inventario General Consolidado:** Vista unificada de existencias conforme, merma, exceso, cuarentena y tránsito en una sola consulta reactiva de alto rendimiento.
+- **Clasificación Estructural de Ubicaciones (`location-classifier.util.ts`):** Separación tajante entre roles operativos:
+  * `ALMACENABLE_COMERCIAL` (48 celdas de rack).
+  * `TRANSITO_INTERNO` (`REC-01`, `REC-02`, andenes de recibo).
+  * `NO_CONFORME_BLOQUEADO` (`DEV-01`, `NC-EXCESO-01`).
+  * `NO_ELEGIBLE_SURTIDO` (`STG-01`, `STG-02`, pulmones de maniobra).
+- **Tránsito Separado de Vendible:** La mercancía física en andén de recibo (`REC-01`, `REC-02`) se contabiliza como tránsito vigente y jamás como stock vendible hasta completar su alojamiento en rack comercial.
+- **Staging No Elegible para Surtido:** `STG-01` y `STG-02` catalogadas como áreas de maniobra/pulmón con `esVendible = false`, bloqueadas para picking directo y asignación de pedidos.
+- **Búsqueda Multicriterio de Alta Densidad:** Búsqueda instantánea en vivo por SKU, descripción, lote, código de HU/caja, cliente o notas operativas.
+- **Ficha Técnica y Detalle de Partida:** Modal informativo con desglose de HUs, fechas de producción/caducidad, atributos logísticos y estado de calidad.
+
+#### 6. ⚖️ Precedencia Operativa Global del Inventario (`inventory-operational-state.util.ts`)
+- **Jerarquía Central de Restricciones Operativas:**
+  $$\text{MERMA / NO\_CONFORME} > \text{EXCESO / CUARENTENA} > \text{VENCIDO} > \text{TRANSITO\_INTERNO} > \text{DISPONIBLE\_COMERCIAL}$$
+- **`RESERVADO` como Magnitud Cuantitativa, No Estado Principal:** La reserva representa una porción cuantitativa del saldo disponible; no inhabilita la clasificación operativa de la partida ni marca todo el lote como no vendible. El saldo libre se calcula exactamente como `max(0, disp - res)`. Si todo el saldo disponible está comprometido, se muestra el badge secundario `TOTALMENTE RESERVADO` preservando su clasificación física.
+- **Cantidades Mixtas y Segregación de Bloqueado:** Un saldo bloqueado parcial (`cantidadBloqueada > 0`) no invalida el saldo disponible si existen cantidades mixtas. La cantidad bloqueada se segrega en su desglose formal (Merma, Exceso, Cuarentena) sin contaminar el saldo libre comercial.
+- **Regla Central Única de Caducidad (`isExpired`):** Centralización de la comparación de fechas normalizadas a nivel de día calendario `YYYY-MM-DD` (`toCalendarDayString`), erradicando divergencias por hora o zona horaria.
+- **Fecha de Vencimiento Igual al Día Operativo = Vencida:** Política estricta `inclusiveToday: true`; el mismo día de la fecha de caducidad el producto es catalogado como vencido y retirado del circuito comercial.
+- **Backend como Autoridad Absoluta de Elegibilidad:** El backend valida y aplica de forma forzosa las restricciones operativas con independencia de los avisos visuales de la interfaz.
+- **Blindaje Obligatorio Transversal:**
+  * **Putaway Engine:** Excluye candidatos y descarta scoring FEFO si `esVencido === true` con mensaje: *"MERCANCÍA VENCIDA — Putaway comercial no permitido. La unidad requiere disposición operativa conforme al flujo de calidad/no conforme."*
+  * **Confirmación de Putaway:** Rechaza alojar bultos vencidos en racks comerciales con `HTTP 409 Conflict`.
+  * **Creación de Pedidos:** Excluye lotes vencidos del cálculo de stock libre y reserva inicial.
+  * **Allocation de Pedidos:** Sugerencias y asignación rechazan lotes vencidos con `HTTP 409 Conflict: LOTE_NO_ELEGIBLE_ALLOCATION`.
+  * **Picking:** Validación atómica previa al surtido rechaza lotes vencidos con `HTTP 409 Conflict: LOTE_NO_ELEGIBLE_PICKING`.
+  * **Portal de Depositantes:** Oculta lotes vencidos como disponibles y refleja `esVisiblePortalComoDisponible: false`.
+  * **Inventario Consolidado:** Reclasifica las 249 piezas vencidas de AlimNorte en `REC-01` bajo el badge `VENCIDO · NO ELEGIBLE PARA PUTAWAY` (información secundaria: `REC-01 · Tránsito interno`) y las contabiliza en *Expirado*, deduciéndolas de *Tránsito vigente*.
+
+#### 7. 🧪 Validación de QA y Cuadre Matemático Exacto (10/10 PASS)
+- **Suite de Pruebas Unitarias Aisladas (10/10 PASS):**
+  1. `Vencido en REC-01`: 50 pzas -> Estado `VENCIDO`, Putaway bloqueado, Tránsito vigente `0`, Expirado `50`.
+  2. `Vigente en REC-01`: 40 pzas -> Estado `TRANSITO_INTERNO`, Putaway comercial elegible, Tránsito vigente `40`.
+  3. `Vencido en rack comercial`: 25 pzas en B01 -> Estado `VENCIDO`, Vendible `0`, Expirado `25`, Allocation bloqueado.
+  4. `Merma vencida en DEV-01`: 12 pzas -> Estado `MERMA`, Bloqueado `12`, Expirado `0` (Precedencia MERMA > VENCIDO, sin doble conteo).
+  5. `Lote sin caducidad en rack`: 100 pzas en A01 -> Estado `DISPONIBLE_COMERCIAL`, Vendible `100`.
+  6. `Vencimiento igual al día operativo`: 15 pzas -> Estado `VENCIDO` (`inclusiveToday`), Vendible `0`, Expirado `15`.
+  7. `Lote parcialmente reservado`: 100 disp, 20 res -> Estado `DISPONIBLE_COMERCIAL`, Vendible `80`, Reservado `20`.
+  8. `Cantidades mixtas en rack`: 80 disp, 20 bloq -> Estado `DISPONIBLE_COMERCIAL`, Vendible `80`, Bloqueado `20`.
+  9. `Inventario totalmente reservado`: 50 disp, 50 res -> Estado `DISPONIBLE_COMERCIAL`, Badge `TOTALMENTE RESERVADO`, Vendible `0`.
+  10. `Conciliación matemática conjunta`: Físico 492 = Vendible 260 + Tránsito 40 + Reservado 70 + Bloqueado 32 + Expirado 90 (**Diferencia = 0**).
+- **Cuadre Actual Verificado en API en Vivo (`GET /api/inventory/consolidated`):**
+  * **Físico Total:** 5,913 piezas
+  * **Disponible Vendible:** 1,556 piezas
+  * **Tránsito vigente:** 3,672 piezas (3,921 físicas en andenes menos 249 vencidas en REC-01)
+  * **Reservado:** 100 piezas
+  * **Bloqueado Total:** 311 piezas (239 merma en DEV-01 + 72 excedente en NC-EXCESO-01)
+  * **Expirado:** 274 piezas (249 en REC-01 + 25 en rack B01-R02-N1)
+  * **Discrepancia de Conciliación:** **0 piezas exactas**  
+    $$\text{Físico Total (5,913)} = 1,556 + 3,672 + 100 + 311 + 274$$
+
+#### 8. 🪟 Estándar General Unificado de Modales en Frontend
+- **Botón de Cierre Visual (X):** Botón superior derecho con icono `X` visible, accesible y estilizado.
+- **Atajo de Teclado Escape:** Listener de evento `keydown` que cierra limpiamente el modal al presionar la tecla `Escape`.
+- **Botón Inferior Cerrar / Cancelar:** Pie de modal con botón explícito de salida para cancelar o cerrar sin guardar.
+- **Interacción con Fondo Exterior (Backdrop):**
+  * Clic en el área exterior oscura (`backdrop`) cierra el modal inmediatamente.
+  * Clic dentro de la ventana del modal (`event.stopPropagation()`) previene el cierre accidental.
+
+---
+
+## [1.9.16] — 2026-10-16 (Release Candidate 1)
+
+### 🚀 Release Candidate: Inventario Consolidado, Mapa del Almacén, Motor Putaway Inteligente, Concurrencia Transaccional y Homologación Integral de Movimientos
+
+Esta versión consolida el Release Candidate (RC1) de Giving Out WMS, abarcando las etapas de rediseño de inventario, visualización física del almacén, motor de guardado inteligente (Putaway), control de concurrencia pesimista en PostgreSQL y homologación transversal de todas las mutaciones de stock físico.
+
+#### 1. 📊 Inventario Consolidado y Corrección de Métricas Contables (`inventory.controller.ts`, `Inventory.tsx`)
+- **Desacoplamiento Estricto de Disponibilidad:** Se estableció la separación contable definitiva de existencias en el WMS:
+  * **Físico Total:** `cantidadDisponible + cantidadBloqueada` (5,901 pzas auditadas en BD).
+  * **Disponible Bruto:** `cantidadDisponible` (5,590 pzas).
+  * **Disponible Vendible Real:** Mercancía físicamente disponible menos compromisos operativos y mermas: `Físico Total - Reservado - Expirado - Bloqueado` = 5,901 - 100 - 274 - 311 = **5,216 pzas**.
+  * **Reservado:** 100 pzas comprometidas en pedidos activos de surtido/picking.
+  * **Expirado / Caducado:** 274 pzas con `fechaCaducidad <= NOW()` existentes en almacén pero no comercializables.
+  * **Bloqueado Total:** 311 pzas en retención operativa.
+- **Desglose de Bloqueado sin Doble Contabilización:**
+  * Merma segregada en almacén virtual `DEV-01` (239 pzas).
+  * Exceso de recepción en `REC-01` (72 pzas).
+  * Cuarentena por retención de calidad (0 pzas).
+  * En la UI y en la API, Merma, Exceso y Cuarentena se presentan estrictamente como desglose interno del Bloqueado (`311 = 239 + 72 + 0`), erradicando sumatorias duplicadas.
+- **Claridad Visual en UI:** La cantidad bruta de 5,590 pzas nunca más aparece rotulada como "Vendible"; la tarjeta principal muestra 5,216 pzas como *Disponible Vendible* con la aclaración contextual `(de 5,590 brutas)`.
+
+#### 2. 🗺️ Mapa del Almacén, Vista por Zonas y Filtro 3PL por Depositante (`Locations.tsx`, `master-data.controller.ts`)
+- **Mapa Visual Interactivo del Almacén:** Organización espacial en tres agrupaciones visuales: *Zona A (Textil)*, *Zona B (Alimentos)* y *Áreas Especiales / Virtuales* (`REC-01`, `REC-02`, `RAMPA-01`, `DEV-01`, `STG-01`, `PISO-01`).
+- **Filtro 3PL por Depositante:** Selector en tiempo real que permite visualizar la ocupación física y asignación de celdas por cliente depositante específico (ej. `AlimNorte`) o la visión global multicliente.
+- **Pasillos Colapsables en Acordeón:** Navegación por pasillos (B01, B02, A01, etc.) con tarjetas resumen de capacidad total en piezas, ocupación actual y porcentaje de saturación.
+- **Barra de Filtros Sticky y Estados de Capacidad:** Filtros de zona, pasillo, tipo de nivel y depositante fijos en cabecera durante el scroll. Indicadores semánticos claros: *Libre*, *Ocupado*, *Lleno* y *Sobrecapacidad*.
+- **Modal de Ubicación Responsivo:** Detalle exhaustivo de ubicación con scroll interno, listado de HUs físicas asociadas, lotes alojados, caducidades y balance de piezas sin recortes de texto.
+
+#### 3. 📦 Modelo Canónico de Capacidad Derivada y Erradicación de `Location.ocupacion` (`master-data.controller.ts`, `inventory.controller.ts`, `putaway-engine.service.ts`)
+- **Ocupación Canónica en Tiempo Real:** Erradicación del uso del contador legado `Location.ocupacion` para decisiones operativas o de capacidad.
+  * Ocupación en piezas = `SUM(LotInventory.cantidadDisponible + cantidadBloqueada)`.
+  * Ocupación en bultos = `COUNT(HandlingUnit físicas activas en la celda)`.
+- **Honestidad en Capacidad de Bultos:** Eliminación de supuestos artificiales (ej. 1 o 5 bultos fijos). Si una celda carece de capacidad física configurada en BD, se maneja como `capacidadBultos = NO_CONFIGURADA` (`null`), reportando el número de bultos alojados sin inventar límites ficticios.
+
+#### 4. 🧠 Motor Putaway Inteligente y Transparencia Algorítmica (`putaway-engine.service.ts`, `PutawayModal.tsx`)
+- **Ranking Heurístico Multicriterio 3PL:** Evaluación de 54 ubicaciones considerando afinidad de zona del depositante (`+30 pts`), consolidación de SKU/lote (`+25 pts`), accesibilidad por nivel de picking/reserva y proximidad a andén.
+- **Transparencia "¿Por qué esta ubicación?":** Desglose en UI de los factores que llevaron a la recomendación principal.
+- **Sugerencias Alternativas:** Panel interactivo "Ver otras ubicaciones" con alternativas viables, puntuación y advertencias operativas (ej. requerimiento de montacargas, celda con producto mixto).
+- **Manejo de Casos sin Ubicación Válida:** Diagnóstico descriptivo cuando no existe celda compatible o con capacidad suficiente (ej. Zona B saturada y Zona A incompatible).
+- **Compatibilidad Producto-Zona Segura:** Política estricta que rechaza colocar productos de categorías críticas (`ALIMENTO`, `PERECEDERO`, etc.) en zonas no configuradas para dicho fin.
+- **Jerarquía FEFO Configurable:** Surtido prioritario en nivel Picking según política del cliente depositante (`cliente.diasUmbralPickingCaducidad`), del SKU (`sku.diasUmbralPicking`) o umbral general del WMS (`DEFAULT_FEFO_PICKING_THRESHOLD_DAYS = 180 días`).
+
+#### 5. 🔒 Concurrencia Transaccional e Integridad ACID en PostgreSQL (`operations.controller.ts`, `inventory.controller.ts`)
+- **Bloqueo Pesimista en Dos Fases:** Protocolo determinista `BEGIN → Bloqueo HUs (SELECT ... FOR UPDATE) → Bloqueo Locations (SELECT ... FOR UPDATE) → Relectura fresca de stock → Mutación → COMMIT`.
+- **Orden Lexicográfico Anti-Deadlock:** Todas las entidades (HUs y Ubicaciones) se bloquean estrictamente ordenadas por código alfabético, erradicando abrazos mortales entre transacciones concurrentes.
+- **Reintento con Backoff Exponencial:** Mecanismo resiliente ante errores de serialización o contención (`P2034`) de hasta 3 intentos con jitter aleatorio.
+- **Idempotencia Transaccional:** Comprobación de estado previo que responde exitosamente sin duplicar movimientos ni bitácoras ante reintentos de red.
+
+#### 6. 🔄 Homologación Transversal de Movimientos Físicos de Inventario (`operations.controller.ts`, `inventory.controller.ts`)
+- **Picking / Surtido (`confirmPicking`):** Bloqueo transaccional determinista. Descuento exacto de `cantidadReservada` y `cantidadDisponible`. Transición formal de HUs vacías a estado inactivo `CONSUMIDA` / `INACTIVA` y desvinculación de la celda (`locationId: null`), evitando cajas fantasma.
+- **Despacho / Embarques (`dispatchShipment`):** Bloqueo y relectura transaccional. Regla de liberación estricta: la celda solo vuelve a estado `LIBRE` si `ocupacionUnidades == 0` Y `ocupacionBultos == 0`.
+- **Transferencias entre Ubicaciones (`executeTransfer`):** Bloqueo dual determinista ordenado (`min(origen, destino) -> max(origen, destino)`). Revalidación estricta de capacidad disponible en destino antes de transferir.
+- **Liberación de Cuarentena (`releaseQuarantine`):** Conversión atómica de `cantidadBloqueada` a `cantidadDisponible` bajo bloqueo pesimista de HU y ubicación.
+- **Conteo Cíclico / Conciliación (`reconcileLocation`):** Ajuste físico transaccional en `LotInventory` e inserción en kardex `AJUSTE_CONTEO_FISICO`. Honestidad física: si el ajuste supera la capacidad máxima, la celda conmuta a `SOBRECAPACIDAD` sin enmascarar la realidad operativa.
+
+#### 7. 🛡️ Compatibilidad de Base de Datos y Retiro de Migración Obsoleta
+- **Prisma Schema 1:1 con PostgreSQL:** Los 18 campos del modelo `Location` coinciden exactamente con la tabla física en base de datos.
+- **Cero DDL en este Release:** Los atributos extendidos (`ocupacionUnidades`, `capacidadBultos`, `ocupacionBultos`, `reservaUnidades`, `reservaBultos`, `categoriaUbicacion`, `esAlmacenable`) permanecen documentados como comentarios en `schema.prisma` y derivados dinámicamente en tiempo de ejecución.
+- **Exclusión de Migración Obsoleta:** Retiro formal del working tree de la carpeta `wms-backend/prisma/migrations/20261015_enrich_location_capacity/` tras certificar que nunca fue aplicada a la BD.
+
+#### 8. 🛡️ Cierre Técnico Preventivo, Blindaje de Genealogía HU y Coherencia de Movimientos Parciales (`operations.controller.ts`, `inventory.controller.ts`)
+- **Genealogía Obligatoria en `batchReception`:** Inyección mandatoria de `receiptId: receipt.id` y `receiptLineId: line.id`, además de `skuCodigo`, `skuDescripcion`, `loteTexto`, `fechaVencimiento`, `facturaRespaldo` y `piezasPorCaja` tanto en bultos conformes (`huC`) como no conformes (`huNC`).
+- **Resolución de Partida y Candado Anti-Huérfanas en `registerReception`:** Resolución de `recepcionId` desde `ReceiptLine`. Si se envía `receiptLineId` inexistente o sin recepción padre asociada, el backend responde con error explícito (`HttpException 404/400`) impidiendo la creación de HUs físicas huérfanas.
+- **Herencia Total en Splits y Transferencias (`transferInventory` / `transferToVirtual`):** Las HUs hijas heredan íntegramente la genealogía (`receiptId`, `receiptLineId`, `clienteId`, `skuCodigo`, `skuDescripcion`, `loteTexto`, `fechaVencimiento`, `facturaRespaldo` y `cajaOrigenId: originHu.id`). Se sincroniza la deducción física tanto en `originHu` como en `LotInventory`. Si no se pasa `huId`, la deducción se distribuye ordenadamente entre las HUs activas del lote sin permitir saldos negativos ni discrepancias entre la suma de HUs y el saldo del lote.
+- **Genealogía en Desvíos a Almacén Virtual (`divertToVirtual`):** Preservación de genealogía y `cajaOrigenId` cuando existe HU origen conocida, sincronizando la deducción simultánea en HU y en `LotInventory`. Si el desvío es puramente a nivel lote sin recepción previa inequívoca, se prohíbe inventar un `receiptId` ficticio.
+- **Reacondicionamiento en Calidad:** La caja dañada original se marca formalmente como `INACTIVO`, y las nuevas cajas conformes y bultos de merma en `DEV-01` preservan `cajaOrigenId: box.id`, `receiptId` y `receiptLineId`.
+- **Integridad de Datos Históricos:** No se ejecutó ningún backfill forzado. Las HUs históricas `HU-2026-00071..76` de `REC-2026-0003` permanecen intactas con `receiptId = null` como testimonio auditable.
+
+#### 9. 🏷️ Nomenclatura Oficial de Tarima Master y Compatibilidad Legacy
+- **Estándar Oficial Unificado:** Las nuevas Tarimas Master generadas por el sistema implementan estrictamente la nomenclatura `PLT-${receipt.codigo}-${String(pCount).padStart(2, '0')}` (ej. `PLT-REC-2026-0006-01`), con `tipoHu: 'PALLET'`, `uom: 'TARIMA'` y `estadoEtiqueta: 'GENERADA'`.
+- **Soporte Legacy de Lectura:** El prefijo `TAR-*` se reconoce en los parsers de frontend para compatibilidad histórica con datos demo preexistentes, sin renombrar registros históricos en la base de datos.
+
+#### 10. 🧪 Suite de Pruebas Preventivas con Rollback Transaccional (10/10 PASS)
+- **Suite Automatizada (`scratch/test-preventative.js`):** Ejecución directa sobre PostgreSQL/Supabase en transacción aislada con aborto forzado (`ROLLBACK`).
+- **Verificación 10/10 Exitosa:**
+  * `test1_batchReceptionGenealogy`: true
+  * `test2_individualReceptionGenealogy`: true
+  * `test2_orphanProtection`: true
+  * `test3_splitGenealogyAndBalance`: true
+  * `test4_divertToVirtualGenealogyAndBalance`: true
+  * `test4_divertLotLevelNoFakeReceipt`: true
+  * `test5_reconditioningPreservesOrigin`: true
+  * `test6_tarimaMasterNomenclature`: true
+  * `test7_rollbackConfirmed`: true (0 mutaciones temporales en BD)
+  * `test8_historicalDataIntact`: true (REC-2026-0003, HUs 71..76 y totales de HUs/lotes 100% idénticos)
+- **Compilaciones Limpias:** `npm run build` en backend (código 0) y frontend (código 0, bundle de producción en 11.19s).
+
+#### 11. 🎯 Siguiente Paso Operativo
+- **Iniciar recepción E2E manual de Fashion Forward desde la interfaz para validar Putaway Inteligente de punta a punta.**
+- **Datos de prueba concertados:**
+  * Depositante: Fashion Forward S.A. de C.V.
+  * Factura: `FAC-QA-FF-001`
+  * SKU: `CHA-CUE-L` (Chamarra de Cuero Sintético)
+  * Cantidad: 45 piezas (3 cajas de 15 piezas cada una)
+  * Lote: `LOT-QA-FF-001` (Sin caducidad)
+  * Observación: `"PRUEBA CONTROLADA WMS - PUTAWAY"`
+  * Objetivo: Verificar rampa, inspección, doble etiquetado con tarima master `PLT-*` y confirmación de sugerencia de guardado del Motor Putaway Inteligente.
+
+#### 12. ⏳ Alcance Fuera de Release / Pendiente para Siguientes Etapas (Out of Scope)
+- **Etapa 5B (Reservas Temporales con TTL):** Mecanismo de reservas con tiempo de expiración y cron/job de liberación desatendida.
+- **Layout Definitivo de Alejandra:** Nomenclatura, coordenadas espaciales y matriz formal de alturas/funciones por nivel oficial de planta.
+- **DDL Definitivo de Capacidades:** Migraciones SQL para persistir formalmente capacidades máximas de bultos y dimensiones volumétricas en tabla `Location`.
+- **Matriz Formal Relacional Producto-Zona:** Tabla de base de datos para restricciones cruzadas por familias arancelarias y compatibilidad química/alimentaria.
+- **Idempotency-Key en Cabeceras de PDA:** Tokens idempotentes en peticiones HTTP para handhelds con conectividad intermitente.
+- **Concurrencia Avanzada de Allocation:** Algoritmo concurrente multilínea para reserva de stock en asignación masiva de pedidos.
+
+---
+
+## [1.9.15] — 2026-10-15
+
+### 🧠 Calibración del Motor Putaway Inteligente, Separación de Compatibilidad Producto-Zona y Desacoplamiento de Niveles y FEFO
+
+- **1. Separación Arquitectónica: Compatibilidad Producto-Zona vs. Preferencia del Depositante (`putaway-engine.service.ts`):**
+  - Desacople formal entre la viabilidad física/sanitaria del producto (**Criterio A**) y las reglas contractuales del depositante (**Criterio B**).
+  - Implementación del evaluador `evaluateProductZoneCompatibility`: evalúa requerimientos térmicos, restricciones explícitas y matrices de categorías admitidas/excluidas por zona.
+  - Tipificación tripartita explícita: `COMPATIBLE`, `INCOMPATIBLE`, `NO_CONFIGURADO`.
+  - **Política de Operación Segura para Categorías Críticas:** Si un producto clasificado como crítico (`ALIMENTO`, `PERECEDERO`, `FARMACEUTICO`, `QUIMICO`, `PELIGROSO`) se evalúa contra una zona externa en estado `NO_CONFIGURADO` (sin matriz formal), el motor **rechaza considerarlo compatible por defecto** y lo descarta de las sugerencias automáticas (`discardedUnconfiguredCompatibility`), erradicando de raíz asignaciones no autorizadas.
+  - La preferencia de zona del depositante (`isStrictZone`) se evalúa en ranking como bonificación (`+30 pts`) o penalización (`-25 pts`), permitiendo zonificación secundaria únicamente si el producto es comprobadamente compatible.
+
+- **2. Auditoría y Erradicación de Zona A (Textil) como Alternativa para `ACE-OLI-1L`:**
+  - **Diagnóstico:** Se constató que en PostgreSQL la tabla `Zone` carece de matriz formal relacional de categorías; la denominación *"Textil"* residía únicamente en el string libre de la columna `nombre` (`"Almacenamiento A (Textil)"`). Al compartir temperatura `AMBIENTE` con Zona B, el motor anterior ofrecía celdas de Zona A cuando Zona B se saturaba físicamente.
+  - **Corrección:** Con la nueva política de descarte de zonas no configuradas para alimentos, las 34 celdas de Zona A son catalogadas como no configuradas críticas y descartadas de raíz. `ACE-OLI-1L` nunca más recibe alternativas en estantería textil.
+
+- **3. Desacoplamiento de Función de Niveles y Erradicación de Capacidad Artificial de Bultos (`putaway-engine.service.ts`, `master-data.controller.ts`):**
+  - Se erradicó la regla rígida cableada `N1 = PICKING`, `N2/N3 = RESERVA`.
+  - Introducción del método `resolveFuncionNivel`: prioriza atributos configurables en `Location` (`funcionNivel` o `tipoNivel`). El mapeo por nivel queda confinado a un fallback temporal privado `@deprecated` para garantizar continuidad operativa hasta recibir el layout oficial de Alejandra.
+  - **Erradicación de Capacidad de Bultos Ficticia:** Se eliminó cualquier cálculo donde la función de nivel infería bultos (`PICKING = 5`, `RESERVA = 1`). La capacidad de bultos proviene exclusivamente de la configuración física real de cada `Location`; si no existe fuente real en BD, se maneja como `capacidadBultos = NO_CONFIGURADA` (`null`). Se preserva `ocupacionBultos` real (derivada de `HandlingUnit`) como dato informativo sin inventar límites artificiales en backend ni en UI.
+
+- **4. Desacoplamiento y Jerarquía de Políticas FEFO (`putaway-engine.service.ts`):**
+  - Se eliminó la constante hardcodeada `<= 365 días → N1`.
+  - Implementación de jerarquía dinámica de umbrales para prioridad de surtido en nivel Picking:
+    1. Política configurada en cliente depositante (`cliente.diasUmbralPickingCaducidad`).
+    2. Política configurada en SKU (`sku.diasUmbralPicking`).
+    3. Umbral estándar por defecto del WMS aislado en la constante explícita: `DEFAULT_FEFO_PICKING_THRESHOLD_DAYS = 180`.
+  - **Trazabilidad de Compatibilidad Producto-Zona:** Se tipificó internamente la fuente de evaluación (`MATRIZ_PRODUCTO_ZONA`, `RESTRICCION_TERMICA`, `POLITICA_DEPOSITANTE` con advertencia de fallback demo provisional, y `SIN_CONFIGURACION`).
+
+- **5. Certificación del Dry-Run Real con `BOX-REC-2026-0006-0002` (10 pzas conformes, AlimNorte):**
+  - Evaluación sobre las 54 ubicaciones físicas del layout:
+    * 6 especiales/transitorias descartadas (`REC-01`, `REC-02`, `RAMPA-01`, `DEV-01`, `STG-01`, `PISO-01`).
+    * 13 descartadas por sobrecapacidad física en Zona B.
+    * 1 celda asignada descartada por falta de capacidad disponible (`B02-R01-N1`: 4 pzas libres vs 10 requeridas).
+    * 34 celdas de Zona A descartadas por `NO_CONFIGURADO` en categoría alimento.
+  - Resultado canónico exacto: `matchScore: 0`, `suggestedLocation: null`, `matchReason: "No existe una ubicación compatible con capacidad suficiente."` y 0 alternativas.
+
+- **6. Candados de Revalidación en Tiempo Real Previos a Confirmación (`operations.controller.ts`):**
+  - Incorporación de `PutawayEngineService.revalidateLocationForPutaway` en los endpoints de confirmación individual (`confirmPutawayItem`) y masiva (`confirmPutaway`).
+  - Revalida en el instante de confirmación: tipo almacenable, estatus activo, no bloqueado, sobrecapacidad y disponibilidad real tanto en piezas como en bultos, abortando con error descriptivo antes de alterar inventario si otra maniobra ocupó la celda.
+
+- **7. UI de Selección de Racks Alternativos y Detalle de Posición (`PutawayModal.tsx`, `Locations.tsx`):**
+  - Integración de modal en `PutawayModal.tsx` ("Ver otras ubicaciones") para inspeccionar alternativas calculadas por el motor con sus razones favorables y advertencias operativas.
+  - En `Locations.tsx`, desglose formal de Unidades de Manejo (HUs) físicas presentes en posición y cálculo derivado de capacidad en piezas y bultos.
+
+- **8. Directriz Arquitectónica para Etapa 5 (PostgreSQL / Supabase Transaccional):**
+  - Se acordó y documentó la decisión arquitectónica de prescindir de Redis para control de concurrencia en racks, adoptando **bloqueo pesimista transaccional en PostgreSQL** (`SELECT ... FOR UPDATE` sobre `Location` dentro de la misma transacción de confirmación de inventario).
+
 ## [1.9.14] — 2026-10-09
 
 ### 🚀 Certificación E2E de REC-2026-0006, Blindaje de fechaCierre e Idempotencia, y Promoción a main

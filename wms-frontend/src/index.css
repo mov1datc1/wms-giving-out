@@ -2123,6 +2123,38 @@ code {
   gap: var(--space-4);
 }
 
+/* --- Dashboard Executive KPIs Grid (Responsive sin tarjeta huérfana) --- */
+.dashboard-kpi-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+  margin-bottom: 24px;
+}
+
+@media (min-width: 640px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1800px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
+
+.dashboard-kpi-grid .stat-card {
+  height: 100%;
+  min-height: 96px;
+  box-sizing: border-box;
+}
+
 /* --- Stat Card (enhanced) --- */
 .stat-card {
   background: var(--glass-bg);

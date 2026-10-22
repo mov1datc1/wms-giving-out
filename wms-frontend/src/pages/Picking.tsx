@@ -3,12 +3,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   Package, Search, RefreshCw, ChevronDown, ChevronUp, Clock, CheckCircle2,
-  ScanLine, MapPin, Box, ArrowRight, AlertCircle, X, Layers, BarChart3, Target,
+  ScanLine, MapPin, Box, ArrowRight, ArrowLeft, AlertCircle, X, Layers, BarChart3, Target,
   Truck, ShieldCheck, UserCheck, CheckSquare, Sparkles, Send, PlayCircle,
-  FileText, ShieldAlert
+  FileText, ShieldAlert, AlertTriangle, RotateCcw, Lock
 } from 'lucide-react';
 import { DispatchManifestModal } from '../components/DispatchManifestModal';
 import { useNavigate } from 'react-router-dom';
+import { checkCitaVencida } from '../utils/order-sla.util';
 
 export function Picking() {
   const { token, user } = useAuth();
@@ -31,6 +32,14 @@ export function Picking() {
     type: 'success' | 'error' | 'warning';
     msg: string;
     step?: 'ubicacion' | 'caja';
+  } | null>(null);
+
+  // Estado de Revalidación Canónica Operativa
+  const [revalidationRequired, setRevalidationRequired] = useState<{
+    lineId: string;
+    codigoError: string;
+    motivo: string;
+    notificadoSupervisor?: boolean;
   } | null>(null);
 
   // Modales integrados al diseño Giving Out (sin alert, confirm ni prompt nativos)
@@ -232,10 +241,28 @@ export function Picking() {
           tipoScan: 'UBICACION',
           codigoEscaneado: raw,
           ubicacionEsperada: currentTask.ubicacionCodigo,
+          taskLotId: currentTask.lotId,
+          loteEsperado: currentTask.loteCodigo,
+          cantidadEsperada: currentTask.cantidadObjetivo - currentTask.cantidadPickeada,
         }),
       });
 
       const result = await res.json();
+      if (result.requiereRevalidacion) {
+        setLocationVerified(false);
+        setRevalidationRequired({
+          lineId: currentTask.lineId,
+          codigoError: result.codigoError || 'ASIGNACION_DESACTUALIZADA',
+          motivo: result.motivo || result.mensaje,
+        });
+        setScanFeedback({
+          type: 'error',
+          msg: result.mensaje || 'ASIGNACIÓN REQUIERE REVALIDACIÓN',
+          step: 'ubicacion',
+        });
+        return;
+      }
+
       if (result.valid) {
         setLocationVerified(true);
         setScanFeedback({
@@ -321,11 +348,26 @@ export function Picking() {
           ubicacionEsperada: currentTask.ubicacionCodigo,
           loteEsperado: currentTask.loteCodigo,
           cantidadEsperada: faltante,
+          taskLotId: currentTask.lotId,
           cajasYaEscaneadas: allScannedBoxesAcrossOrder,
         }),
       });
 
       const result = await res.json();
+      if (result.requiereRevalidacion) {
+        setRevalidationRequired({
+          lineId: currentTask.lineId,
+          codigoError: result.codigoError || 'ASIGNACION_DESACTUALIZADA',
+          motivo: result.motivo || result.mensaje,
+        });
+        setScanFeedback({
+          type: 'error',
+          msg: result.mensaje || 'ASIGNACIÓN REQUIERE REVALIDACIÓN',
+          step: 'caja',
+        });
+        return;
+      }
+
       if (result.valid) {
         const cantToAdd = Number(result.cantidadCaja) || 1;
         const newQty = (currentTask.cantidadPickeada || 0) + cantToAdd;
@@ -333,14 +375,18 @@ export function Picking() {
 
         setScanFeedback({
           type: 'success',
-          msg: `Caja y lote correctos: +${cantToAdd} ud(s) registradas (${Math.min(newQty, currentTask.cantidadObjetivo)}/${currentTask.cantidadObjetivo} uds).`,
+          msg: `Caja y lote correctos [${result.huCodigo || raw}]: +${cantToAdd} ud(s) registradas (${Math.min(newQty, currentTask.cantidadObjetivo)}/${currentTask.cantidadObjetivo} uds).`,
           step: 'caja',
         });
         setBoxScan('');
       } else {
+        const isHuRequired = result.codigoError === 'HU_REQUERIDA';
+        const isOverQty = result.codigoError === 'HU_CANTIDAD_EXCEDE_PENDIENTE';
         setScanFeedback({
-          type: 'error',
-          msg: result.mensaje || `Caja inválida: "${raw}" no corresponde al lote o rack validado.`,
+          type: isOverQty ? 'warning' : 'error',
+          msg: isHuRequired
+            ? 'Esta operación requiere una unidad de manejo física. Escanea la etiqueta Code-128 de la caja/HU.'
+            : result.mensaje || `Caja inválida: "${raw}" no corresponde al lote o rack validado.`,
           step: 'caja',
         });
       }
@@ -427,6 +473,13 @@ export function Picking() {
 
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 409 || data.codigoError || data.message?.includes('ASIGNACIÓN REQUIERE REVALIDACIÓN')) {
+          setRevalidationRequired({
+            lineId: currentTask.lineId,
+            codigoError: data.codigoError || 'ASIGNACION_DESACTUALIZADA',
+            motivo: data.motivo || data.message,
+          });
+        }
         setScanFeedback({
           type: 'error',
           msg: data.message || 'Error al persistir recolección en base de datos',
@@ -718,12 +771,36 @@ export function Picking() {
                     <span>
                       {o.lineas?.length} líneas · {totalSolicitado(o)} solicitadas · {totalAsignado(o)} asignadas · <strong style={{ color: totalRecolectado(o) > 0 ? 'var(--emerald)' : 'inherit' }}>{totalRecolectado(o)}</strong> recolectadas
                     </span>
-                    {o.fechaCompromiso && (
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <Clock size={13} />
-                        Cita: {new Date(o.fechaCompromiso).toLocaleDateString('es-MX')} {o.horaCompromiso ? `(${o.horaCompromiso})` : ''}
-                      </span>
-                    )}
+                    {o.fechaCompromiso && (() => {
+                      const sla = checkCitaVencida(o.fechaCompromiso, o.horaCompromiso, o.estado);
+                      return (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Clock size={13} />
+                            Cita: {new Date(o.fechaCompromiso).toLocaleDateString('es-MX')} {o.horaCompromiso ? `(${o.horaCompromiso})` : ''}
+                          </span>
+                          {sla.isVencida && (
+                            <span
+                              style={{
+                                background: 'rgba(239, 68, 68, 0.12)',
+                                color: '#ef4444',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                padding: '2px 8px',
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                              }}
+                            >
+                              <AlertTriangle size={11} />
+                              {sla.badgeTexto}
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })()}
                   </div>
 
                   {/* Progress bar for EN_PICKING */}
@@ -792,6 +869,33 @@ export function Picking() {
             </div>
 
             <div className="modal-body" style={{ padding: 20 }}>
+              {(() => {
+                const activeSla = checkCitaVencida(activeOrder.fechaCompromiso, activeOrder.horaCompromiso, activeOrder.estado);
+                return activeSla.isVencida ? (
+                  <div style={{
+                    padding: '10px 16px',
+                    background: 'rgba(239, 68, 68, 0.08)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    borderRadius: 8,
+                    marginBottom: 16,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    color: '#ef4444',
+                    fontSize: 13,
+                    fontWeight: 600,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <AlertTriangle size={16} />
+                      <span>{activeSla.alertaTerminal} ({activeSla.badgeTexto})</span>
+                    </div>
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      La recolección no está cancelada
+                    </span>
+                  </div>
+                ) : null;
+              })()}
+
               {/* Order Info Strip */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
                 <div className="card" style={{ padding: 12, background: 'var(--bg-secondary)' }}>
@@ -800,9 +904,19 @@ export function Picking() {
                 </div>
                 <div className="card" style={{ padding: 12, background: 'var(--bg-secondary)' }}>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>Cita de Entrega</div>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>
-                    {activeOrder.fechaCompromiso ? new Date(activeOrder.fechaCompromiso).toLocaleDateString('es-MX') : 'Inmediata'}{' '}
-                    {activeOrder.horaCompromiso ? `(${activeOrder.horaCompromiso})` : ''}
+                  <div style={{ fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span>
+                      {activeOrder.fechaCompromiso ? new Date(activeOrder.fechaCompromiso).toLocaleDateString('es-MX') : 'Inmediata'}{' '}
+                      {activeOrder.horaCompromiso ? `(${activeOrder.horaCompromiso})` : ''}
+                    </span>
+                    {(() => {
+                      const sla = checkCitaVencida(activeOrder.fechaCompromiso, activeOrder.horaCompromiso, activeOrder.estado);
+                      return sla.isVencida ? (
+                        <span className="badge badge-danger" style={{ fontSize: 10, padding: '2px 6px' }}>
+                          {sla.badgeTexto}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
                 <div className="card" style={{ padding: 12, background: 'var(--bg-secondary)' }}>
@@ -840,199 +954,233 @@ export function Picking() {
               )}
 
               {/* Active Item Scanning Station */}
-              {currentLine && (
-                <div style={{
-                  background: 'var(--bg-secondary)',
-                  borderRadius: 12,
-                  padding: 18,
-                  marginBottom: 20,
-                  border: '2px solid var(--primary)',
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span className="badge badge-info" style={{ fontWeight: 700 }}>
-                        Parada #{selectedLineIdx + 1} de {pickingLines.length}
-                      </span>
-                      <code style={{ fontSize: 14, fontWeight: 700, color: 'var(--primary)' }}>
-                        {currentLine.sku?.codigo}
-                      </code>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                        Surtido: <strong style={{ fontSize: 16, color: currentLine.completo ? 'var(--emerald)' : 'var(--text-primary)' }}>{currentLine.cantidadPickeada}</strong> / {currentLine.cantidadObjetivo} uds
-                      </span>
-                    </div>
-                  </div>
+              {currentLine && (() => {
+                const isBlockedByRevalidation = Boolean(revalidationRequired && revalidationRequired.lineId === currentLine.lineId);
 
-                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>
-                    {currentLine.sku?.descripcion}
-                  </div>
-
-                  {/* Target rack location and lot strip */}
-                  <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-                    <div style={{
-                      padding: '8px 14px',
-                      borderRadius: 8,
-                      background: locationVerified ? 'rgba(16,185,129,0.15)' : 'var(--bg-primary)',
-                      border: `1px solid ${locationVerified ? 'var(--emerald)' : 'var(--border)'}`,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}>
-                      <MapPin size={16} color={locationVerified ? 'var(--emerald)' : 'var(--primary)'} />
-                      <span style={{ fontSize: 12 }}>
-                        Ubicación Rack:{' '}
-                        <strong style={{ fontFamily: 'monospace', fontSize: 14 }}>
-                          {currentLine.ubicacionCodigo}
-                        </strong>
-                      </span>
-                      {locationVerified && (
-                        <span className="badge badge-success" style={{ fontSize: 10, padding: '2px 6px' }}>
-                          Verificada
-                        </span>
-                      )}
-                    </div>
-
-                    <div style={{
-                      padding: '8px 14px',
-                      borderRadius: 8,
-                      background: 'var(--bg-primary)',
-                      border: '1px solid var(--border)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}>
-                      <Layers size={16} color="var(--primary)" />
-                      <span style={{ fontSize: 12 }}>
-                        Lote Asignado:{' '}
-                        <strong style={{ fontFamily: 'monospace', fontSize: 14 }}>
-                          {currentLine.loteCodigo}
-                        </strong>
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Dual Scan Inputs */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-                    {/* Scan 1: Rack Location */}
-                    <form onSubmit={handleLocationScanSubmit} style={{ background: 'var(--bg-primary)', padding: 14, borderRadius: 8, border: `1px solid ${locationVerified ? 'var(--emerald)' : 'var(--border)'}` }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6, color: locationVerified ? 'var(--emerald)' : 'var(--text-primary)' }}>
-                        <ScanLine size={15} /> 1. Escanear Ubicación Física (Rack)
-                      </div>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <input
-                          type="text"
-                          className="form-input"
-                          placeholder={currentLine.ubicacionCodigo}
-                          value={locationScan}
-                          onChange={e => setLocationScan(e.target.value)}
-                          disabled={locationVerified}
-                          style={{ flex: 1, fontFamily: 'monospace', fontWeight: 700 }}
-                        />
-                        <button
-                          type="submit"
-                          className={`btn btn-sm ${locationVerified ? 'btn-success' : 'btn-primary'}`}
-                          disabled={locationVerified || !locationScan.trim()}
-                        >
-                          {locationVerified ? <CheckCircle2 size={14} /> : 'Validar'}
-                        </button>
-                      </div>
-                      {locationVerified && (
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          style={{ fontSize: 11, padding: '2px 6px', marginTop: 6 }}
-                          onClick={() => { setLocationVerified(false); setLocationScan(''); }}
-                        >
-                          Reescanear rack
-                        </button>
-                      )}
-                    </form>
-
-                    {/* Scan 2: Box Barcode */}
-                    <form onSubmit={handleBoxScanSubmit} style={{ background: 'var(--bg-primary)', padding: 14, borderRadius: 8, border: `1px solid ${!locationVerified ? 'var(--border)' : 'var(--primary)'}`, opacity: locationVerified ? 1 : 0.6 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Box size={15} /> 2. Escanear Caja / Etiqueta Code-128
-                      </div>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <input
-                          type="text"
-                          className="form-input"
-                          placeholder="Escanea etiqueta de la caja..."
-                          value={boxScan}
-                          onChange={e => setBoxScan(e.target.value)}
-                          disabled={!locationVerified}
-                          autoFocus={locationVerified}
-                          style={{ flex: 1, fontFamily: 'monospace', fontWeight: 700 }}
-                        />
-                        <button
-                          type="submit"
-                          className="btn btn-primary btn-sm"
-                          disabled={!locationVerified || !boxScan.trim()}
-                        >
-                          <ScanLine size={14} /> +1 Caja
-                        </button>
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
-                        Valida SKU y lote programado antes de sumar
-                      </div>
-                    </form>
-                  </div>
-
-                  {/* Manual / Touch Controls Fallback con Auditoría Obligatoria */}
+                return (
                   <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    background: 'var(--bg-primary)',
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
+                    background: 'var(--bg-secondary)',
+                    borderRadius: 12,
+                    padding: 18,
+                    marginBottom: 20,
+                    border: `2px solid ${isBlockedByRevalidation ? 'var(--error, #ef4444)' : 'var(--primary)'}`,
                   }}>
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      Ajuste asistido por excepción (pantalla táctil / supervisor):
-                    </span>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => handleManualAdjustment(selectedLineIdx, currentLine.cantidadPickeada - 1)}
-                        disabled={currentLine.cantidadPickeada <= 0}
-                      >
-                        -1
-                      </button>
-                      <input
-                        type="number"
-                        min={0}
-                        max={currentLine.cantidadObjetivo}
-                        value={currentLine.cantidadPickeada}
-                        onChange={e => handleManualAdjustment(selectedLineIdx, parseInt(e.target.value, 10) || 0)}
-                        style={{
-                          width: 55,
-                          height: 32,
-                          textAlign: 'center',
-                          fontWeight: 700,
-                          borderRadius: 6,
-                          border: '1px solid var(--border)',
-                        }}
-                      />
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => handleManualAdjustment(selectedLineIdx, currentLine.cantidadPickeada + 1)}
-                        disabled={currentLine.cantidadPickeada >= currentLine.cantidadObjetivo}
-                      >
-                        +1
-                      </button>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => handleManualAdjustment(selectedLineIdx, currentLine.cantidadObjetivo)}
-                        style={{ marginLeft: 6 }}
-                      >
-                        <CheckSquare size={13} /> Surtir Todo
-                      </button>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="badge badge-info" style={{ fontWeight: 700 }}>
+                          Parada #{selectedLineIdx + 1} de {pickingLines.length}
+                        </span>
+                        <code style={{ fontSize: 14, fontWeight: 700, color: 'var(--primary)' }}>
+                          {currentLine.sku?.codigo}
+                        </code>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                          Surtido: <strong style={{ fontSize: 16, color: currentLine.completo ? 'var(--emerald)' : 'var(--text-primary)' }}>{currentLine.cantidadPickeada}</strong> / {currentLine.cantidadObjetivo} uds
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>
+                      {currentLine.sku?.descripcion}
+                    </div>
+
+                    {/* Alerta de Asignación que Requiere Revalidación o Regularización */}
+                    {isBlockedByRevalidation && (
+                      <div style={{
+                        padding: '16px 20px',
+                        background: 'rgba(239, 68, 68, 0.08)',
+                        border: '2px solid var(--error, #ef4444)',
+                        borderRadius: 10,
+                        marginBottom: 16,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <AlertTriangle size={22} color="var(--error, #ef4444)" />
+                            <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--error, #ef4444)', letterSpacing: '0.02em' }}>
+                              {revalidationRequired?.codigoError === 'INVENTARIO_LEGADO_SIN_HU'
+                                ? 'ASIGNACIÓN REQUIERE REGULARIZACIÓN'
+                                : 'ASIGNACIÓN REQUIERE REVALIDACIÓN'}
+                            </span>
+                          </div>
+                          <span className="badge badge-danger" style={{ fontWeight: 700, fontSize: 11 }}>
+                            {revalidationRequired?.codigoError.replace(/_/g, ' ')}
+                          </span>
+                        </div>
+                        <p style={{ fontSize: 13, color: 'var(--text-primary)', margin: '0 0 12px 0', lineHeight: 1.5 }}>
+                          {revalidationRequired?.codigoError === 'INVENTARIO_LEGADO_SIN_HU'
+                            ? 'El inventario asignado no cuenta con unidades de manejo físicas trazables. No puede surtirse mediante el flujo de escaneo de cajas.'
+                            : revalidationRequired?.motivo}
+                        </p>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                            Operación de surtido y conteo temporalmente suspendida para esta posición.
+                          </span>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}
+                            onClick={() => {
+                              setRevalidationRequired(prev => prev ? { ...prev, notificadoSupervisor: true } : null);
+                              setScanFeedback({
+                                type: 'warning',
+                                msg: revalidationRequired?.codigoError === 'INVENTARIO_LEGADO_SIN_HU'
+                                  ? 'Solicitud de regularización física enviada al supervisor. Requiere etiquetado de HUs.'
+                                  : 'Solicitud de revalidación notificada al supervisor. Esperando resolución de lote en almacén.',
+                              });
+                            }}
+                            disabled={revalidationRequired?.notificadoSupervisor}
+                          >
+                            <RotateCcw size={14} />
+                            {revalidationRequired?.notificadoSupervisor
+                              ? '✓ Solicitud enviada al supervisor'
+                              : revalidationRequired?.codigoError === 'INVENTARIO_LEGADO_SIN_HU'
+                              ? 'Solicitar regularización / etiquetado HU'
+                              : 'Solicitar revalidación / reasignación'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Target rack location and lot strip */}
+                    <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+                      <div style={{
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        background: locationVerified ? 'rgba(16,185,129,0.15)' : 'var(--bg-primary)',
+                        border: `1px solid ${locationVerified ? 'var(--emerald)' : 'var(--border)'}`,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}>
+                        <MapPin size={16} color={locationVerified ? 'var(--emerald)' : 'var(--primary)'} />
+                        <span style={{ fontSize: 12 }}>
+                          Ubicación Rack:{' '}
+                          <strong style={{ fontFamily: 'monospace', fontSize: 14 }}>
+                            {currentLine.ubicacionCodigo}
+                          </strong>
+                        </span>
+                        {locationVerified && (
+                          <span className="badge badge-success" style={{ fontSize: 10, padding: '2px 6px' }}>
+                            Verificada
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}>
+                        <Layers size={16} color="var(--primary)" />
+                        <span style={{ fontSize: 12 }}>
+                          Lote Asignado:{' '}
+                          <strong style={{ fontFamily: 'monospace', fontSize: 14 }}>
+                            {currentLine.loteCodigo}
+                          </strong>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Dual Scan Inputs */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                      {/* Scan 1: Rack Location */}
+                      <form onSubmit={handleLocationScanSubmit} style={{ background: 'var(--bg-primary)', padding: 14, borderRadius: 8, border: `1px solid ${locationVerified ? 'var(--emerald)' : 'var(--border)'}` }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6, color: locationVerified ? 'var(--emerald)' : 'var(--text-primary)' }}>
+                          <ScanLine size={15} /> 1. Escanear Ubicación Física (Rack)
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder={currentLine.ubicacionCodigo}
+                            value={locationScan}
+                            onChange={e => setLocationScan(e.target.value)}
+                            disabled={locationVerified || isBlockedByRevalidation}
+                            style={{ flex: 1, fontFamily: 'monospace', fontWeight: 700 }}
+                          />
+                          <button
+                            type="submit"
+                            className={`btn btn-sm ${locationVerified ? 'btn-success' : 'btn-primary'}`}
+                            disabled={locationVerified || !locationScan.trim() || isBlockedByRevalidation}
+                          >
+                            {locationVerified ? <CheckCircle2 size={14} /> : 'Validar'}
+                          </button>
+                        </div>
+                        {locationVerified && !isBlockedByRevalidation && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            style={{ fontSize: 11, padding: '2px 6px', marginTop: 6 }}
+                            onClick={() => { setLocationVerified(false); setLocationScan(''); }}
+                          >
+                            Reescanear rack
+                          </button>
+                        )}
+                      </form>
+
+                      {/* Scan 2: Box Barcode */}
+                      <form onSubmit={handleBoxScanSubmit} style={{ background: 'var(--bg-primary)', padding: 14, borderRadius: 8, border: `1px solid ${!locationVerified ? 'var(--border)' : 'var(--primary)'}`, opacity: (locationVerified && !isBlockedByRevalidation) ? 1 : 0.6 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Box size={15} /> 2. Escanear Caja / Etiqueta Code-128
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder="Escanea etiqueta de la caja..."
+                            value={boxScan}
+                            onChange={e => setBoxScan(e.target.value)}
+                            disabled={!locationVerified || isBlockedByRevalidation}
+                            autoFocus={locationVerified && !isBlockedByRevalidation}
+                            style={{ flex: 1, fontFamily: 'monospace', fontWeight: 700 }}
+                          />
+                          <button
+                            type="submit"
+                            className="btn btn-primary btn-sm"
+                            disabled={!locationVerified || !boxScan.trim() || isBlockedByRevalidation}
+                          >
+                            <ScanLine size={14} /> +1 Caja
+                          </button>
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                          Valida SKU y lote programado antes de sumar
+                        </div>
+                      </form>
+                    </div>
+
+                    {/* Ajuste Asistido por Excepción: Restringido a Protocolo Formal de Supervisor */}
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      background: 'var(--bg-secondary)',
+                      padding: '10px 14px',
+                      borderRadius: 8,
+                      border: '1px dashed var(--border)',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Lock size={15} color="var(--text-tertiary)" />
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            Ajuste asistido manual deshabilitado
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                            El surtido exige validación física obligatoria por doble escaneo (Rack + Caja).
+                          </div>
+                        </div>
+                      </div>
+                      <span className="badge badge-neutral" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        Flujo Canónico Protegido
+                      </span>
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* All Items Route List */}
               <div style={{ marginBottom: 16 }}>
@@ -1109,38 +1257,110 @@ export function Picking() {
             </div>
 
             {/* Terminal Footer */}
-            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)' }}>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)' }}>
               <button className="btn btn-ghost" onClick={closeTerminal}>
                 Pausar y Cerrar
               </button>
-              {allLinesComplete && pickingLines.length > 0 && pickingLines.every(l => l.completo && l.cantidadPickeada >= l.cantidadObjetivo && l.cantidadObjetivo > 0) ? (
-                <button
-                  className="btn btn-success"
-                  style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
-                  onClick={() => {
-                    setManifestOrderId(activeOrder.id);
-                    setActiveOrder(null);
-                  }}
-                >
-                  <CheckCircle2 size={16} />
-                  Surtido al 100% — Proceder a Manifiesto de Despacho
-                </button>
-              ) : (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => {
-                    const nextPending = pickingLines.findIndex(l => !l.completo);
-                    if (nextPending !== -1) {
-                      setSelectedLineIdx(nextPending);
-                      setLocationVerified(false);
-                      setLocationScan('');
-                      setBoxScan('');
-                    }
-                  }}
-                >
-                  Siguiente Parada Pendiente <ArrowRight size={14} />
-                </button>
-              )}
+              {(() => {
+                // Caso A: Todas las paradas completas al 100%
+                if (allLinesComplete && pickingLines.length > 0 && pickingLines.every(l => l.completo && l.cantidadPickeada >= l.cantidadObjetivo && l.cantidadObjetivo > 0)) {
+                  return (
+                    <button
+                      className="btn btn-success"
+                      style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
+                      onClick={() => {
+                        setManifestOrderId(activeOrder.id);
+                        setActiveOrder(null);
+                      }}
+                    >
+                      <CheckCircle2 size={16} />
+                      Surtido al 100% — Proceder a Manifiesto de Despacho
+                    </button>
+                  );
+                }
+
+                // Caso B: Orden con una sola parada (ej. Parada #1 de 1)
+                if (pickingLines.length <= 1) {
+                  return (
+                    <button
+                      className="btn btn-secondary"
+                      disabled
+                      style={{ opacity: 0.6, cursor: 'not-allowed', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+                      title="Esta orden solo consta de una única parada de recolección en ruta."
+                    >
+                      <MapPin size={14} />
+                      Última parada de la ruta
+                    </button>
+                  );
+                }
+
+                // Caso C: Orden con múltiples paradas
+                // Subcaso C1: La parada actual NO está completada -> NO permitir avanzar
+                if (!currentLine?.completo) {
+                  return (
+                    <button
+                      className="btn btn-secondary"
+                      disabled
+                      style={{ opacity: 0.6, cursor: 'not-allowed', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+                      title="Debe completar el 100% del surtido de la parada actual antes de avanzar a la siguiente."
+                    >
+                      Complete la parada actual para avanzar ({currentLine?.cantidadPickeada || 0}/{currentLine?.cantidadObjetivo || 0} uds)
+                    </button>
+                  );
+                }
+
+                // Subcaso C2: La parada actual SÍ está completa -> Buscar siguiente parada pendiente
+                const nextPendingIdx = pickingLines.findIndex((l, i) => i > selectedLineIdx && !l.completo);
+                if (nextPendingIdx !== -1) {
+                  return (
+                    <button
+                      className="btn btn-primary"
+                      style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
+                      onClick={() => {
+                        setSelectedLineIdx(nextPendingIdx);
+                        setLocationVerified(false);
+                        setLocationScan('');
+                        setBoxScan('');
+                        setScanFeedback(null);
+                      }}
+                    >
+                      Siguiente Parada Pendiente (#{nextPendingIdx + 1}) <ArrowRight size={14} />
+                    </button>
+                  );
+                }
+
+                // Subcaso C3: No hay paradas posteriores pendientes (revisar anteriores pendientes si las hay)
+                const prevPendingIdx = pickingLines.findIndex((l, i) => i < selectedLineIdx && !l.completo);
+                if (prevPendingIdx !== -1) {
+                  return (
+                    <button
+                      className="btn btn-warning"
+                      style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
+                      onClick={() => {
+                        setSelectedLineIdx(prevPendingIdx);
+                        setLocationVerified(false);
+                        setLocationScan('');
+                        setBoxScan('');
+                        setScanFeedback(null);
+                      }}
+                    >
+                      <ArrowLeft size={14} /> Parada anterior pendiente (#{prevPendingIdx + 1})
+                    </button>
+                  );
+                }
+
+                // Subcaso C4: Ya no hay ninguna parada pendiente
+                return (
+                  <button
+                    className="btn btn-secondary"
+                    disabled
+                    style={{ opacity: 0.6, cursor: 'not-allowed', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+                  >
+                    <MapPin size={14} />
+                    Última parada de la ruta
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </div>

@@ -30,8 +30,11 @@ export class TransferToVirtualDto {
   @ApiProperty({ description: 'Usuario responsable que ejecuta la transferencia', example: 'Mariana Supervisor' })
   usuario: string;
 
-  @ApiPropertyOptional({ description: 'Ubicación de destino específica en almacén virtual (ej. DEV-01)', example: 'DEV-01' })
+  @ApiPropertyOptional({ description: 'Ubicación de destino específica (ej. A02-R01-N1 o NC-EXCESO-01)', example: 'A02-R01-N1' })
   ubicacionDestinoId?: string;
+
+  @ApiPropertyOptional({ description: 'Tipo de operación: TRANSFERENCIA (entre racks comerciales) o CUARENTENA (retención preventiva)', example: 'TRANSFERENCIA' })
+  tipoOperacion?: 'TRANSFERENCIA' | 'CUARENTENA';
 }
 
 export class ReleaseFromVirtualDto {

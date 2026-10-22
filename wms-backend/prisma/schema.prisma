@@ -71,7 +71,18 @@ model Location {
   capacidadKg      Float?
   capacidadVolM3   Float?
   capacidadUnits   Int      @default(100)
-  ocupacion        Int      @default(0)
+  ocupacion        Int      @default(0)   // @deprecated: Mezclaba históricamente bultos con piezas. Fuente de verdad actual: LotInventory & HandlingUnit
+
+  // === MODELO DE CAPACIDAD FÍSICA SEPARADA (DISEÑO CANÓNICO ETAPA 2) ===
+  // Pendiente de DDL formal en PostgreSQL para evitar desincronización con BD compartida:
+  // - ocupacionUnidades: INTEGER DEFAULT 0 (suma derivada de LotInventory)
+  // - capacidadBultos:   INTEGER DEFAULT 1 (capacidad física de pallets/cajas)
+  // - ocupacionBultos:   INTEGER DEFAULT 0 (conteo derivado de HandlingUnit activas)
+  // - reservaUnidades:   INTEGER DEFAULT 0 (piezas comprometidas en tránsito)
+  // - reservaBultos:     INTEGER DEFAULT 0 (bultos comprometidos en tránsito)
+  // - categoriaUbicacion: TEXT (FISICA_ALMACENABLE, RECIBO_TRANSITO, VIRTUAL_NO_CONFORME, STAGING, ESPECIAL_OTRAS)
+  // - esAlmacenable:     BOOLEAN DEFAULT true (false para andenes, dev-01, exceso, donde capacidad es NO_APLICA)
+
   estado           String   @default("LIBRE")    // LIBRE, OCUPADO, BLOQUEADO
   activo           Boolean  @default(true)
 

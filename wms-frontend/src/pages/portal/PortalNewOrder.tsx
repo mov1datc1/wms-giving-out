@@ -71,6 +71,7 @@ export function PortalNewOrder() {
     let matchingLots = inventoryLots.filter(l => {
       if (l.skuId !== skuId || l.estadoCalidad !== 'LIBERADO') return false;
       if (l.fechaVencimiento && new Date(l.fechaVencimiento) <= now) return false;
+      if (l.esUbicacionVendible === false) return false;
       return true;
     });
     if (whId) {
@@ -372,7 +373,7 @@ export function PortalNewOrder() {
                               required
                             >
                               <option value="">Seleccionar producto...</option>
-                              {skus.map(s => (
+                              {skus.filter(s => s.activo !== false).map(s => (
                                 <option key={s.id} value={s.id}>{s.descripcion} ({s.codigo})</option>
                               ))}
                             </select>

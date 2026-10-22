@@ -93,7 +93,7 @@ export function Dispatch() {
   async function confirmDelivery() {
     if (!deliveryModal) return;
     try {
-      await fetch(`${API}/orders/${deliveryModal.id}/confirm-delivery`, {
+      const res = await fetch(`${API}/orders/${deliveryModal.id}/confirm-delivery`, {
         method: 'POST', headers,
         body: JSON.stringify({
           usuario: user?.email || 'admin',
@@ -101,10 +101,18 @@ export function Dispatch() {
           notasEntrega: deliveryForm.notasEntrega,
         }),
       });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        alert(errorData.message || 'Error al confirmar la entrega');
+        return;
+      }
       setDeliveryModal(null);
       setDeliveryForm({ nombreReceptor: '', notasEntrega: '' });
       loadData();
-    } catch (err) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || 'Error de conexión al confirmar la entrega');
+    }
   }
 
   // --- Helpers ---

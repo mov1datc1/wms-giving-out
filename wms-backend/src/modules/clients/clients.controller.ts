@@ -10,6 +10,8 @@ import {
   getDefaultRulesForGiro,
   ReglaInventarioRotacion,
 } from './dto/client.dto';
+import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
+import { evaluateInventoryItemOperationalState, isExpired } from '../../common/inventory-operational-state.util';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 
@@ -552,20 +554,21 @@ export class ClientsController {
     let totalDisponible = 0;
     let totalReservado = 0;
     let totalCuarentena = 0;
+    let totalTransito = 0;
+    let totalExpirado = 0;
+
+    const now = new Date();
 
     for (const lot of lots) {
-      const disp = lot.cantidadDisponible || 0;
-      const res = Math.max(0, lot.cantidadReservada || 0);
-      const bloq = lot.cantidadBloqueada || 0;
+      const locClass = classifyLocationOperationalRole(lot.ubicacion);
+      const ev = evaluateInventoryItemOperationalState(lot, locClass, now);
       
-      totalFisico += (disp + bloq);
-      totalReservado += res;
-      
-      if (lot.estadoCalidad === 'LIBERADO') {
-        totalDisponible += Math.max(0, disp - res);
-      } else {
-        totalCuarentena += (bloq > 0 ? bloq : disp);
-      }
+      totalFisico += ev.cantidadFisica;
+      totalDisponible += ev.cantidadDisponibleVendible;
+      totalReservado += ev.cantidadReservada;
+      totalCuarentena += ev.cantidadBloqueada;
+      totalTransito += ev.cantidadTransitoVigente;
+      totalExpirado += ev.cantidadExpirada;
     }
 
     return {
@@ -575,17 +578,26 @@ export class ClientsController {
       totalDisponible,
       totalReservado,
       totalCuarentena,
+      totalTransito,
+      totalExpirado,
       totalUnidades: totalFisico,
       lotes: lots.map(l => {
-        const disp = l.cantidadDisponible || 0;
-        const res = Math.max(0, l.cantidadReservada || 0);
-        const libre = Math.max(0, disp - res);
+        const locClass = classifyLocationOperationalRole(l.ubicacion);
+        const ev = evaluateInventoryItemOperationalState(l, locClass, now);
         return {
           ...l,
-          cantidadFisica: disp,
-          cantidadReservada: res,
-          cantidadDisponibleLibre: libre,
-          stockLibre: libre,
+          cantidadFisica: ev.cantidadFisica,
+          cantidadReservada: ev.cantidadReservada,
+          cantidadDisponibleLibre: ev.cantidadDisponibleVendible,
+          stockLibre: ev.cantidadDisponibleVendible,
+          esUbicacionVendible: locClass.esVendible,
+          esVencido: ev.esVencido,
+          estadoOperativoPrincipal: ev.estadoPrincipal,
+          badgeOperativoTexto: ev.badgeTexto,
+          motivoOperativo: ev.motivo,
+          esVisiblePortalComoDisponible: ev.esVisiblePortalComoDisponible,
+          clasificacionOperativa: locClass.rolOperativo,
+          razonOperativa: locClass.motivoNoVendible,
         };
       }),
     };

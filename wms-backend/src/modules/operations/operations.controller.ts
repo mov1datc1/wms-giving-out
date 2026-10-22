@@ -5,6 +5,11 @@ import * as XLSX from 'xlsx';
 import * as jwt from 'jsonwebtoken';
 import { PrismaService } from '../../prisma.service';
 import { withConcurrencyRetry } from '../../common/concurrency.util';
+import { PutawayEngineService, PutawayItemInput } from './putaway-engine.service';
+import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
+import { evaluateInventoryItemOperationalState, isExpired } from '../../common/inventory-operational-state.util';
+import { validatePickingEligibility } from '../../common/picking-validation.util';
+import { transferHuToStaging, validateHuAllocationCompatibility } from '../../common/picking-staging-transfer.util';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 import {
@@ -88,10 +93,22 @@ function isExcelCaducidadHeader(h: string): boolean {
   return false;
 }
 
+function isExcelPzCjaHeader(h: string): boolean {
+  return h.includes('piezas por caja') || h.includes('pz cja') || h.includes('pzas cja') || h.includes('pzas por caja');
+}
+
+function isExcelCjasHeader(h: string): boolean {
+  if (isExcelPzCjaHeader(h)) return false;
+  return h.includes('cajas empaque') || h.includes('cajas') || h.includes('bultos');
+}
+
 @ApiTags('Operations')
 @Controller('api')
 export class OperationsController {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private putawayEngine: PutawayEngineService,
+  ) {}
 
   private async audit(usuario: string, accion: string, entidad: string, entidadId?: string, detalle?: string, client: any = this.prisma) {
     await client.auditLog.create({
@@ -1613,6 +1630,25 @@ export class OperationsController {
         );
       }
 
+      const inactiveSkus: string[] = [];
+      for (const id of skuIds) {
+        const s = skuMap.get(id);
+        if (s && s.activo === false) {
+          inactiveSkus.push(`"${s.codigo}" (${s.descripcion})`);
+        }
+      }
+      if (inactiveSkus.length > 0) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `El catálogo maestro indica que los siguientes SKUs se encuentran INACTIVOS y no pueden utilizarse en nuevas recepciones: ${inactiveSkus.join(', ')}. Reactívelos antes de continuar.`,
+            error: 'Bad Request',
+            detalles: { codigo: 'SKUS_INACTIVOS_DETECTADOS', inactiveSkus },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       const receipt = await withConcurrencyRetry(async () => {
         const yearPrefix = `REC-${new Date().getFullYear()}-`;
         const existingReceipts = await this.prisma.receipt.findMany({
@@ -1889,6 +1925,8 @@ export class OperationsController {
           let rowQty: number | null = null;
           let rowLote = '';
           let rowCaducidad = '';
+          let rowPzCja: number | null = null;
+          let rowCjas: number | null = null;
 
           Object.keys(row).forEach((key) => {
             const h = normalizeExcelHeader(key);
@@ -1910,6 +1948,12 @@ export class OperationsController {
               rowLote = val;
             } else if (isExcelCaducidadHeader(h) && !rowCaducidad) {
               rowCaducidad = val;
+            } else if (isExcelPzCjaHeader(h) && rowPzCja === null) {
+              const parsed = parseFloat(val);
+              if (!isNaN(parsed) && parsed > 0) rowPzCja = parsed;
+            } else if (isExcelCjasHeader(h) && rowCjas === null) {
+              const parsed = parseFloat(val);
+              if (!isNaN(parsed) && parsed > 0) rowCjas = parsed;
             }
           });
 
@@ -1968,6 +2012,44 @@ export class OperationsController {
               });
             }
             return;
+          }
+
+          if (matchedSku.activo === false) {
+            partidasRechazadas.push({
+              fila: filaNum,
+              codigo: rowCodeOrEan,
+              descripcion: matchedSku.descripcion,
+              motivo: `El SKU "${matchedSku.codigo}" se encuentra INACTIVO en el catálogo maestro y no puede utilizarse en nuevos arribos o previos. Reactívelo antes de continuar.`,
+              tipo: 'DATO_INVALIDO',
+            });
+            return;
+          }
+
+          // Validación de empaque ASN vs Catálogo Maestro
+          const masterCap = matchedSku.capacidadEmpaque;
+          if (rowPzCja !== null && masterCap && rowPzCja !== masterCap) {
+            partidasRechazadas.push({
+              fila: filaNum,
+              codigo: rowCodeOrEan,
+              descripcion: matchedSku.descripcion,
+              motivo: `Empaque no coincide: el ASN declara ${rowPzCja} pzas/caja, pero el SKU ${matchedSku.codigo} está configurado en ${masterCap} pzas/caja. Corrija el archivo o revise el catálogo antes de crear el previo.`,
+              tipo: 'DATO_INVALIDO',
+            });
+            return;
+          }
+
+          if (rowCjas !== null && masterCap) {
+            const expectedCjas = Math.ceil(rowQty / masterCap);
+            if (rowCjas !== expectedCjas) {
+              partidasRechazadas.push({
+                fila: filaNum,
+                codigo: rowCodeOrEan,
+                descripcion: matchedSku.descripcion,
+                motivo: `Discrepancia en bultos declarados: el ASN declara ${rowCjas} caja(s), pero con el factor maestro de ${masterCap} pz/cja para ${rowQty} piezas corresponden ${expectedCjas} caja(s). Corrija el archivo o el catálogo antes de crear el previo.`,
+                tipo: 'DATO_INVALIDO',
+              });
+              return;
+            }
           }
 
           // Partida válida
@@ -2082,6 +2164,53 @@ export class OperationsController {
             const msg = foreign ? `"${foreign.codigo}" (pertenece a "${foreign.cliente?.nombreComercial}")` : `SKU ID ${l.skuId}`;
             foreignSkusManual.push(msg);
             continue;
+          }
+
+          const matchedSku = cliente.skus.find((s: any) => s.id === l.skuId);
+          if (matchedSku && matchedSku.activo === false) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.BAD_REQUEST,
+                message: `El SKU "${matchedSku.codigo}" se encuentra INACTIVO en el catálogo maestro y no puede utilizarse en nuevos arribos o previos. Reactívelo antes de continuar.`,
+                error: 'Bad Request',
+                detalles: { codigo: 'SKU_INACTIVO', sku: matchedSku.codigo },
+              },
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+
+          if (matchedSku?.capacidadEmpaque) {
+            const masterCap = matchedSku.capacidadEmpaque;
+            const pzCja = l.piezasPorCaja !== undefined && l.piezasPorCaja !== null && String(l.piezasPorCaja).trim() !== ''
+              ? Number(l.piezasPorCaja) : null;
+            if (pzCja !== null && !isNaN(pzCja) && pzCja !== masterCap) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.BAD_REQUEST,
+                  message: `Empaque no coincide: el ASN declara ${pzCja} pzas/caja, pero el SKU ${matchedSku.codigo} está configurado en ${masterCap} pzas/caja. Corrija el archivo o revise el catálogo antes de crear el previo.`,
+                  error: 'Bad Request',
+                  detalles: { codigo: 'EMPAQUE_DISCREPANCIA', sku: matchedSku.codigo, declaredPzCja: pzCja, masterCap },
+                },
+                HttpStatus.BAD_REQUEST,
+              );
+            }
+
+            const cjas = l.cajas !== undefined && l.cajas !== null && String(l.cajas).trim() !== ''
+              ? Number(l.cajas) : null;
+            if (cjas !== null && !isNaN(cjas)) {
+              const expectedCjas = Math.ceil(q / masterCap);
+              if (cjas !== expectedCjas) {
+                throw new HttpException(
+                  {
+                    statusCode: HttpStatus.BAD_REQUEST,
+                    message: `Discrepancia en bultos declarados: el ASN declara ${cjas} caja(s), pero con el factor maestro de ${masterCap} pz/cja para ${q} piezas corresponden ${expectedCjas} caja(s). Corrija el archivo o el catálogo antes de crear el previo.`,
+                    error: 'Bad Request',
+                    detalles: { codigo: 'BULTOS_DISCREPANCIA', sku: matchedSku.codigo, declaredCjas: cjas, expectedCjas },
+                  },
+                  HttpStatus.BAD_REQUEST,
+                );
+              }
+            }
           }
 
           let parsedCadManual: Date | null = null;
@@ -3125,215 +3254,12 @@ export class OperationsController {
 
   @Get('receipts/:id/putaway-suggestions')
   @ApiOperation({
-    summary: 'Obtener sugerencias inteligentes de alojamiento a racks (Fase 4)',
-    description: 'Valida candado de etiquetas colocadas, calcula ubicaciones óptimas según giro (Alimentos FEFO vs Textil FIFO) y disponibilidad física en racks.',
+    summary: 'Obtener sugerencias inteligentes de alojamiento a racks (Etapa 4)',
+    description: 'Valida candado de etiquetas colocadas, calcula ubicaciones óptimas mediante el motor configurable con Layout y disponibilidad real del almacén (filtrado estricto, compatibilidad 3PL, consolidación de SKU/lote y FEFO/nivel).',
   })
   @ApiParam({ name: 'id', description: 'ID de la recepción previa' })
   async getPutawaySuggestions(@Param('id') receiptId: string) {
-    const receipt = await this.prisma.receipt.findFirst({
-      where: {
-        OR: [
-          { id: receiptId },
-          { codigo: receiptId },
-        ],
-      },
-      include: {
-        cliente: true,
-        lineas: { include: { sku: true } },
-        handlingUnits: {
-          where: { estadoHu: 'ACTIVO' },
-          include: { lote: true },
-          orderBy: { codigo: 'asc' },
-        },
-      },
-    });
-
-    if (!receipt) {
-      throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
-    }
-
-    const canProceed = receipt.etiquetasEstado === 'COLOCADAS';
-    const lockMessage = !canProceed
-      ? (receipt.etiquetasEstado === 'IMPRESAS'
-          ? 'Las etiquetas Giving Out ya están impresas pero aún no se ha confirmado su pegado físico en las cajas/tarimas. Confirma la colocación antes de trasladar a racks.'
-          : 'Las etiquetas Giving Out aún no han sido impresas ni colocadas. Debe completarse la Fase 3 (Doble Etiquetado) antes de iniciar el alojamiento.')
-      : null;
-
-    const clientGiro = String(receipt.cliente?.giro || '').toUpperCase().trim();
-    const esAlimentos = clientGiro === 'COMIDA' || clientGiro === 'FARMACEUTICO' || Boolean(receipt.cliente?.requiereCaducidad);
-    const esRopa = clientGiro === 'ROPA' || clientGiro === 'TEXTIL';
-
-    // Obtener todas las ubicaciones de estantería/racks del almacén con su zona
-    const allLocations = await this.prisma.location.findMany({
-      where: {
-        tipoUbicacion: 'ESTANTERIA',
-      },
-      include: {
-        zona: true,
-      },
-      orderBy: [
-        { pasillo: 'asc' },
-        { rack: 'asc' },
-        { nivel: 'asc' },
-      ],
-    });
-
-    // Separar ubicaciones por zona lógica del almacén
-    const alimentosLocations = allLocations.filter(
-      l => l.zona?.nombre?.toLowerCase().includes('alimento') || l.zona?.codigo?.toLowerCase().includes('b') || l.pasillo?.startsWith('B')
-    );
-    const textilLocations = allLocations.filter(
-      l => l.zona?.nombre?.toLowerCase().includes('textil') || l.zona?.codigo?.toLowerCase().includes('a') || l.pasillo?.startsWith('A')
-    );
-
-    const targetPool = esAlimentos
-      ? (alimentosLocations.length > 0 ? alimentosLocations : allLocations)
-      : (esRopa ? (textilLocations.length > 0 ? textilLocations : allLocations) : allLocations);
-
-    // Identificar las cajas/unidades a ubicar
-    const activeBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO');
-    const itemsToProcess: any[] = [];
-
-    if (activeBoxes.length > 0) {
-      // Manejo por cajas unitarias (Giving Out IDs individuales)
-      activeBoxes.forEach(box => {
-        itemsToProcess.push({
-          huId: box.id,
-          huCodigo: box.codigo,
-          tipoHu: 'CAJA',
-          skuId: box.lote?.skuId || receipt.lineas.find(l => l.sku?.codigo === box.skuCodigo)?.skuId || '',
-          skuCodigo: box.skuCodigo || 'SKU',
-          skuDescripcion: box.skuDescripcion || 'Caja de producto',
-          cantidad: box.cantidad,
-          lote: box.loteTexto || 'S/L',
-          fechaVencimiento: box.fechaVencimiento ? new Date(box.fechaVencimiento).toISOString().split('T')[0] : null,
-          ubicacionActual: box.ubicacionActual || 'REC-01',
-          reacondicionada: box.reacondicionada,
-        });
-      });
-    } else {
-      // Fallback si no hay HUs generadas aún: por partida de recepción
-      receipt.lineas.forEach(l => {
-        itemsToProcess.push({
-          huId: null,
-          huCodigo: `PARTIDA-${l.sku?.codigo}`,
-          tipoHu: 'PARTIDA',
-          skuId: l.skuId,
-          skuCodigo: l.sku?.codigo || 'SKU',
-          skuDescripcion: l.sku?.descripcion || 'Partida de recibo',
-          cantidad: (l.cantidadRecibida || l.cantidadEsperada || 0),
-          lote: l.loteAsignado || 'S/L',
-          fechaVencimiento: l.fechaVencimiento ? new Date(l.fechaVencimiento).toISOString().split('T')[0] : null,
-          ubicacionActual: 'REC-01',
-          reacondicionada: false,
-        });
-      });
-    }
-
-    // Algoritmo de Sugerencia Inteligente (FEFO para Alimentos, FIFO para Textil)
-    const suggestions = itemsToProcess.map((item, index) => {
-      let reglaRotacion = esAlimentos ? 'FEFO' : 'FIFO';
-      let suggestedLoc: any = null;
-      let matchScore = 95;
-      let matchReason = '';
-
-      let daysUntilExpiry: number | null = null;
-      if (item.fechaVencimiento) {
-        const expDate = new Date(item.fechaVencimiento);
-        if (!isNaN(expDate.getTime())) {
-          daysUntilExpiry = Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-        }
-      }
-
-      if (esAlimentos) {
-        // Umbral operativo FEFO: Vencimiento cercano (<= 365 días) en Nivel 1; vida útil mayor en Niveles Altos (N2/N3)
-        const esVencimientoCercano = daysUntilExpiry !== null && daysUntilExpiry <= 365;
-        const candidatesN1 = targetPool.filter(l => l.nivel === 'N1' && (l.capacidadUnits - (l.ocupacion || 0)) >= item.cantidad);
-        const candidatesUpper = targetPool.filter(l => l.nivel !== 'N1' && (l.capacidadUnits - (l.ocupacion || 0)) >= item.cantidad);
-
-        if (esVencimientoCercano && candidatesN1.length > 0) {
-          suggestedLoc = candidatesN1[index % candidatesN1.length];
-          matchReason = `FEFO Picking Activo: Vencimiento prioritario (${daysUntilExpiry}d · ${item.fechaVencimiento}). Sugerido en Nivel 1 (${suggestedLoc.codigo}) para surtido rápido.`;
-        } else if (!esVencimientoCercano && candidatesUpper.length > 0) {
-          suggestedLoc = candidatesUpper[index % candidatesUpper.length];
-          matchReason = `FEFO Reserva Alta: Amplia vida útil (${daysUntilExpiry !== null ? `${daysUntilExpiry}d` : 'reserva'} · ${item.fechaVencimiento}). Sugerido en Nivel Alto (${suggestedLoc.codigo}) para almacenaje estandarizado.`;
-        } else if (candidatesN1.length > 0) {
-          suggestedLoc = candidatesN1[index % candidatesN1.length];
-          matchReason = `FEFO Capacidad: Posición en Nivel 1 (${suggestedLoc.codigo}) con espacio libre verificado para ${item.cantidad} uds.`;
-        } else if (candidatesUpper.length > 0) {
-          suggestedLoc = candidatesUpper[index % candidatesUpper.length];
-          matchReason = `FEFO Capacidad: Posición en Nivel Alto (${suggestedLoc.codigo}) con espacio disponible.`;
-        } else {
-          suggestedLoc = targetPool[index % targetPool.length] || allLocations[0];
-          matchReason = `Zona Alimentos: Posición alternativa (${suggestedLoc?.codigo}).`;
-        }
-      } else {
-        // Regla FIFO: Textil / Retail
-        const candidatesN1 = targetPool.filter(l => l.nivel === 'N1' && (l.capacidadUnits - (l.ocupacion || 0)) >= item.cantidad);
-        const candidatesUpper = targetPool.filter(l => l.nivel !== 'N1' && (l.capacidadUnits - (l.ocupacion || 0)) >= item.cantidad);
-
-        if (candidatesN1.length > 0) {
-          suggestedLoc = candidatesN1[index % candidatesN1.length];
-          matchReason = `Regla FIFO: Textil/Prendas. Nivel 1 (${suggestedLoc.codigo}) para fácil surtido y rotación por lote.`;
-        } else if (candidatesUpper.length > 0) {
-          suggestedLoc = candidatesUpper[index % candidatesUpper.length];
-          matchReason = `Regla FIFO: Ubicación en rack textil (${suggestedLoc.codigo}) con capacidad libre suficiente.`;
-        } else {
-          suggestedLoc = targetPool[index % targetPool.length] || allLocations[0];
-          matchReason = `Ubicación textil recomendada (${suggestedLoc?.codigo}).`;
-        }
-      }
-
-      // Top 5 alternativas válidas
-      const alternatives = targetPool
-        .filter(l => l.id !== suggestedLoc?.id)
-        .slice(0, 5)
-        .map(l => ({
-          id: l.id,
-          codigo: l.codigo,
-          pasillo: l.pasillo,
-          rack: l.rack,
-          nivel: l.nivel,
-          zonaNombre: l.zona?.nombre || l.zona?.codigo,
-          capacidadLibre: Math.max(0, l.capacidadUnits - (l.ocupacion || 0)),
-        }));
-
-      return {
-        ...item,
-        reglaRotacion,
-        matchScore,
-        matchReason,
-        suggestedLocation: suggestedLoc ? {
-          id: suggestedLoc.id,
-          codigo: suggestedLoc.codigo,
-          pasillo: suggestedLoc.pasillo,
-          rack: suggestedLoc.rack,
-          nivel: suggestedLoc.nivel,
-          zonaNombre: suggestedLoc.zona?.nombre || suggestedLoc.zona?.codigo,
-          capacidadLibre: Math.max(0, suggestedLoc.capacidadUnits - (suggestedLoc.ocupacion || 0)),
-        } : null,
-        alternativeLocations: alternatives,
-      };
-    });
-
-    return {
-      success: true,
-      canProceed,
-      lockMessage,
-      etiquetasEstado: receipt.etiquetasEstado || 'PENDIENTE',
-      receipt: {
-        id: receipt.id,
-        codigo: receipt.codigo,
-        cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial,
-        giro: receipt.cliente?.giro || '3PL',
-        esAlimentos,
-        esRopa,
-        facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia,
-        totalItems: itemsToProcess.length,
-        totalUnidades: itemsToProcess.reduce((sum, i) => sum + (i.cantidad || 0), 0),
-      },
-      suggestions,
-    };
+    return this.putawayEngine.generateReceiptSuggestions(receiptId);
   }
 
   // =========================================================================
@@ -3356,7 +3282,11 @@ export class OperationsController {
       where: {
         OR: [{ id: receiptId }, { codigo: receiptId }],
       },
-      include: { cliente: true, handlingUnits: true },
+      include: {
+        cliente: true,
+        handlingUnits: true,
+        lineas: { include: { sku: true } },
+      },
     });
 
     if (!receipt) {
@@ -3450,61 +3380,199 @@ export class OperationsController {
       );
     }
 
+    // Regla de Precedencia Central: Bloquear Putaway comercial de mercancía vencida
+    const lineForExpiry = receipt.lineas?.find((l: any) => l.id === huObj.receiptLineId) ||
+      receipt.lineas?.find((l: any) => l.sku?.codigo === huObj.skuCodigo);
+    const huExpDate = huObj.fechaVencimiento || lineForExpiry?.fechaVencimiento;
+    if (huExpDate && isExpired(huExpDate, new Date(), true)) {
+      const destRole = classifyLocationOperationalRole(destLoc);
+      if (destRole.rolOperativo === 'ALMACENABLE_COMERCIAL') {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.CONFLICT,
+            message: 'MERCANCÍA VENCIDA — Putaway comercial no permitido. La unidad requiere disposición operativa conforme al flujo de calidad/no conforme.',
+            error: 'Conflict',
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+    }
+
     const usuarioResponsable = body.usuario?.trim() || 'Montacarguista';
     const timestamp = new Date().toISOString();
 
-    // CANDADO DE IDEMPOTENCIA: Si la HU ya está validada para esta posición física, devolver validación previa sin duplicar AuditLog
-    const existingAudit = await this.prisma.auditLog.findFirst({
-      where: {
-        entidad: 'HandlingUnit',
-        entidadId: huObj.id,
-        accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
-        detalle: { contains: destLoc.codigo },
+    // PROTOCOLO TRANSACCIONAL CON BLOQUEO PESIMISTA Y REINTENTO ANTE DEADLOCK (Etapa 5: Reglas 1-8 y 10)
+    return await this.putawayEngine.executeWithDeadlockRetry(
+      async () => {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            // 1. Bloqueo pesimista determinista (HandlingUnit -> Location)
+            await this.putawayEngine.acquirePessimisticLocks(tx, [huObj.id], [destLoc.id]);
+
+            // 2. Relectura de estado real de la HU dentro de la transacción (Regla 3)
+            const currentHu = await tx.handlingUnit.findUnique({
+              where: { id: huObj.id },
+            });
+
+            if (!currentHu) {
+              throw new HttpException('Unidad de manejo no encontrada en la base de datos.', HttpStatus.NOT_FOUND);
+            }
+
+            if (currentHu.estadoHu !== 'ACTIVO') {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  message: `La unidad de manejo ${currentHu.codigo} no se encuentra activa para alojamiento (Estado actual: ${currentHu.estadoHu}).`,
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            // Regla 8: Detectar si otro operador ya acomodó esta HU en otra posición
+            const isAccommodatedElsewhere =
+              currentHu.ubicacionActual &&
+              !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'STAGING', 'ANDEN'].includes(currentHu.ubicacionActual) &&
+              currentHu.ubicacionActual !== destLoc.codigo;
+
+            if (isAccommodatedElsewhere) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  message: 'Esta HU ya fue acomodada por otra operación. Actualice la información antes de continuar.',
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            // Detectar si otro operador validó concurrentemente esta HU para una ubicación distinta en este ciclo
+            const latestHuAudit = await tx.auditLog.findFirst({
+              where: {
+                entidad: 'HandlingUnit',
+                entidadId: currentHu.id,
+                accion: { in: ['PUTAWAY_DUAL_SCAN_VALIDADO', 'PUTAWAY_HU_RESET'] },
+              },
+              orderBy: { createdAt: 'desc' },
+            });
+
+            if (
+              latestHuAudit?.accion === 'PUTAWAY_DUAL_SCAN_VALIDADO' &&
+              !latestHuAudit.detalle?.includes(destLoc.codigo)
+            ) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  message: 'Esta HU ya fue acomodada por otra operación. Actualice la información antes de continuar.',
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            // 3. Revalidación estricta de capacidad física de la Location dentro de la transacción (Regla 4 y 7)
+            const line = receipt.lineas?.find((l: any) => l.id === currentHu.receiptLineId) ||
+              receipt.lineas?.find((l: any) => l.sku?.codigo === currentHu.skuCodigo);
+
+            const itemInput: PutawayItemInput = {
+              huId: currentHu.id,
+              huCodigo: currentHu.codigo,
+              tipoHu: currentHu.tipoHu || 'CAJA',
+              skuId: line?.skuId || '',
+              skuCodigo: currentHu.skuCodigo || line?.sku?.codigo || '',
+              skuDescripcion: currentHu.skuDescripcion || line?.sku?.descripcion || '',
+              skuCategoria: line?.sku?.categoria || '',
+              cantidad: currentHu.cantidad,
+              lote: currentHu.loteTexto || line?.loteAsignado || line?.loteEsperado || '',
+              fechaVencimiento: currentHu.fechaVencimiento ? currentHu.fechaVencimiento.toISOString() : (line?.fechaVencimiento ? new Date(line.fechaVencimiento).toISOString() : null),
+              ubicacionActual: currentHu.ubicacionActual || 'RAMPA_RECEPCION',
+              skuTemperatura: line?.sku?.temperaturaRequerida || 'AMBIENTE',
+            };
+
+            const reval = await this.putawayEngine.revalidateLocationForPutaway(
+              destLoc.id,
+              currentHu.cantidad,
+              tx,
+              {
+                huBultos: 1,
+                client: receipt.cliente,
+                item: itemInput,
+              },
+            );
+
+            if (!reval.valid) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  message: reval.error || `La ubicación ${destLoc.codigo} cambió desde que fue sugerida y ya no tiene capacidad suficiente. Solicite una nueva ubicación.`,
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            // 4. CANDADO DE IDEMPOTENCIA (Regla 6): Idempotencia basada en estado físico actual + identidad de operación
+            // La existencia histórica de PUTAWAY_DUAL_SCAN_VALIDADO no debe dar falso positivo si fue reseteada o reubicada.
+            const isAlreadyAtDestination = currentHu.ubicacionActual === destLoc.codigo;
+            const isDualScanValidForThisRack =
+              latestHuAudit?.accion === 'PUTAWAY_DUAL_SCAN_VALIDADO' &&
+              Boolean(latestHuAudit?.detalle?.includes(destLoc.codigo));
+
+            if (isAlreadyAtDestination || isDualScanValidForThisRack) {
+              return {
+                success: true,
+                idempotent: true,
+                message: `Escaneo Dual ya verificado previamente (idempotente): HU ${currentHu.codigo} en rack ${destLoc.codigo}.`,
+                huId: currentHu.id,
+                huCodigo: currentHu.codigo,
+                ubicacionDestinoId: destLoc.id,
+                ubicacionDestinoCodigo: destLoc.codigo,
+                zona: destLoc.zona?.nombre || destLoc.zona?.codigo,
+                huScanValidated: true,
+                rackScanValidated: true,
+                usuario: latestHuAudit?.usuario || usuarioResponsable,
+                validatedAt: latestHuAudit?.createdAt?.toISOString() || timestamp,
+              };
+            }
+
+            // 5. Actualizar ubicación física de la HU al rack confirmado
+            await tx.handlingUnit.update({
+              where: { id: currentHu.id },
+              data: {
+                ubicacionActual: destLoc.codigo,
+              },
+            });
+
+            // 6. Registrar bitácora de auditoría inmutable del Escaneo Dual dentro de la misma transacción (Regla 5)
+            await tx.auditLog.create({
+              data: {
+                usuario: usuarioResponsable,
+                accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
+                entidad: 'HandlingUnit',
+                entidadId: currentHu.id,
+                detalle: `Escaneo Dual Verificado: HU ${currentHu.codigo} validada exitosamente en rack físico ${destLoc.codigo} (${destLoc.zona?.nombre || destLoc.zona?.codigo}). Operador: ${usuarioResponsable}. Timestamp: ${timestamp}.`,
+              },
+            });
+
+            return {
+              success: true,
+              message: `Escaneo Dual verificado exitosamente: HU ${currentHu.codigo} en rack ${destLoc.codigo}.`,
+              huId: currentHu.id,
+              huCodigo: currentHu.codigo,
+              ubicacionDestinoId: destLoc.id,
+              ubicacionDestinoCodigo: destLoc.codigo,
+              zona: destLoc.zona?.nombre || destLoc.zona?.codigo,
+              huScanValidated: true,
+              rackScanValidated: true,
+              usuario: usuarioResponsable,
+              validatedAt: timestamp,
+            };
+          },
+          { maxWait: 10000, timeout: 20000 },
+        );
       },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (existingAudit || (huObj.ubicacionActual && huObj.ubicacionActual === destLoc.codigo)) {
-      return {
-        success: true,
-        idempotent: true,
-        message: `Escaneo Dual ya verificado previamente (idempotente): HU ${huObj.codigo} en rack ${destLoc.codigo}.`,
-        huId: huObj.id,
-        huCodigo: huObj.codigo,
-        ubicacionDestinoId: destLoc.id,
-        ubicacionDestinoCodigo: destLoc.codigo,
-        zona: destLoc.zona?.nombre || destLoc.zona?.codigo,
-        huScanValidated: true,
-        rackScanValidated: true,
-        usuario: existingAudit?.usuario || usuarioResponsable,
-        validatedAt: existingAudit?.createdAt?.toISOString() || timestamp,
-      };
-    }
-
-    // Registrar bitácora de auditoría inmutable del Escaneo Dual
-    await this.prisma.auditLog.create({
-      data: {
-        usuario: usuarioResponsable,
-        accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
-        entidad: 'HandlingUnit',
-        entidadId: huObj.id,
-        detalle: `Escaneo Dual Verificado: HU ${huObj.codigo} validada exitosamente en rack físico ${destLoc.codigo} (${destLoc.zona?.nombre || destLoc.zona?.codigo}). Operador: ${usuarioResponsable}. Timestamp: ${timestamp}.`,
-      },
-    });
-
-    return {
-      success: true,
-      message: `Escaneo Dual verificado exitosamente: HU ${huObj.codigo} en rack ${destLoc.codigo}.`,
-      huId: huObj.id,
-      huCodigo: huObj.codigo,
-      ubicacionDestinoId: destLoc.id,
-      ubicacionDestinoCodigo: destLoc.codigo,
-      zona: destLoc.zona?.nombre || destLoc.zona?.codigo,
-      huScanValidated: true,
-      rackScanValidated: true,
-      usuario: usuarioResponsable,
-      validatedAt: timestamp,
-    };
+      { hu: huObj.codigo, location: destLoc.codigo, opName: 'confirmPutawayItem' },
+    );
   }
 
   @Post('receipts/:id/putaway/reset-item')
@@ -3530,6 +3598,13 @@ export class OperationsController {
       throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
     }
 
+    if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO') {
+      throw new HttpException(
+        'Candado de Inmutabilidad: La recepción se encuentra CERRADA. No se permite reiniciar validaciones sobre un expediente cerrado.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     const huObj = receipt.handlingUnits.find(
       h => (body.huId && h.id === body.huId) ||
            (body.huCodigo && h.codigo.toUpperCase() === body.huCodigo.toUpperCase())
@@ -3542,23 +3617,32 @@ export class OperationsController {
     const usuarioResponsable = body.usuario?.trim() || 'Auditor de Calidad / WMS';
     const motivo = body.motivo?.trim() || 'Reinicio manual para ejecución de prueba de Escaneo Dual';
 
-    await this.prisma.auditLog.create({
-      data: {
-        usuario: usuarioResponsable,
-        accion: 'PUTAWAY_HU_RESET',
-        entidad: 'HandlingUnit',
-        entidadId: huObj.id,
-        detalle: `Reinicio de validación de putaway: HU ${huObj.codigo} restablecida a PENDIENTE de escaneo dual. Motivo: ${motivo}. Operador: ${usuarioResponsable}.`,
-      },
-    });
+    return await this.prisma.$transaction(async (tx) => {
+      await this.putawayEngine.acquirePessimisticLocks(tx, [huObj.id], []);
+      await tx.handlingUnit.update({
+        where: { id: huObj.id },
+        data: {
+          ubicacionActual: 'RAMPA_RECEPCION',
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          usuario: usuarioResponsable,
+          accion: 'PUTAWAY_HU_RESET',
+          entidad: 'HandlingUnit',
+          entidadId: huObj.id,
+          detalle: `Reinicio de validación de putaway: HU ${huObj.codigo} restablecida a PENDIENTE de escaneo dual. Motivo: ${motivo}. Operador: ${usuarioResponsable}.`,
+        },
+      });
 
-    return {
-      success: true,
-      message: `HU ${huObj.codigo} restablecida a pendiente de validación dual.`,
-      huId: huObj.id,
-      huCodigo: huObj.codigo,
-      resetAt: new Date().toISOString(),
-    };
+      return {
+        success: true,
+        message: `HU ${huObj.codigo} restablecida a pendiente de validación dual.`,
+        huId: huObj.id,
+        huCodigo: huObj.codigo,
+        resetAt: new Date().toISOString(),
+      };
+    });
   }
 
   @Get('receipts/:id/putaway-validations')
@@ -3591,9 +3675,12 @@ export class OperationsController {
       const logsForHu = auditLogs.filter(l => l.entidadId === hu.id);
       const latestLog = logsForHu[0];
       if (latestLog && latestLog.accion === 'PUTAWAY_DUAL_SCAN_VALIDADO') {
+        const rackMatch = latestLog.detalle?.match(/en rack físico ([A-Z0-9-]+)/i);
+        const rackCodigo = rackMatch ? rackMatch[1] : (hu.ubicacionActual && !['RAMPA_RECEPCION', 'REC-01', 'RECIBO'].includes(hu.ubicacionActual) ? hu.ubicacionActual : null);
         validations[hu.id] = {
           huId: hu.id,
           huCodigo: hu.codigo,
+          ubicacionDestinoCodigo: rackCodigo,
           huScanValidated: true,
           rackScanValidated: true,
           confirmed: true,
@@ -3648,12 +3735,6 @@ export class OperationsController {
       throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
     }
 
-    if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO') {
-      throw new HttpException(
-        'Candado de Inmutabilidad: La recepción se encuentra CERRADA y finiquitada. No se permiten nuevos movimientos de alojamiento sobre un expediente cerrado.',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
 
     if (receipt.etiquetasEstado !== 'COLOCADAS') {
       throw new HttpException(
@@ -3662,32 +3743,98 @@ export class OperationsController {
       );
     }
 
-    const isMermaHu = (h: any) => h.codigo?.includes('MERMA') || h.codigo?.startsWith('HU-NC-') || h.ubicacionActual === 'DEV-01';
-    const activeBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO');
-    const inactiveBoxes = receipt.handlingUnits.filter(h => h.tipoHu === 'CAJA' && h.estadoHu !== 'ACTIVO' && !isMermaHu(h));
-    const tarimas = receipt.handlingUnits.filter(h => h.tipoHu === 'TARIMA' || h.tipoHu === 'PALLET');
+    const isMermaHu = (h: any) =>
+      h.codigo?.includes('MERMA') ||
+      h.codigo?.startsWith('HU-NC-') ||
+      h.ubicacionActual === 'DEV-01' ||
+      h.ubicacionActual?.includes('DEV');
+
+    const activeBoxes = receipt.handlingUnits.filter(
+      (h: any) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && !isMermaHu(h),
+    );
+    const inactiveBoxes = receipt.handlingUnits.filter(
+      (h: any) => h.tipoHu === 'CAJA' && h.estadoHu !== 'ACTIVO' && !isMermaHu(h),
+    );
+    const tarimas = receipt.handlingUnits.filter(
+      (h: any) => h.tipoHu === 'TARIMA' || h.tipoHu === 'PALLET',
+    );
 
     // Calcular métricas de merma y faltante de forma consistente y general
-    const totalPiezasMerma = receipt.inspecciones?.reduce((acc: number, insp: any) => acc + (insp.totalPiezasMerma || 0), 0) || 
-      receipt.lineas?.reduce((acc: number, l: any) => acc + Number(l.cantidadDanada || 0), 0) || 0;
-    const totalPiezasFaltantes = receipt.lineas?.reduce((acc: number, l: any) => {
-      const esp = Number(l.cantidadEsperada || 0);
-      const rec = Number(l.cantidadRecibida || 0);
-      const dan = Number(l.cantidadDanada || 0);
-      return acc + Math.max(0, esp - (rec + dan));
-    }, 0) || 0;
+    const totalPiezasMerma =
+      receipt.inspecciones?.reduce((acc: number, insp: any) => acc + (insp.totalPiezasMerma || 0), 0) ||
+      receipt.lineas?.reduce((acc: number, l: any) => acc + Number(l.cantidadDanada || 0), 0) ||
+      0;
+    const totalPiezasFaltantes =
+      receipt.lineas?.reduce((acc: number, l: any) => {
+        const esp = Number(l.cantidadEsperada || 0);
+        const rec = Number(l.cantidadRecibida || 0);
+        const dan = Number(l.cantidadDanada || 0);
+        return acc + Math.max(0, esp - (rec + dan));
+      }, 0) || 0;
 
     const usuarioResponsable = body.usuario?.trim() || 'Montacarguista';
     const timestamp = new Date().toISOString();
 
     // =========================================================================
-    // CANDADO DE IDEMPOTENCIA: Si todos los bultos activos ya están en racks y receipt es COMPLETO
+    // COMPROBACIÓN DE FINALIZACIÓN CANÓNICA E IDEMPOTENCIA REAL DE PUTAWAY (Fase 4)
     // =========================================================================
-    const unlocatedActive = activeBoxes.filter(
-      h => !h.ubicacionActual || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO'].includes(h.ubicacionActual)
-    );
+    // Para devolver idempotent: true, TODO bulto comercial activo debe tener persistencia canónica verificable:
+    // 1. HU tiene lotId no nulo.
+    // 2. El LotInventory referenciado existe en la BD para el cliente, SKU y ubicación rack de la HU.
+    // 3. Existe evidencia de movimiento de inventario (TRASIEGO) para dicha HU en la recepción.
+    // 4. Existe la auditoría final PUTAWAY_CONFIRMADO_RACKS.
+    const activeBoxLotIds = activeBoxes.map((b: any) => b.lotId).filter(Boolean);
+    const existingLotsForBoxes = activeBoxLotIds.length > 0
+      ? await this.prisma.lotInventory.findMany({
+          where: {
+            id: { in: activeBoxLotIds },
+            clienteId: receipt.clienteId,
+          },
+          include: { ubicacion: true },
+        })
+      : [];
+    const lotMapById = new Map<string, any>(existingLotsForBoxes.map((l: any) => [l.id, l]));
 
-    if (unlocatedActive.length === 0) {
+    const existingMovements = await this.prisma.inventoryMovement.findMany({
+      where: {
+        documentoOrigen: receipt.codigo,
+        tipoMovimiento: 'TRASIEGO',
+        huId: { in: activeBoxes.map((b: any) => b.id) },
+      },
+      select: { huId: true },
+    });
+    const movementHuIds = new Set(existingMovements.map((m: any) => m.huId));
+
+    const existingPutawayAudit = await this.prisma.auditLog.findFirst({
+      where: {
+        entidad: 'Receipt',
+        entidadId: receipt.id,
+        accion: 'PUTAWAY_CONFIRMADO_RACKS',
+      },
+    });
+
+    const isBoxCanonicallyAccounted = (b: any): boolean => {
+      if (!b.lotId) return false;
+      const lot = lotMapById.get(b.lotId);
+      if (!lot) return false;
+      if (lot.clienteId !== receipt.clienteId) return false;
+      const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+        receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+      const resolvedSkuId = b.skuId || line?.skuId;
+      if (resolvedSkuId && lot.skuId !== resolvedSkuId) return false;
+      if (b.ubicacionActual && lot.ubicacion?.codigo !== b.ubicacionActual) return false;
+      if (!movementHuIds.has(b.id)) return false;
+      return true;
+    };
+
+    const accountedBoxes = activeBoxes.filter((b: any) => isBoxCanonicallyAccounted(b));
+    const isFullyCanonicallyCompleted =
+      activeBoxes.length > 0 &&
+      accountedBoxes.length === activeBoxes.length &&
+      Boolean(existingPutawayAudit);
+
+    // Si ya está 100% canónicamente consolidado, devolver respuesta idempotente con métricas reales de BD
+    if (isFullyCanonicallyCompleted) {
       if (receipt.estado !== 'COMPLETO' && receipt.estado !== 'UBICADO' && receipt.estado !== 'CERRADA' && receipt.estado !== 'CERRADO') {
         await this.prisma.receipt.update({
           where: { id: receipt.id },
@@ -3695,10 +3842,10 @@ export class OperationsController {
         });
       }
 
-      const movimientosRealizados = activeBoxes.map(b => {
+      const movimientosRealizados = activeBoxes.map((b: any) => {
         const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
           receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
-        const resolvedSkuId = line?.skuId || '';
+        const resolvedSkuId = line?.skuId || b.skuId || '';
         return {
           huId: b.id,
           huCodigo: b.codigo,
@@ -3716,14 +3863,15 @@ export class OperationsController {
         };
       });
 
-      const totalPiezasAlojadas = activeBoxes.reduce((acc, b) => acc + b.cantidad, 0);
-      const racksAsignados = [...new Set(activeBoxes.map(b => b.ubicacionActual).filter(Boolean))];
+      const totalPiezasAlojadas = activeBoxes.reduce((acc: number, b: any) => acc + b.cantidad, 0);
+      const racksAsignados = [...new Set(activeBoxes.map((b: any) => b.ubicacionActual).filter(Boolean))];
 
       return {
         success: true,
         idempotent: true,
+        canonicalComplete: true,
         durationMs: Date.now() - tStart,
-        message: `¡Alojamiento confirmado exitosamente! Se trasladaron ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas) a racks y su stock quedó activo como DISPONIBLE en el portal.`,
+        message: `¡Alojamiento verificado canónicamente (idempotente)! Se preservó el saldo en racks para ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas) con stock DISPONIBLE sin duplicidad.`,
         receiptId: receipt.id,
         receiptCodigo: receipt.codigo,
         cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial || 'Depositante',
@@ -3736,366 +3884,1082 @@ export class OperationsController {
         piezasFaltantes: totalPiezasFaltantes,
         cajasDanadasFueraStock: inactiveBoxes.length,
         estadoInventario: 'DISPONIBLE',
-        estadoRecibo: 'COMPLETO',
-        timestamp,
-        operador: usuarioResponsable,
+        estadoRecibo: receipt.estado === 'CERRADA' ? 'CERRADA' : 'COMPLETO',
+        timestamp: existingPutawayAudit?.createdAt?.toISOString() || timestamp,
+        operador: existingPutawayAudit?.usuario || usuarioResponsable,
         racksAsignados,
         movimientos: movimientosRealizados,
         discrepancias: {
           mermaPiezas: totalPiezasMerma,
           faltantePiezas: totalPiezasFaltantes,
           cajasDanadasFueraStock: inactiveBoxes.length,
-          detalle: `${totalPiezasMerma} pzas de merma en DEV-01 y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0).`
-        }
+          detalle: `${totalPiezasMerma} pzas de merma en DEV-01 y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0).`,
+        },
       };
     }
 
-    if (!body.movimientos || body.movimientos.length === 0) {
-      throw new HttpException('Debe especificar al menos un movimiento para alojar', HttpStatus.BAD_REQUEST);
+    // Candado de Inmutabilidad: Si la recepción está CERRADA y tiene HUs pendientes, NO alterar silenciosamente.
+    // Se requiere el flujo formal y trazable de Reconciliación Post-Cierre por un supervisor.
+    if (receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO') {
+      throw new HttpException(
+        'Candado de Inmutabilidad: La recepción se encuentra CERRADA. El endpoint estándar de Putaway no puede alterar silenciosamente un expediente cerrado. Para subsanar HUs físicamente ubicadas pero sin contabilización canónica, utilice el flujo formal de "Reconciliación Post-Cierre de Putaway" (/receipts/:id/post-closure-reconciliation) con autorización de supervisor y motivo obligatorio.',
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
-    // Bloqueo de seguridad: Escaneo Dual obligatorio en 100% de cajas activas
-    if (activeBoxes.length > 0) {
-      if (body.movimientos.length < activeBoxes.length) {
+    // Filtrar exclusivamente los bultos pendientes de consolidación canónica
+    const pendingBoxes = activeBoxes.filter((b: any) => !accountedBoxes.some((ab: any) => ab.id === b.id));
+
+    // Si no hay bultos activos o todos están pendientes de dual scan, validar
+    const inputMovements = Array.isArray(body.movimientos) ? body.movimientos : [];
+    const movMapByHu = new Map<string, any>();
+    for (const m of inputMovements) {
+      if (m.huId) movMapByHu.set(m.huId, m);
+      if (m.huCodigo) movMapByHu.set(m.huCodigo.toUpperCase(), m);
+    }
+
+    // Consultar auditorías de Escaneo Dual para las HUs pendientes
+    const dualScanAudits = await this.prisma.auditLog.findMany({
+      where: {
+        entidad: 'HandlingUnit',
+        entidadId: { in: pendingBoxes.map((b: any) => b.id) },
+        accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
+      },
+      select: { entidadId: true },
+    });
+    const dualScanAuditHuIds = new Set(dualScanAudits.map((a: any) => a.entidadId));
+
+    // Validar que cada bulto pendiente cuente con validación física completa de Escaneo Dual
+    for (const b of pendingBoxes) {
+      const mov = movMapByHu.get(b.id) || movMapByHu.get(b.codigo.toUpperCase());
+      const hasMovDualScan = Boolean(mov?.huScanValidated && mov?.rackScanValidated);
+      const hasPersistedDualScan = dualScanAuditHuIds.has(b.id) &&
+        b.ubicacionActual &&
+        !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING', 'DEV-01'].includes(b.ubicacionActual);
+
+      if (!hasMovDualScan && !hasPersistedDualScan) {
         throw new HttpException(
-          `Bloqueo de Seguridad Putaway: Se requiere completar el alojamiento de la totalidad de cajas activas (${body.movimientos.length} de ${activeBoxes.length} bultos con Escaneo Dual). No se permite activación parcial de stock sin autorización expresa.`,
+          `Bloqueo de Seguridad Putaway: La caja "${b.codigo}" no cuenta con evidencia de Escaneo Dual completo (HU y Rack validados físicamente). Se requiere completar el escaneo físico antes de activar stock comercial.`,
           HttpStatus.BAD_REQUEST,
         );
       }
-
-      for (const mov of body.movimientos) {
-        if (!mov.huScanValidated || !mov.rackScanValidated) {
-          throw new HttpException(
-            `Bloqueo de Seguridad Putaway: La caja "${mov.huCodigo || mov.huId}" no cuenta con evidencia de Escaneo Dual completo (HU y Rack validados físicamente).`,
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-      }
     }
 
-    // Ubicación de recibo
+    // Ubicación de recibo/tránsito
     const recLocation = await this.prisma.location.findFirst({
       where: { OR: [{ codigo: 'REC-01' }, { tipoUbicacion: 'RECIBO' }] },
     }) || await this.prisma.location.findFirst();
 
-    // Indexar HUs en memoria para acceso O(1) sin consultas N+1
-    const huById = new Map<string, any>(receipt.handlingUnits.map(h => [h.id, h]));
-    const huByCodigo = new Map<string, any>(receipt.handlingUnits.map(h => [h.codigo.toUpperCase(), h]));
+    // Cargar ubicaciones destino necesarias en 1 sola consulta
+    const neededLocCodesOrIds = new Set<string>();
+    for (const b of pendingBoxes) {
+      const mov = movMapByHu.get(b.id) || movMapByHu.get(b.codigo.toUpperCase());
+      if (mov?.ubicacionDestinoId && mov.ubicacionDestinoId !== 'AUTO') {
+        neededLocCodesOrIds.add(mov.ubicacionDestinoId);
+      } else if (b.ubicacionActual && !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING', 'DEV-01'].includes(b.ubicacionActual)) {
+        neededLocCodesOrIds.add(b.ubicacionActual);
+      }
+    }
 
-    // Consultar TODAS las ubicaciones destino en 1 sola consulta
-    const destLocIds = [...new Set(body.movimientos.map(m => m.ubicacionDestinoId).filter(Boolean))];
-    const destLocations = await this.prisma.location.findMany({
-      where: { id: { in: destLocIds } },
+    const foundLocations = await this.prisma.location.findMany({
+      where: {
+        OR: [
+          { id: { in: [...neededLocCodesOrIds] } },
+          { codigo: { in: [...neededLocCodesOrIds] } },
+        ],
+      },
       include: { zona: true },
     });
-    const locMap = new Map<string, any>(destLocations.map(l => [l.id, l]));
+    const locMapById = new Map<string, any>(foundLocations.map((l: any) => [l.id, l]));
+    const locMapByCode = new Map<string, any>(foundLocations.map((l: any) => [l.codigo.toUpperCase(), l]));
 
-    for (const mov of body.movimientos) {
-      if (!locMap.has(mov.ubicacionDestinoId)) {
-        throw new HttpException(`Ubicación destino ${mov.ubicacionDestinoId} no encontrada`, HttpStatus.BAD_REQUEST);
+    // Asociar destino validado a cada bulto pendiente
+    const pendingWithDest: Array<{
+      box: any;
+      destLocation: any;
+      resolvedSkuId: string;
+      effectiveLote: string | null;
+      effectiveFechaVencimiento: Date | null;
+    }> = [];
+
+    for (const b of pendingBoxes) {
+      const mov = movMapByHu.get(b.id) || movMapByHu.get(b.codigo.toUpperCase());
+      let destLoc: any = null;
+      if (mov?.ubicacionDestinoId && mov.ubicacionDestinoId !== 'AUTO') {
+        destLoc = locMapById.get(mov.ubicacionDestinoId) || locMapByCode.get(mov.ubicacionDestinoId.toUpperCase());
       }
-    }
-
-    // Pre-procesar movimientos en memoria y agrupar por (skuId + lote + ubicacionDestinoId) para LotInventory
-    type GroupKey = string;
-    interface AggregatedGroup {
-      skuId: string;
-      lote: string | null;
-      fechaVencimiento: Date | null;
-      destLocId: string;
-      destLocCodigo: string;
-      cantidadTotal: number;
-      movimientos: any[];
-    }
-
-    const groupsMap = new Map<GroupKey, AggregatedGroup>();
-    const preparedMovements: any[] = [];
-
-    for (const mov of body.movimientos) {
-      const destLoc = locMap.get(mov.ubicacionDestinoId)!;
-      const huObj = (mov.huId && huById.get(mov.huId)) ||
-        (mov.huCodigo && huByCodigo.get(mov.huCodigo.toUpperCase())) || null;
-
-      let effectiveLote = huObj?.loteTexto || null;
-      let effectiveFechaVencimiento = huObj?.fechaVencimiento || null;
-
-      if (!effectiveLote && huObj?.receiptLineId) {
-        const rLine = receipt.lineas?.find((l: any) => l.id === huObj.receiptLineId);
-        if (rLine) {
-          effectiveLote = rLine.loteAsignado || rLine.loteEsperado || null;
-          effectiveFechaVencimiento = rLine.fechaVencimiento || null;
-        }
+      if (!destLoc && b.ubicacionActual) {
+        destLoc = locMapByCode.get(b.ubicacionActual.toUpperCase());
       }
 
-      if (!effectiveLote && receipt.lineas) {
-        const matchingLine = receipt.lineas.find((l: any) => l.skuId === mov.skuId && (l.loteAsignado || l.loteEsperado));
-        if (matchingLine) {
-          effectiveLote = matchingLine.loteAsignado || matchingLine.loteEsperado || null;
-          effectiveFechaVencimiento = matchingLine.fechaVencimiento || null;
-        }
-      }
-
-      const groupKey = `${mov.skuId}___${effectiveLote || 'NOLOTE'}___${destLoc.id}`;
-      let group = groupsMap.get(groupKey);
-      if (!group) {
-        group = {
-          skuId: mov.skuId,
-          lote: effectiveLote,
-          fechaVencimiento: effectiveFechaVencimiento ? new Date(effectiveFechaVencimiento) : null,
-          destLocId: destLoc.id,
-          destLocCodigo: destLoc.codigo,
-          cantidadTotal: 0,
-          movimientos: [],
-        };
-        groupsMap.set(groupKey, group);
-      }
-      group.cantidadTotal += mov.cantidad;
-      group.movimientos.push({ mov, huObj, destLoc, effectiveLote, effectiveFechaVencimiento });
-
-      preparedMovements.push({ mov, huObj, destLoc, effectiveLote, effectiveFechaVencimiento, groupKey });
-    }
-
-    // =========================================================================
-    // EJECUCIÓN ATÓMICA OPTIMIZADA EN TRANSACCIÓN ÚNICA
-    // =========================================================================
-    return await this.prisma.$transaction(async (tx) => {
-      // 1. Consultar todos los LotInventory existentes en una sola consulta
-      const allSkuIds = [...new Set(body.movimientos.map(m => m.skuId))];
-      const allLocIds = [...new Set([...destLocIds, ...(recLocation ? [recLocation.id] : [])])];
-
-      const existingLots = await tx.lotInventory.findMany({
-        where: {
-          clienteId: receipt.clienteId,
-          skuId: { in: allSkuIds },
-          ubicacionId: { in: allLocIds },
-        },
-      });
-
-      // 2. Procesar lotes destino y origen de forma consolidada
-      const targetLotIdByGroup = new Map<string, string>();
-
-      for (const [groupKey, group] of groupsMap.entries()) {
-        const existingLotDest = existingLots.find(
-          l => l.skuId === group.skuId &&
-               l.ubicacionId === group.destLocId &&
-               (group.lote ? l.lote === group.lote : (!l.lote || l.lote === ''))
+      if (!destLoc) {
+        throw new HttpException(
+          `Ubicación destino para la caja "${b.codigo}" no encontrada o no válida para alojamiento.`,
+          HttpStatus.BAD_REQUEST,
         );
+      }
 
-        let targetLotId: string;
-        if (existingLotDest) {
-          await tx.lotInventory.update({
-            where: { id: existingLotDest.id },
-            data: {
-              cantidadDisponible: { increment: group.cantidadTotal },
-              estadoCalidad: 'LIBERADO',
-              fechaVencimiento: existingLotDest.fechaVencimiento || group.fechaVencimiento,
-            },
-          });
-          targetLotId = existingLotDest.id;
-        } else {
-          const newLot = await tx.lotInventory.create({
-            data: {
-              skuId: group.skuId,
-              clienteId: receipt.clienteId,
-              lote: group.lote,
-              fechaVencimiento: group.fechaVencimiento,
-              ubicacionId: group.destLocId,
-              cantidadDisponible: group.cantidadTotal,
-              estadoCalidad: 'LIBERADO',
-              notas: `Alojado desde ${receipt.codigo} a rack ${group.destLocCodigo}${group.lote ? ` (Lote ${group.lote})` : ''}`,
-            },
-          });
-          targetLotId = newLot.id;
-        }
-        targetLotIdByGroup.set(groupKey, targetLotId);
+      const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+        receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+      const resolvedSkuId = (b as any).skuId || line?.skuId || mov?.skuId;
+      if (!resolvedSkuId) {
+        throw new HttpException(`No se pudo determinar el SKU asociado a la caja "${b.codigo}".`, HttpStatus.BAD_REQUEST);
+      }
 
-        // Descontar de andén si existía inventario en tránsito
-        if (recLocation) {
-          const existingLotAnden = existingLots.find(
-            l => l.skuId === group.skuId &&
-                 l.ubicacionId === recLocation.id &&
-                 (group.lote ? l.lote === group.lote : (!l.lote || l.lote === ''))
+      let effectiveLote = b.loteTexto || line?.loteAsignado || line?.loteEsperado || null;
+      let effectiveFechaVencimiento = b.fechaVencimiento || line?.fechaVencimiento || null;
+
+      if (effectiveFechaVencimiento && isExpired(effectiveFechaVencimiento, new Date(), true)) {
+        const destRole = classifyLocationOperationalRole(destLoc);
+        if (destRole.rolOperativo === 'ALMACENABLE_COMERCIAL') {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              message: `MERCANCÍA VENCIDA — Putaway comercial no permitido para la caja "${b.codigo}". La unidad requiere disposición operativa conforme al flujo de calidad/no conforme.`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
           );
-          if (existingLotAnden) {
-            const dec = Math.min(existingLotAnden.cantidadDisponible, group.cantidadTotal);
-            await tx.lotInventory.update({
-              where: { id: existingLotAnden.id },
-              data: {
-                cantidadDisponible: { decrement: dec },
+        }
+      }
+
+      pendingWithDest.push({
+        box: b,
+        destLocation: destLoc,
+        resolvedSkuId,
+        effectiveLote,
+        effectiveFechaVencimiento: effectiveFechaVencimiento ? new Date(effectiveFechaVencimiento) : null,
+      });
+    }
+
+    const sortedHuIds = [...new Set(pendingBoxes.map((b: any) => b.id))].sort();
+    const sortedLocIds = [...new Set(pendingWithDest.map(p => p.destLocation.id))].sort();
+
+    // =========================================================================
+    // EJECUCIÓN ATÓMICA TRANSACCIONAL CON BLOQUEO PESIMISTA Y DEADLOCK RETRY (Etapa 5)
+    // =========================================================================
+    return await this.putawayEngine.executeWithDeadlockRetry(
+      async () => {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            // 1. Bloqueo pesimista determinista (HandlingUnit -> Location) (Regla 2 y 9)
+            await this.putawayEngine.acquirePessimisticLocks(tx, sortedHuIds, sortedLocIds);
+
+            // 2. Relectura de estado real de HUs y Locations dentro de la transacción (Regla 3)
+            const freshHus = await tx.handlingUnit.findMany({
+              where: { id: { in: sortedHuIds } },
+            });
+            const freshHuMap = new Map<string, any>(freshHus.map(h => [h.id, h]));
+            const freshHuByCode = new Map<string, any>(freshHus.map(h => [h.codigo.toUpperCase(), h]));
+
+            const freshLocations = await tx.location.findMany({
+              where: { id: { in: sortedLocIds } },
+              include: { zona: true },
+            });
+            const freshLocMap = new Map<string, any>(freshLocations.map(l => [l.id, l]));
+
+            // 3. Revalidación completa de HUs pendientes dentro de la transacción
+            for (const p of pendingWithDest) {
+              const freshHu = freshHuMap.get(p.box.id);
+              if (!freshHu) {
+                throw new HttpException(`Unidad de manejo ${p.box.codigo} no encontrada en BD.`, HttpStatus.NOT_FOUND);
+              }
+
+              if (freshHu.estadoHu !== 'ACTIVO') {
+                throw new HttpException(
+                  {
+                    statusCode: HttpStatus.CONFLICT,
+                    message: `La HU ${freshHu.codigo} ya no se encuentra activa para alojamiento (Estado actual: ${freshHu.estadoHu}).`,
+                    error: 'Conflict',
+                  },
+                  HttpStatus.CONFLICT,
+                );
+              }
+            }
+
+            // 4. Revalidación estricta de capacidad por ubicación destino dentro de la transacción
+            const incomingPiecesByLoc = new Map<string, number>();
+            const incomingBultosByLoc = new Map<string, number>();
+
+            for (const p of pendingWithDest) {
+              const freshHu = freshHuMap.get(p.box.id);
+              const cant = freshHu?.cantidad ?? p.box.cantidad ?? 0;
+              incomingPiecesByLoc.set(p.destLocation.id, (incomingPiecesByLoc.get(p.destLocation.id) || 0) + cant);
+              incomingBultosByLoc.set(p.destLocation.id, (incomingBultosByLoc.get(p.destLocation.id) || 0) + 1);
+            }
+
+            for (const [locId, totalPieces] of incomingPiecesByLoc.entries()) {
+              const totalBultos = incomingBultosByLoc.get(locId) || 1;
+              const targetDestLoc = freshLocMap.get(locId);
+              const reval = await this.putawayEngine.revalidateLocationForPutaway(
+                locId,
+                totalPieces,
+                tx,
+                { huBultos: totalBultos, client: receipt.cliente },
+              );
+
+              if (!reval.valid) {
+                throw new HttpException(
+                  {
+                    statusCode: HttpStatus.CONFLICT,
+                    message: reval.error || `La ubicación ${targetDestLoc?.codigo || locId} cambió desde que fue sugerida y ya no tiene capacidad suficiente. Solicite una nueva ubicación.`,
+                    error: 'Conflict',
+                  },
+                  HttpStatus.CONFLICT,
+                );
+              }
+            }
+
+            // 5. Pre-procesar movimientos en memoria y agrupar por (skuId + lote + ubicacionDestinoId) para LotInventory
+            type GroupKey = string;
+            interface AggregatedGroup {
+              skuId: string;
+              lote: string | null;
+              fechaVencimiento: Date | null;
+              destLocId: string;
+              destLocCodigo: string;
+              cantidadTotal: number;
+              items: typeof pendingWithDest;
+            }
+
+            const groupsMap = new Map<GroupKey, AggregatedGroup>();
+
+            for (const p of pendingWithDest) {
+              const freshHu = freshHuMap.get(p.box.id);
+              const cant = freshHu?.cantidad ?? p.box.cantidad ?? 0;
+              const groupKey = `${p.resolvedSkuId}___${p.effectiveLote || 'NOLOTE'}___${p.destLocation.id}`;
+              let group = groupsMap.get(groupKey);
+              if (!group) {
+                group = {
+                  skuId: p.resolvedSkuId,
+                  lote: p.effectiveLote,
+                  fechaVencimiento: p.effectiveFechaVencimiento,
+                  destLocId: p.destLocation.id,
+                  destLocCodigo: p.destLocation.codigo,
+                  cantidadTotal: 0,
+                  items: [],
+                };
+                groupsMap.set(groupKey, group);
+              }
+              group.cantidadTotal += cant;
+              group.items.push(p);
+            }
+
+            // 6. Consultar todos los LotInventory existentes en una sola consulta
+            const allSkuIds = [...new Set(pendingWithDest.map(p => p.resolvedSkuId))];
+            const allLocIds = [...new Set([...sortedLocIds, ...(recLocation ? [recLocation.id] : [])])];
+
+            const existingLots = await tx.lotInventory.findMany({
+              where: {
+                clienteId: receipt.clienteId,
+                skuId: { in: allSkuIds },
+                ubicacionId: { in: allLocIds },
               },
             });
-          }
-        }
-      }
 
-      // 3. Actualizar HUs físicas en paralelo (1 sola actualización por HU con ubicacionActual y lotId)
-      const huUpdatePromises: Promise<any>[] = [];
-      const movimientosRealizados: any[] = [];
-      const inventoryMovementsData: any[] = [];
-      let totalPiezasAlojadas = 0;
+            // 7. Procesar lotes destino y origen de forma consolidada
+            const targetLotIdByGroup = new Map<string, string>();
 
-      for (const item of preparedMovements) {
-        const { mov, huObj, destLoc, effectiveLote, effectiveFechaVencimiento, groupKey } = item;
-        const targetLotId = targetLotIdByGroup.get(groupKey)!;
+            for (const [groupKey, group] of groupsMap.entries()) {
+              const existingLotDest = existingLots.find(
+                l => l.skuId === group.skuId &&
+                     l.ubicacionId === group.destLocId &&
+                     (group.lote ? l.lote === group.lote : (!l.lote || l.lote === ''))
+              );
 
-        if (huObj) {
-          huUpdatePromises.push(
-            tx.handlingUnit.update({
-              where: { id: huObj.id },
-              data: {
-                ubicacionActual: destLoc.codigo,
+              let targetLotId: string;
+              if (existingLotDest) {
+                await tx.lotInventory.update({
+                  where: { id: existingLotDest.id },
+                  data: {
+                    cantidadDisponible: { increment: group.cantidadTotal },
+                    estadoCalidad: 'LIBERADO',
+                    fechaVencimiento: existingLotDest.fechaVencimiento || group.fechaVencimiento,
+                  },
+                });
+                targetLotId = existingLotDest.id;
+              } else {
+                const newLot = await tx.lotInventory.create({
+                  data: {
+                    skuId: group.skuId,
+                    clienteId: receipt.clienteId,
+                    lote: group.lote,
+                    fechaVencimiento: group.fechaVencimiento,
+                    ubicacionId: group.destLocId,
+                    cantidadDisponible: group.cantidadTotal,
+                    estadoCalidad: 'LIBERADO',
+                    notas: `Alojado desde ${receipt.codigo} a rack ${group.destLocCodigo}${group.lote ? ` (Lote ${group.lote})` : ''}`,
+                  },
+                });
+                targetLotId = newLot.id;
+              }
+              targetLotIdByGroup.set(groupKey, targetLotId);
+
+              // Descontar de andén si existía inventario en tránsito
+              if (recLocation) {
+                const existingLotAnden = existingLots.find(
+                  l => l.skuId === group.skuId &&
+                       l.ubicacionId === recLocation.id &&
+                       (group.lote ? l.lote === group.lote : (!l.lote || l.lote === ''))
+                );
+                if (existingLotAnden) {
+                  const dec = Math.min(existingLotAnden.cantidadDisponible, group.cantidadTotal);
+                  await tx.lotInventory.update({
+                    where: { id: existingLotAnden.id },
+                    data: {
+                      cantidadDisponible: { decrement: dec },
+                    },
+                  });
+                }
+              }
+            }
+
+            // 8. Actualizar HUs físicas y registrar movimientos para cada bulto pendiente
+            const huUpdatePromises: Promise<any>[] = [];
+            const inventoryMovementsData: any[] = [];
+
+            for (const p of pendingWithDest) {
+              const groupKey = `${p.resolvedSkuId}___${p.effectiveLote || 'NOLOTE'}___${p.destLocation.id}`;
+              const targetLotId = targetLotIdByGroup.get(groupKey)!;
+              const freshHu = freshHuMap.get(p.box.id);
+              const cant = freshHu?.cantidad ?? p.box.cantidad ?? 0;
+
+              huUpdatePromises.push(
+                tx.handlingUnit.update({
+                  where: { id: p.box.id },
+                  data: {
+                    ubicacionActual: p.destLocation.codigo,
+                    lotId: targetLotId,
+                    estadoHu: 'ACTIVO',
+                  },
+                }),
+              );
+
+              inventoryMovementsData.push({
+                tipoMovimiento: 'TRASIEGO',
+                skuId: p.resolvedSkuId,
+                clienteId: receipt.clienteId,
                 lotId: targetLotId,
+                huId: p.box.id,
+                fromLocationId: recLocation ? recLocation.id : null,
+                toLocationId: p.destLocation.id,
+                cantidad: cant,
+                usuario: usuarioResponsable,
+                motivo: `Alojamiento Putaway confirmado a rack ${p.destLocation.codigo} (Fase 4)`,
+                documentoOrigen: receipt.codigo,
+              });
+            }
+
+            await Promise.all(huUpdatePromises);
+
+            // 9. Actualizar estado operativo en ubicaciones destino a OCUPADO
+            for (const locId of sortedLocIds) {
+              await tx.location.update({
+                where: { id: locId },
+                data: {
+                  estado: 'OCUPADO',
+                },
+              });
+            }
+
+            // 10. Inserción masiva por lote en InventoryMovement (createMany) filtrando HUs ya trasladadas para garantizar idempotencia
+            const existingMovements = await tx.inventoryMovement.findMany({
+              where: {
+                documentoOrigen: receipt.codigo,
+                tipoMovimiento: 'TRASIEGO',
+                huId: { in: inventoryMovementsData.map(m => m.huId).filter(Boolean) },
+              },
+              select: { huId: true },
+            });
+            const existingHuIds = new Set(existingMovements.map(m => m.huId));
+            const movementsToInsert = inventoryMovementsData.filter(m => !m.huId || !existingHuIds.has(m.huId));
+
+            if (movementsToInsert.length > 0) {
+              await tx.inventoryMovement.createMany({
+                data: movementsToInsert,
+              });
+            }
+
+            // 10. Actualizar Receipt a COMPLETO si no se encuentra cerrada
+            if (receipt.estado !== 'CERRADA' && receipt.estado !== 'CERRADO') {
+              await tx.receipt.update({
+                where: { id: receipt.id },
+                data: { estado: 'COMPLETO' },
+              });
+            }
+
+            // 11. Auditoría formal inmutable (idempotente)
+            const existingFinalAudit = await tx.auditLog.findFirst({
+              where: {
+                entidad: 'Receipt',
+                entidadId: receipt.id,
+                accion: 'PUTAWAY_CONFIRMADO_RACKS',
+              },
+            });
+
+            const allActiveBoxesFresh = await tx.handlingUnit.findMany({
+              where: {
+                receiptId: receipt.id,
+                tipoHu: 'CAJA',
                 estadoHu: 'ACTIVO',
               },
-            })
-          );
-        }
+            });
+            const totalPiezasAlojadas = allActiveBoxesFresh.reduce((acc: number, b: any) => acc + (b.cantidad || 0), 0);
 
-        totalPiezasAlojadas += mov.cantidad;
+            if (!existingFinalAudit) {
+              await tx.auditLog.create({
+                data: {
+                  usuario: usuarioResponsable,
+                  accion: 'PUTAWAY_CONFIRMADO_RACKS',
+                  entidad: 'Receipt',
+                  entidadId: receipt.id,
+                  detalle: `Fase 4: Alojamiento confirmado para ${allActiveBoxesFresh.length} bultos (${totalPiezasAlojadas} pzas). Stock activado a DISPONIBLE en racks. Operador: ${usuarioResponsable}. Duración: ${Date.now() - tStart}ms`,
+                },
+              });
+            }
 
-        const line = receipt.lineas?.find((l: any) => l.id === huObj?.receiptLineId) ||
-          receipt.lineas?.find((l: any) => l.skuId === mov.skuId);
+            const movimientosRealizados = allActiveBoxesFresh.map((b: any) => {
+              const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+                receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+              return {
+                huId: b.id,
+                huCodigo: b.codigo,
+                skuId: b.skuId || line?.skuId || '',
+                skuCodigo: b.skuCodigo || line?.sku?.codigo || 'SKU',
+                skuDescripcion: b.skuDescripcion || line?.sku?.descripcion || 'Mercancía conforme',
+                lote: b.loteTexto || line?.loteAsignado || line?.loteEsperado || 'S/L',
+                fechaVencimiento: b.fechaVencimiento ? new Date(b.fechaVencimiento).toISOString().split('T')[0] : (line?.fechaVencimiento ? new Date(line.fechaVencimiento).toISOString().split('T')[0] : 'N/A'),
+                cantidad: b.cantidad,
+                ubicacionDestino: b.ubicacionActual,
+                zona: b.ubicacionActual?.startsWith('B') ? 'Almacenamiento General' : 'Racks',
+                estadoHu: 'ACTIVO',
+                reacondicionada: !!b.reacondicionada,
+                cajaOrigenId: b.cajaOrigenId || null,
+              };
+            });
 
-        movimientosRealizados.push({
-          huId: huObj?.id,
-          huCodigo: mov.huCodigo || huObj?.codigo || 'N/A',
-          skuId: mov.skuId,
-          skuCodigo: huObj?.skuCodigo || line?.sku?.codigo || 'SKU',
-          skuDescripcion: huObj?.skuDescripcion || line?.sku?.descripcion || 'Mercancía conforme',
-          lote: effectiveLote || 'S/L',
-          fechaVencimiento: effectiveFechaVencimiento ? new Date(effectiveFechaVencimiento).toISOString().split('T')[0] : 'N/A',
-          cantidad: mov.cantidad,
-          ubicacionDestino: destLoc.codigo,
-          zona: destLoc.zona?.nombre || destLoc.zona?.codigo || 'Almacenamiento General',
-          estadoHu: 'ACTIVO',
-          reacondicionada: !!huObj?.reacondicionada,
-          cajaOrigenId: huObj?.cajaOrigenId || null,
-        });
+            const racksAsignados = [...new Set(allActiveBoxesFresh.map((b: any) => b.ubicacionActual).filter(Boolean))];
 
-        inventoryMovementsData.push({
-          tipoMovimiento: 'TRASIEGO',
-          skuId: mov.skuId,
-          clienteId: receipt.clienteId,
-          lotId: targetLotId,
-          huId: mov.huId || huObj?.id || null,
-          fromLocationId: recLocation ? recLocation.id : null,
-          toLocationId: destLoc.id,
-          cantidad: mov.cantidad,
-          usuario: usuarioResponsable,
-          motivo: `Alojamiento Putaway confirmado a rack ${destLoc.codigo} (Fase 4)`,
-          documentoOrigen: receipt.codigo,
-        });
-      }
-
-      await Promise.all(huUpdatePromises);
-
-      // 4. Actualizar ocupación en ubicaciones de forma agrupada
-      const locCounts = new Map<string, number>();
-      for (const mov of body.movimientos) {
-        locCounts.set(mov.ubicacionDestinoId, (locCounts.get(mov.ubicacionDestinoId) || 0) + 1);
-      }
-
-      for (const [locId, count] of locCounts.entries()) {
-        await tx.location.update({
-          where: { id: locId },
-          data: {
-            ocupacion: { increment: count },
-            estado: 'OCUPADO',
+            return {
+              success: true,
+              durationMs: Date.now() - tStart,
+              message: `¡Alojamiento confirmado exitosamente! Se trasladaron ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas) a racks y su stock quedó activo como DISPONIBLE en el portal.`,
+              receiptId: receipt.id,
+              receiptCodigo: receipt.codigo,
+              cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial || 'Depositante',
+              totalBultos: movimientosRealizados.length,
+              totalPiezas: totalPiezasAlojadas,
+              totalHUsAlojadas: allActiveBoxesFresh.length,
+              tarimasMaster: tarimas.length > 0 ? tarimas.length : 1,
+              piezasDisponibles: totalPiezasAlojadas,
+              piezasMerma: totalPiezasMerma,
+              piezasFaltantes: totalPiezasFaltantes,
+              cajasDanadasFueraStock: inactiveBoxes.length,
+              estadoInventario: 'DISPONIBLE',
+              estadoRecibo: receipt.estado === 'CERRADA' ? 'CERRADA' : 'COMPLETO',
+              timestamp,
+              operador: usuarioResponsable,
+              racksAsignados,
+              movimientos: movimientosRealizados,
+              discrepancias: {
+                mermaPiezas: totalPiezasMerma,
+                faltantePiezas: totalPiezasFaltantes,
+                cajasDanadasFueraStock: inactiveBoxes.length,
+                detalle: `${totalPiezasMerma} pzas de merma en DEV-01 y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0).`
+              }
+            };
           },
-        });
-      }
-
-      if (recLocation) {
-        await tx.location.update({
-          where: { id: recLocation.id },
-          data: {
-            ocupacion: { decrement: body.movimientos.length },
+          {
+            maxWait: 15000,
+            timeout: 30000,
           },
-        });
-      }
-
-      // 5. Inserción masiva por lote en InventoryMovement (createMany) filtrando HUs que ya fueron trasladadas para garantizar idempotencia
-      const existingMovements = await tx.inventoryMovement.findMany({
-        where: {
-          documentoOrigen: receipt.codigo,
-          tipoMovimiento: 'TRASIEGO',
-          huId: { in: inventoryMovementsData.map(m => m.huId).filter(Boolean) },
-        },
-        select: { huId: true },
-      });
-      const existingHuIds = new Set(existingMovements.map(m => m.huId));
-      const movementsToInsert = inventoryMovementsData.filter(m => !m.huId || !existingHuIds.has(m.huId));
-
-      if (movementsToInsert.length > 0) {
-        await tx.inventoryMovement.createMany({
-          data: movementsToInsert,
-        });
-      }
-
-      // 6. Actualizar Receipt a COMPLETO
-      await tx.receipt.update({
-        where: { id: receipt.id },
-        data: { estado: 'COMPLETO' },
-      });
-
-      // 7. Auditoría formal inmutable (idempotente)
-      const existingPutawayAudit = await tx.auditLog.findFirst({
-        where: {
-          entidad: 'Receipt',
-          entidadId: receipt.id,
-          accion: 'PUTAWAY_CONFIRMADO_RACKS',
-        },
-      });
-
-      if (!existingPutawayAudit) {
-        await tx.auditLog.create({
-          data: {
-            usuario: usuarioResponsable,
-            accion: 'PUTAWAY_CONFIRMADO_RACKS',
-            entidad: 'Receipt',
-            entidadId: receipt.id,
-            detalle: `Fase 4: Alojamiento confirmado para ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas). Stock activado a DISPONIBLE en racks. Operador: ${usuarioResponsable}. Duración: ${Date.now() - tStart}ms`,
-          },
-        });
-      }
-
-      const racksAsignados = [...new Set(movimientosRealizados.map(m => m.ubicacionDestino))];
-
-      return {
-        success: true,
-        durationMs: Date.now() - tStart,
-        message: `¡Alojamiento confirmado exitosamente! Se trasladaron ${movimientosRealizados.length} bultos (${totalPiezasAlojadas} pzas) a racks y su stock quedó activo como DISPONIBLE en el portal.`,
-        receiptId: receipt.id,
-        receiptCodigo: receipt.codigo,
-        cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial || 'Depositante',
-        totalBultos: movimientosRealizados.length,
-        totalPiezas: totalPiezasAlojadas,
-        totalHUsAlojadas: activeBoxes.length,
-        tarimasMaster: tarimas.length > 0 ? tarimas.length : 1,
-        piezasDisponibles: totalPiezasAlojadas,
-        piezasMerma: totalPiezasMerma,
-        piezasFaltantes: totalPiezasFaltantes,
-        cajasDanadasFueraStock: inactiveBoxes.length,
-        estadoInventario: 'DISPONIBLE',
-        estadoRecibo: 'COMPLETO',
-        timestamp,
-        operador: usuarioResponsable,
-        racksAsignados,
-        movimientos: movimientosRealizados,
-        discrepancias: {
-          mermaPiezas: totalPiezasMerma,
-          faltantePiezas: totalPiezasFaltantes,
-          cajasDanadasFueraStock: inactiveBoxes.length,
-          detalle: `${totalPiezasMerma} pzas de merma en DEV-01 y ${totalPiezasFaltantes} pzas faltantes fuera de stock; ${inactiveBoxes.length} ${inactiveBoxes.length === 1 ? 'caja dañada histórica/inactiva' : 'cajas dañadas históricas/inactivas'} (saldo 0).`
-        }
-      };
-    }, {
-      maxWait: 15000,
-      timeout: 30000,
-    });
+        );
+      },
+      { opName: 'confirmPutaway' },
+    );
   }
 
-  // Generic Putaway fallback endpoint
+  // =========================================================================
+  // RECONCILIACIÓN POST-CIERRE DE PUTAWAY (Arquitectura General de Subsanación)
+  // Permite detectar y subsanar discrepancias canónicas en expedientes cerrados
+  // preservando el estado histórico CERRADA, la fecha original de cierre y auditorías.
+  // =========================================================================
+
+  @Get('receipts/:id/post-closure-reconciliation/preview')
+  @ApiOperation({
+    summary: 'Vista previa de reconciliación post-cierre de Putaway (Strict Read-Only)',
+    description: 'Detecta de forma automática si un expediente cerrado tiene HUs físicas en racks sin contabilización canónica y muestra las acciones a proyectar sin alterar la BD.',
+  })
+  @ApiParam({ name: 'id', description: 'ID o código de la recepción previa cerrada' })
+  async previewPostClosurePutawayReconciliation(@Param('id') receiptId: string) {
+    const receipt = await this.prisma.receipt.findFirst({
+      where: { OR: [{ id: receiptId }, { codigo: receiptId }] },
+      include: {
+        cliente: true,
+        lineas: { include: { sku: true } },
+        handlingUnits: true,
+      },
+    });
+
+    if (!receipt) {
+      throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
+    }
+
+    const isClosed = receipt.estado === 'CERRADA' || receipt.estado === 'CERRADO';
+    if (!isClosed) {
+      return {
+        reconciliable: false,
+        inconsistenciaDetectada: false,
+        message: `El expediente "${receipt.codigo}" no se encuentra en estado CERRADA (Estado actual: ${receipt.estado}). Utilice el flujo operativo estándar de Putaway.`,
+      };
+    }
+
+    const isMermaHu = (h: any) =>
+      h.codigo?.includes('MERMA') ||
+      h.codigo?.startsWith('HU-NC-') ||
+      h.ubicacionActual === 'DEV-01' ||
+      h.ubicacionActual?.includes('DEV');
+
+    const activeBoxes = receipt.handlingUnits.filter(
+      (h: any) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && !isMermaHu(h),
+    );
+
+    const activeBoxLotIds = activeBoxes.map((b: any) => b.lotId).filter(Boolean);
+    const existingLotsForBoxes = activeBoxLotIds.length > 0
+      ? await this.prisma.lotInventory.findMany({
+          where: { id: { in: activeBoxLotIds } },
+          include: { ubicacion: true },
+        })
+      : [];
+    const lotMapById = new Map<string, any>(existingLotsForBoxes.map(l => [l.id, l]));
+
+    const existingMovements = await this.prisma.inventoryMovement.findMany({
+      where: {
+        documentoOrigen: receipt.codigo,
+        tipoMovimiento: 'TRASIEGO',
+        huId: { in: activeBoxes.map((b: any) => b.id) },
+      },
+      select: { huId: true },
+    });
+    const movementHuIds = new Set(existingMovements.map((m: any) => m.huId));
+
+    const isBoxCanonicallyAccounted = (b: any): boolean => {
+      if (!b.lotId) return false;
+      const lot = lotMapById.get(b.lotId);
+      if (!lot) return false;
+      if (lot.clienteId !== receipt.clienteId) return false;
+      const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+        receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+      const resolvedSkuId = (b as any).skuId || line?.skuId;
+      if (resolvedSkuId && lot.skuId !== resolvedSkuId) return false;
+      if (b.ubicacionActual && lot.ubicacion?.codigo !== b.ubicacionActual) return false;
+      if (!movementHuIds.has(b.id)) return false;
+      return true;
+    };
+
+    const accountedBoxes = activeBoxes.filter((b: any) => isBoxCanonicallyAccounted(b));
+    const pendingBoxes = activeBoxes.filter((b: any) => !isBoxCanonicallyAccounted(b));
+
+    if (pendingBoxes.length === 0) {
+      return {
+        reconciliable: false,
+        inconsistenciaDetectada: false,
+        receiptId: receipt.id,
+        receiptCodigo: receipt.codigo,
+        estado: receipt.estado,
+        fechaCierre: receipt.fechaCierre,
+        cerradoPor: receipt.cerradoPor,
+        totalHUsComerciales: activeBoxes.length,
+        totalHUsContabilizadas: accountedBoxes.length,
+        message: `El expediente cerrado "${receipt.codigo}" ya se encuentra 100% consolidado y contabilizado canónicamente. No requiere reconciliación.`,
+      };
+    }
+
+    // Inspeccionar evidencia física de escaneo dual
+    const dualScanAudits = await this.prisma.auditLog.findMany({
+      where: {
+        entidad: 'HandlingUnit',
+        entidadId: { in: pendingBoxes.map((b: any) => b.id) },
+        accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
+      },
+    });
+    const dualScanHuMap = new Map<string, any>(dualScanAudits.map((a: any) => [a.entidadId, a]));
+
+    const neededLocCodes = [...new Set(pendingBoxes.map((b: any) => b.ubicacionActual).filter(Boolean))];
+    const locations = await this.prisma.location.findMany({
+      where: { codigo: { in: neededLocCodes } },
+    });
+    const locMapByCode = new Map<string, any>(locations.map(l => [l.codigo.toUpperCase(), l]));
+
+    const pendingWithDest: any[] = [];
+    for (const b of pendingBoxes) {
+      const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+        receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+      const resolvedSkuId = (b as any).skuId || line?.skuId;
+      const resolvedSkuCodigo = b.skuCodigo || line?.sku?.codigo;
+      const effectiveLote = b.loteTexto || line?.loteAsignado || line?.loteEsperado || 'S/L';
+      const destLoc = b.ubicacionActual ? locMapByCode.get(b.ubicacionActual.toUpperCase()) : null;
+
+      pendingWithDest.push({
+        box: b,
+        resolvedSkuId,
+        resolvedSkuCodigo,
+        effectiveLote,
+        destLocation: destLoc,
+        dualScanAudit: dualScanHuMap.get(b.id) || null,
+      });
+    }
+
+    // Agrupación canónica: (skuId, lote, destLocId)
+    const groupsMap = new Map<string, any>();
+    for (const p of pendingWithDest) {
+      if (!p.destLocation) continue;
+      const key = `${p.resolvedSkuId}___${p.effectiveLote || 'NOLOTE'}___${p.destLocation.id}`;
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, {
+          skuId: p.resolvedSkuId,
+          skuCodigo: p.resolvedSkuCodigo,
+          lote: p.effectiveLote,
+          destLocId: p.destLocation.id,
+          destLocCodigo: p.destLocation.codigo,
+          cantidadTotal: 0,
+          boxes: [],
+        });
+      }
+      const grp = groupsMap.get(key);
+      grp.cantidadTotal += (p.box.cantidad || 0);
+      grp.boxes.push(p.box);
+    }
+
+    const projectedGroups: any[] = [];
+    for (const [key, grp] of groupsMap.entries()) {
+      const existingLot = await this.prisma.lotInventory.findFirst({
+        where: {
+          skuId: grp.skuId,
+          clienteId: receipt.clienteId,
+          ubicacionId: grp.destLocId,
+          lote: grp.lote === 'S/L' ? null : grp.lote,
+        },
+      });
+
+      projectedGroups.push({
+        skuCodigo: grp.skuCodigo,
+        lote: grp.lote,
+        ubicacionDestino: grp.destLocCodigo,
+        ubicacionId: grp.destLocId,
+        piezasAIncorporar: grp.cantidadTotal,
+        accionLotInventory: existingLot ? 'INCREMENTAR_SALDO_EXISTENTE' : 'CREAR_NUEVO_LOT_INVENTORY',
+        lotInventoryExistenteId: existingLot ? existingLot.id : null,
+        saldoActualEnDestino: existingLot ? existingLot.cantidadDisponible : 0,
+        saldoProyectadoEnDestino: (existingLot ? existingLot.cantidadDisponible : 0) + grp.cantidadTotal,
+        totalHUsAEnlazar: grp.boxes.length,
+        husAEnlazar: grp.boxes.map((b: any) => b.codigo),
+        movimientosTrasiegoAGenerar: grp.boxes.length,
+      });
+    }
+
+    const totalPiezasPendientes = pendingBoxes.reduce((acc: number, b: any) => acc + (b.cantidad || 0), 0);
+
+    return {
+      inconsistenciaDetectada: true,
+      reconciliable: true,
+      receipt: {
+        id: receipt.id,
+        codigo: receipt.codigo,
+        estado: receipt.estado,
+        cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial || 'Depositante',
+        fechaCierreOriginal: receipt.fechaCierre,
+        cerradoPorOriginal: receipt.cerradoPor,
+      },
+      diagnostico: {
+        totalHUsComerciales: activeBoxes.length,
+        totalHUsContabilizadas: accountedBoxes.length,
+        totalHUsPendientes: pendingBoxes.length,
+        totalPiezasPendientes,
+        racksFisicamenteConfirmados: [...new Set(pendingBoxes.map((b: any) => b.ubicacionActual).filter(Boolean))],
+      },
+      gruposProyectados: projectedGroups,
+      auditoriaAProducir: 'PUTAWAY_RECONCILIACION_POST_CIERRE',
+      politicaInmutabilidad: {
+        estadoPreservado: 'CERRADA',
+        modificaFechaCierre: false,
+        modificaCerradorOriginal: false,
+        alteraAuditoriasPrevias: false,
+      },
+      requisitosEjecucion: {
+        requiereSupervisor: true,
+        requiereMotivo: true,
+        motivoLongitudMinima: 10,
+      },
+    };
+  }
+
+  @Post('receipts/:id/post-closure-reconciliation/execute')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Ejecutar Reconciliación Post-Cierre de Putaway (Transaccional y Trazable)',
+    description: 'Consolida de manera atómica el inventario físico en racks para un expediente cerrado, preservando el estado CERRADA y registrando la auditoría PUTAWAY_RECONCILIACION_POST_CIERRE.',
+  })
+  @ApiParam({ name: 'id', description: 'ID o código de la recepción previa cerrada' })
+  async executePostClosurePutawayReconciliation(@Param('id') receiptId: string, @Body() body: any) {
+    const tStart = Date.now();
+    const usuarioResponsable = (body.usuario || '').trim();
+    const motivo = (body.motivo || '').trim();
+
+    if (!usuarioResponsable) {
+      throw new HttpException(
+        'Se requiere identificar al usuario supervisor responsable de la reconciliación post-cierre.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (!motivo || motivo.length < 10) {
+      throw new HttpException(
+        'El motivo de la reconciliación post-cierre es obligatorio y debe contener al menos 10 caracteres explicativos para fines de auditoría 3PL.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const receipt = await this.prisma.receipt.findFirst({
+      where: { OR: [{ id: receiptId }, { codigo: receiptId }] },
+      include: {
+        cliente: true,
+        lineas: { include: { sku: true } },
+        handlingUnits: true,
+      },
+    });
+
+    if (!receipt) {
+      throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
+    }
+
+    if (receipt.estado !== 'CERRADA' && receipt.estado !== 'CERRADO') {
+      throw new HttpException(
+        `Este endpoint es exclusivo para expedientes en estado CERRADA. El expediente actual se encuentra en estado "${receipt.estado}".`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const isMermaHu = (h: any) =>
+      h.codigo?.includes('MERMA') ||
+      h.codigo?.startsWith('HU-NC-') ||
+      h.ubicacionActual === 'DEV-01' ||
+      h.ubicacionActual?.includes('DEV');
+
+    const activeBoxes = receipt.handlingUnits.filter(
+      (h: any) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && !isMermaHu(h),
+    );
+
+    const activeBoxLotIds = activeBoxes.map((b: any) => b.lotId).filter(Boolean);
+    const existingLotsForBoxes = activeBoxLotIds.length > 0
+      ? await this.prisma.lotInventory.findMany({
+          where: { id: { in: activeBoxLotIds } },
+          include: { ubicacion: true },
+        })
+      : [];
+    const lotMapById = new Map<string, any>(existingLotsForBoxes.map(l => [l.id, l]));
+
+    const existingMovements = await this.prisma.inventoryMovement.findMany({
+      where: {
+        documentoOrigen: receipt.codigo,
+        tipoMovimiento: 'TRASIEGO',
+        huId: { in: activeBoxes.map((b: any) => b.id) },
+      },
+      select: { huId: true },
+    });
+    const movementHuIds = new Set(existingMovements.map((m: any) => m.huId));
+
+    const isBoxCanonicallyAccounted = (b: any): boolean => {
+      if (!b.lotId) return false;
+      const lot = lotMapById.get(b.lotId);
+      if (!lot) return false;
+      if (lot.clienteId !== receipt.clienteId) return false;
+      const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+        receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+      const resolvedSkuId = (b as any).skuId || line?.skuId;
+      if (resolvedSkuId && lot.skuId !== resolvedSkuId) return false;
+      if (b.ubicacionActual && lot.ubicacion?.codigo !== b.ubicacionActual) return false;
+      if (!movementHuIds.has(b.id)) return false;
+      return true;
+    };
+
+    const pendingBoxes = activeBoxes.filter((b: any) => !isBoxCanonicallyAccounted(b));
+
+    if (pendingBoxes.length === 0) {
+      return {
+        success: true,
+        idempotent: true,
+        message: `El expediente cerrado "${receipt.codigo}" ya se encuentra 100% contabilizado canónicamente. No hubo mutaciones.`,
+        receiptId: receipt.id,
+        receiptCodigo: receipt.codigo,
+        estado: receipt.estado,
+      };
+    }
+
+    // Validar evidencia física para cada bulto pendiente
+    const neededLocCodes = [...new Set(pendingBoxes.map((b: any) => b.ubicacionActual).filter(Boolean))];
+    const locations = await this.prisma.location.findMany({
+      where: { codigo: { in: neededLocCodes } },
+    });
+    const locMapByCode = new Map<string, any>(locations.map(l => [l.codigo.toUpperCase(), l]));
+
+    const pendingWithDest: any[] = [];
+    for (const b of pendingBoxes) {
+      if (!b.ubicacionActual || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING', 'DEV-01'].includes(b.ubicacionActual)) {
+        throw new HttpException(
+          `Bloqueo de Reconciliación: La caja "${b.codigo}" no cuenta con ubicación física en racks.`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const destLoc = locMapByCode.get(b.ubicacionActual.toUpperCase());
+      if (!destLoc) {
+        throw new HttpException(
+          `Ubicación rack "${b.ubicacionActual}" de la caja "${b.codigo}" no existe en el catálogo.`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const line = receipt.lineas?.find((l: any) => l.id === b.receiptLineId) ||
+        receipt.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo);
+      const resolvedSkuId = (b as any).skuId || line?.skuId;
+      if (!resolvedSkuId) {
+        throw new HttpException(`No se pudo resolver el SKU de la caja "${b.codigo}".`, HttpStatus.BAD_REQUEST);
+      }
+      const effectiveLote = b.loteTexto || line?.loteAsignado || line?.loteEsperado || null;
+      const effectiveFechaVencimiento = b.fechaVencimiento || line?.fechaVencimiento || null;
+
+      pendingWithDest.push({
+        box: b,
+        destLocation: destLoc,
+        resolvedSkuId,
+        resolvedSkuCodigo: b.skuCodigo || line?.sku?.codigo || 'SKU',
+        effectiveLote,
+        effectiveFechaVencimiento: effectiveFechaVencimiento ? new Date(effectiveFechaVencimiento) : null,
+      });
+    }
+
+    const sortedHuIds = [...new Set(pendingBoxes.map((b: any) => b.id))].sort();
+    const sortedLocIds = [...new Set(pendingWithDest.map(p => p.destLocation.id))].sort();
+
+    // =========================================================================
+    // EJECUCIÓN ATÓMICA TRANSACCIONAL DE RECONCILIACIÓN POST-CIERRE
+    // =========================================================================
+    return await this.putawayEngine.executeWithDeadlockRetry(
+      async () => {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            // 1. Bloqueo pesimista determinista
+            await this.putawayEngine.acquirePessimisticLocks(tx, sortedHuIds, sortedLocIds);
+
+            // 2. Relectura de estado real dentro de la transacción
+            const freshHus = await tx.handlingUnit.findMany({ where: { id: { in: sortedHuIds } } });
+            const freshHuMap = new Map<string, any>(freshHus.map(h => [h.id, h]));
+
+            const freshLocations = await tx.location.findMany({
+              where: { id: { in: sortedLocIds } },
+              include: { zona: true },
+            });
+            const freshLocMap = new Map<string, any>(freshLocations.map(l => [l.id, l]));
+
+            // 3. Agrupación por tupla canónica: (skuId, lote, destLocId)
+            const groupsMap = new Map<string, any>();
+            for (const p of pendingWithDest) {
+              const freshHu = freshHuMap.get(p.box.id);
+              const cant = freshHu?.cantidad ?? p.box.cantidad ?? 0;
+              const groupKey = `${p.resolvedSkuId}___${p.effectiveLote || 'NOLOTE'}___${p.destLocation.id}`;
+              if (!groupsMap.has(groupKey)) {
+                groupsMap.set(groupKey, {
+                  skuId: p.resolvedSkuId,
+                  skuCodigo: p.resolvedSkuCodigo,
+                  lote: p.effectiveLote,
+                  fechaVencimiento: p.effectiveFechaVencimiento,
+                  destLocId: p.destLocation.id,
+                  destLocCodigo: p.destLocation.codigo,
+                  cantidadTotal: 0,
+                  boxes: [],
+                });
+              }
+              const grp = groupsMap.get(groupKey);
+              grp.cantidadTotal += cant;
+              grp.boxes.push(p);
+            }
+
+            // 4. Validar capacidad en ubicaciones destino
+            const capacityByLoc = new Map<string, number>();
+            for (const group of groupsMap.values()) {
+              capacityByLoc.set(group.destLocId, (capacityByLoc.get(group.destLocId) || 0) + group.cantidadTotal);
+            }
+
+            for (const [locId, cantReconciliar] of capacityByLoc.entries()) {
+              const loc = freshLocMap.get(locId);
+              if (loc && loc.capacidadUnits > 0) {
+                const currentLots = await tx.lotInventory.findMany({
+                  where: { ubicacionId: locId },
+                });
+                const currentOcc = currentLots.reduce((acc: number, l: any) => acc + (l.cantidadDisponible || 0), 0);
+                if (currentOcc + cantReconciliar > loc.capacidadUnits) {
+                  throw new HttpException(
+                    `Capacidad excedida: El rack "${loc.codigo}" excedería su límite (${currentOcc + cantReconciliar}/${loc.capacidadUnits} pzas).`,
+                    HttpStatus.CONFLICT,
+                  );
+                }
+              }
+            }
+
+            // 5. Crear o reutilizar LotInventory para cada grupo
+            const targetLotIdByGroup = new Map<string, string>();
+            for (const [groupKey, group] of groupsMap.entries()) {
+              let existingTargetLot = await tx.lotInventory.findFirst({
+                where: {
+                  skuId: group.skuId,
+                  clienteId: receipt.clienteId,
+                  ubicacionId: group.destLocId,
+                  lote: group.lote ? group.lote : null,
+                },
+              });
+
+              let targetLotId: string;
+              if (existingTargetLot) {
+                await tx.lotInventory.update({
+                  where: { id: existingTargetLot.id },
+                  data: {
+                    cantidadDisponible: { increment: group.cantidadTotal },
+                    notas: existingTargetLot.notas
+                      ? `${existingTargetLot.notas} | Reconciliación post-cierre ${receipt.codigo} (+${group.cantidadTotal} pzas)`
+                      : `Reconciliación post-cierre ${receipt.codigo} (+${group.cantidadTotal} pzas)`,
+                  },
+                });
+                targetLotId = existingTargetLot.id;
+              } else {
+                const newLot = await tx.lotInventory.create({
+                  data: {
+                    skuId: group.skuId,
+                    clienteId: receipt.clienteId,
+                    lote: group.lote,
+                    fechaVencimiento: group.fechaVencimiento,
+                    ubicacionId: group.destLocId,
+                    cantidadDisponible: group.cantidadTotal,
+                    estadoCalidad: 'LIBERADO',
+                    notas: `Reconciliación post-cierre desde ${receipt.codigo} a rack ${group.destLocCodigo}${group.lote ? ` (Lote ${group.lote})` : ''}`,
+                  },
+                });
+                targetLotId = newLot.id;
+              }
+              targetLotIdByGroup.set(groupKey, targetLotId);
+            }
+
+            // 6. Actualizar HandlingUnits
+            const huUpdatePromises: Promise<any>[] = [];
+            const inventoryMovementsData: any[] = [];
+
+            for (const p of pendingWithDest) {
+              const groupKey = `${p.resolvedSkuId}___${p.effectiveLote || 'NOLOTE'}___${p.destLocation.id}`;
+              const targetLotId = targetLotIdByGroup.get(groupKey)!;
+              const freshHu = freshHuMap.get(p.box.id);
+              const cant = freshHu?.cantidad ?? p.box.cantidad ?? 0;
+
+              huUpdatePromises.push(
+                tx.handlingUnit.update({
+                  where: { id: p.box.id },
+                  data: {
+                    ubicacionActual: p.destLocation.codigo,
+                    lotId: targetLotId,
+                    estadoHu: 'ACTIVO',
+                  },
+                }),
+              );
+
+              inventoryMovementsData.push({
+                tipoMovimiento: 'TRASIEGO',
+                skuId: p.resolvedSkuId,
+                clienteId: receipt.clienteId,
+                lotId: targetLotId,
+                huId: p.box.id,
+                fromLocationId: null,
+                toLocationId: p.destLocation.id,
+                cantidad: cant,
+                usuario: usuarioResponsable,
+                motivo: `Reconciliación post-cierre de Putaway a rack ${p.destLocation.codigo}: ${motivo}`,
+                documentoOrigen: receipt.codigo,
+              });
+            }
+
+            await Promise.all(huUpdatePromises);
+
+            // 7. Ubicaciones destino a OCUPADO
+            for (const locId of sortedLocIds) {
+              await tx.location.update({
+                where: { id: locId },
+                data: { estado: 'OCUPADO' },
+              });
+            }
+
+            // 8. Inserción de InventoryMovement idempotente
+            const existingMovementsTx = await tx.inventoryMovement.findMany({
+              where: {
+                documentoOrigen: receipt.codigo,
+                tipoMovimiento: 'TRASIEGO',
+                huId: { in: inventoryMovementsData.map(m => m.huId).filter(Boolean) },
+              },
+              select: { huId: true },
+            });
+            const existingHuIds = new Set(existingMovementsTx.map(m => m.huId));
+            const movementsToInsert = inventoryMovementsData.filter(m => !m.huId || !existingHuIds.has(m.huId));
+
+            if (movementsToInsert.length > 0) {
+              await tx.inventoryMovement.createMany({
+                data: movementsToInsert,
+              });
+            }
+
+            // 9. Registrar auditoría explícita PUTAWAY_RECONCILIACION_POST_CIERRE
+            const totalPiezasAlojadas = pendingWithDest.reduce((acc: number, p: any) => acc + (p.box.cantidad || 0), 0);
+            const racksAsignados = [...new Set(pendingWithDest.map(p => p.destLocation.codigo))];
+
+            const auditRecord = await tx.auditLog.create({
+              data: {
+                usuario: usuarioResponsable,
+                accion: 'PUTAWAY_RECONCILIACION_POST_CIERRE',
+                entidad: 'Receipt',
+                entidadId: receipt.id,
+                detalle: `Reconciliación Post-Cierre de Putaway ejecutada por ${usuarioResponsable}. Motivo: ${motivo}. Detalle: Se contabilizaron canónicamente ${pendingWithDest.length} HUs (${totalPiezasAlojadas} pzas) en racks ${racksAsignados.join(', ')}. Estado CERRADA y fecha de cierre original preservados intactos. Duración: ${Date.now() - tStart}ms.`,
+              },
+            });
+
+            // NOTA: NO SE MODIFICA receipt.estado (permanece CERRADA)
+            // NO SE MODIFICA receipt.fechaCierre (permanece intacta)
+            // NO SE MODIFICA receipt.cerradoPor (permanece intacta)
+
+            return {
+              success: true,
+              reconciliacionPostCierre: true,
+              message: `¡Reconciliación post-cierre ejecutada exitosamente! Se incorporaron ${pendingWithDest.length} bultos (${totalPiezasAlojadas} pzas) a inventario DISPONIBLE en racks. El expediente preserva su estatus CERRADA y su fecha de cierre original.`,
+              receiptId: receipt.id,
+              receiptCodigo: receipt.codigo,
+              estadoRecibo: receipt.estado,
+              fechaCierreOriginal: receipt.fechaCierre,
+              cerradoPorOriginal: receipt.cerradoPor,
+              supervisorResponsable: usuarioResponsable,
+              motivo,
+              totalHUsReconciliadas: pendingWithDest.length,
+              piezasIncorporadas: totalPiezasAlojadas,
+              racksAsignados,
+              auditLogId: auditRecord.id,
+              durationMs: Date.now() - tStart,
+              timestamp: new Date().toISOString(),
+            };
+          },
+          {
+            maxWait: 15000,
+            timeout: 30000,
+          },
+        );
+      },
+      { opName: 'executePostClosurePutawayReconciliation' },
+    );
+  }
+
+  // Generic Putaway fallback endpoint protegido con protocolo transaccional (Regla 9)
   @Post('putaway')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Ejecutar movimientos generales de alojamiento (Putaway)' })
@@ -4113,23 +4977,61 @@ export class OperationsController {
     }
 
     const usuario = body.usuario || 'Montacarguista';
-    for (const m of body.movimientos) {
-      if (m.ubicacionDestinoId && m.skuId) {
-        await this.prisma.inventoryMovement.create({
-          data: {
-            tipoMovimiento: 'TRASIEGO',
-            skuId: m.skuId,
-            clienteId: m.clienteId,
-            fromLocationId: m.ubicacionOrigenId || null,
-            toLocationId: m.ubicacionDestinoId,
-            cantidad: m.cantidad || 0,
-            usuario,
-            motivo: 'Alojamiento Putaway manual',
+    const huIds = body.movimientos.map((m: any) => m.huId).filter(Boolean);
+    const locIds = body.movimientos.map((m: any) => m.ubicacionDestinoId).filter(Boolean);
+
+    return await this.putawayEngine.executeWithDeadlockRetry(
+      async () => {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            await this.putawayEngine.acquirePessimisticLocks(tx, huIds, locIds);
+
+            for (const m of body.movimientos) {
+              if (m.ubicacionDestinoId && m.skuId) {
+                const cant = m.cantidad || 0;
+                const reval = await this.putawayEngine.revalidateLocationForPutaway(m.ubicacionDestinoId, cant, tx);
+                if (!reval.valid) {
+                  throw new HttpException(
+                    {
+                      statusCode: HttpStatus.CONFLICT,
+                      message: reval.error || `La ubicación de destino ya no tiene capacidad suficiente.`,
+                      error: 'Conflict',
+                    },
+                    HttpStatus.CONFLICT,
+                  );
+                }
+
+                await tx.inventoryMovement.create({
+                  data: {
+                    tipoMovimiento: 'TRASIEGO',
+                    skuId: m.skuId,
+                    clienteId: m.clienteId,
+                    fromLocationId: m.ubicacionOrigenId || null,
+                    toLocationId: m.ubicacionDestinoId,
+                    cantidad: cant,
+                    usuario,
+                    motivo: 'Alojamiento Putaway manual',
+                  },
+                });
+
+                if (m.huId) {
+                  const loc = await tx.location.findUnique({ where: { id: m.ubicacionDestinoId } });
+                  if (loc) {
+                    await tx.handlingUnit.update({
+                      where: { id: m.huId },
+                      data: { ubicacionActual: loc.codigo, estadoHu: 'ACTIVO' },
+                    });
+                  }
+                }
+              }
+            }
+            return { success: true, message: `Alojamiento ejecutado para ${body.movimientos.length} productos` };
           },
-        });
-      }
-    }
-    return { success: true, message: `Alojamiento ejecutado para ${body.movimientos.length} productos` };
+          { maxWait: 10000, timeout: 20000 },
+        );
+      },
+      { opName: 'executePutawayGeneric' },
+    );
   }
 
   @Post('receipts/:id/unlock')
@@ -4443,6 +5345,18 @@ export class OperationsController {
         );
       }
 
+      if (sku.activo === false) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `El SKU "${sku.codigo}" se encuentra INACTIVO en el catálogo maestro y no puede utilizarse en recepciones. Reactívelo antes de continuar.`,
+            error: 'Bad Request',
+            detalles: { codigo: 'SKU_INACTIVO', skuCodigo: sku.codigo },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       const created = await this.prisma.receiptLine.create({
         data: {
           recepcionId: receiptId,
@@ -4554,11 +5468,44 @@ export class OperationsController {
     if (totalQty <= 0) throw new HttpException('Cantidad total debe ser mayor a 0', HttpStatus.BAD_REQUEST);
 
     // Tarea 4: Validación automática contra catálogo del depositante y reglas sanitarias por giro
-    if (data.skuId && data.clienteId) {
-      const sku = await this.prisma.skuMaster.findUnique({
-        where: { id: data.skuId },
-        include: { cliente: { select: { nombreComercial: true, giro: true, requiereLote: true, requiereCaducidad: true } } },
+    let sku: any = null;
+    let resolvedReceiptId: string | null = null;
+    let resolvedReceiptLine: any = null;
+
+    if (data.receiptLineId) {
+      resolvedReceiptLine = await this.prisma.receiptLine.findUnique({
+        where: { id: data.receiptLineId },
+        include: { recepcion: true, sku: true },
       });
+      if (!resolvedReceiptLine) {
+        throw new HttpException(
+          `Partida de recibo con ID "${data.receiptLineId}" no encontrada en la base de datos.`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      const parentRecId = resolvedReceiptLine.recepcionId || resolvedReceiptLine.recepcion?.id || (resolvedReceiptLine as any).receiptId;
+      if (!parentRecId) {
+        throw new HttpException(
+          `La partida "${data.receiptLineId}" no tiene una recepción asociada válida en el sistema.`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      resolvedReceiptId = parentRecId;
+      if (!data.skuId && resolvedReceiptLine.skuId) {
+        data.skuId = resolvedReceiptLine.skuId;
+      }
+      if (resolvedReceiptLine.sku) {
+        sku = resolvedReceiptLine.sku;
+      }
+    }
+
+    if (data.skuId && data.clienteId) {
+      if (!sku) {
+        sku = await this.prisma.skuMaster.findUnique({
+          where: { id: data.skuId },
+          include: { cliente: { select: { nombreComercial: true, giro: true, requiereLote: true, requiereCaducidad: true } } },
+        });
+      }
       if (!sku) throw new HttpException('El SKU especificado no existe en el catálogo', HttpStatus.NOT_FOUND);
       if (sku.clienteId !== data.clienteId) {
         throw new HttpException(
@@ -4663,9 +5610,22 @@ export class OperationsController {
         const huCodigoC = `${huYearPrefix}${String(maxHuSeq).padStart(5, '0')}`;
         const huC = await this.prisma.handlingUnit.create({
           data: {
-            codigo: huCodigoC, tipoHu: data.tipoHu, lotId: lotC.id,
-            clienteId: data.clienteId, cantidad: qtyConforme,
-            uom: 'PZA', ubicacionActual: data.ubicacionConformeId,
+            codigo: huCodigoC,
+            tipoHu: data.tipoHu || 'CAJA',
+            lotId: lotC.id,
+            clienteId: data.clienteId,
+            receiptId: resolvedReceiptId || undefined,
+            receiptLineId: data.receiptLineId || undefined,
+            cantidad: qtyConforme,
+            uom: resolvedReceiptLine?.uom || 'PZA',
+            ubicacionActual: data.ubicacionConformeId,
+            estadoHu: 'ACTIVO',
+            skuCodigo: resolvedReceiptLine?.sku?.codigo || sku?.codigo,
+            skuDescripcion: resolvedReceiptLine?.sku?.descripcion || sku?.descripcion,
+            loteTexto: data.lote || null,
+            fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
+            facturaRespaldo: resolvedReceiptLine?.recepcion?.facturaRespaldo || resolvedReceiptLine?.recepcion?.ocReferencia || resolvedReceiptLine?.recepcion?.codigo || undefined,
+            piezasPorCaja: qtyConforme,
           },
         });
 
@@ -4707,9 +5667,22 @@ export class OperationsController {
         const huCodigoNC = `${huYearPrefix}${String(maxHuSeq).padStart(5, '0')}`;
         const huNC = await this.prisma.handlingUnit.create({
           data: {
-            codigo: huCodigoNC, tipoHu: data.tipoHu, lotId: lotNC.id,
-            clienteId: data.clienteId, cantidad: qtyNoConforme,
-            uom: 'PZA', ubicacionActual: data.ubicacionNoConformeId,
+            codigo: huCodigoNC,
+            tipoHu: data.tipoHu || 'CAJA',
+            lotId: lotNC.id,
+            clienteId: data.clienteId,
+            receiptId: resolvedReceiptId || undefined,
+            receiptLineId: data.receiptLineId || undefined,
+            cantidad: qtyNoConforme,
+            uom: resolvedReceiptLine?.uom || 'PZA',
+            ubicacionActual: data.ubicacionNoConformeId,
+            estadoHu: 'BLOQUEADO',
+            skuCodigo: resolvedReceiptLine?.sku?.codigo || sku?.codigo,
+            skuDescripcion: resolvedReceiptLine?.sku?.descripcion || sku?.descripcion,
+            loteTexto: data.lote || null,
+            fechaVencimiento: data.fechaVencimiento ? new Date(data.fechaVencimiento) : null,
+            facturaRespaldo: resolvedReceiptLine?.recepcion?.facturaRespaldo || resolvedReceiptLine?.recepcion?.ocReferencia || resolvedReceiptLine?.recepcion?.codigo || undefined,
+            piezasPorCaja: qtyNoConforme,
           },
         });
 
@@ -5029,9 +6002,18 @@ export class OperationsController {
                   tipoHu: lineData.tipoHu || 'CAJA',
                   lotId: lotC.id,
                   clienteId: receipt.clienteId,
+                  receiptId: receipt.id,
+                  receiptLineId: line.id,
                   cantidad: qtyConforme,
                   uom: line.uom || 'PZA',
                   ubicacionActual: locConforme,
+                  estadoHu: 'ACTIVO',
+                  skuCodigo: line.sku?.codigo,
+                  skuDescripcion: line.sku?.descripcion,
+                  loteTexto: lineData.lote || null,
+                  fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : null,
+                  facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
+                  piezasPorCaja: qtyConforme,
                 },
               });
 
@@ -5082,9 +6064,18 @@ export class OperationsController {
                   tipoHu: lineData.tipoHu || 'CAJA',
                   lotId: lotNC.id,
                   clienteId: receipt.clienteId,
+                  receiptId: receipt.id,
+                  receiptLineId: line.id,
                   cantidad: qtyNoConforme,
                   uom: line.uom || 'PZA',
                   ubicacionActual: locNoConforme,
+                  estadoHu: 'BLOQUEADO',
+                  skuCodigo: line.sku?.codigo,
+                  skuDescripcion: line.sku?.descripcion,
+                  loteTexto: lineData.lote || null,
+                  fechaVencimiento: lineData.fechaVencimiento ? new Date(lineData.fechaVencimiento) : null,
+                  facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia || receipt.codigo,
+                  piezasPorCaja: qtyNoConforme,
                 },
               });
 
@@ -5386,6 +6377,15 @@ export class OperationsController {
       cajaOrigenCodigo: h.cajaOrigenId ? (huMap.get(h.cajaOrigenId) || null) : null,
     }));
 
+    const reconciliacionesPostCierre = await this.prisma.auditLog.findMany({
+      where: {
+        entidad: 'Receipt',
+        entidadId: receipt.id,
+        accion: 'PUTAWAY_RECONCILIACION_POST_CIERRE',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
     return {
       receipt,
       hasPieceClassification,
@@ -5417,6 +6417,7 @@ export class OperationsController {
       lineas: lineasReporte,
       handlingUnits: enrichedHus,
       qualityInspection: qiResult,
+      reconciliacionesPostCierre,
     };
   }
 
@@ -5439,6 +6440,7 @@ export class OperationsController {
           lineas: { include: { sku: true } },
           cliente: true,
           inspecciones: true,
+          handlingUnits: true,
         },
       });
       if (!receipt) {
@@ -5489,6 +6491,39 @@ export class OperationsController {
 
       // 3. AUDITORÍA DE DISCREPANCIAS Y CANDADO DE CIERRE (Tarea 5)
       // Bloquear el cierre de recepción si existen discrepancias sin justificación o clasificación de estatus
+      // CANDADO DE SEGURIDAD CANÓNICA DE FASE 4:
+      // Validar que todas las HUs comerciales activas estén formalmente alojadas en racks
+      // y vinculadas canónicamente a LotInventory (HUs comerciales activas alojadas == contabilizadas)
+      const isMermaHu = (h: any) => h.codigo?.includes('MERMA') || h.codigo?.startsWith('HU-NC-') || h.ubicacionActual === 'DEV-01';
+      const activeCommercialBoxes = receipt.handlingUnits?.filter(
+        (h: any) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && !isMermaHu(h)
+      ) || [];
+
+      const unlinkedBoxes = activeCommercialBoxes.filter(
+        (h: any) => !h.lotId || !h.ubicacionActual || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING'].includes(h.ubicacionActual)
+      );
+
+      if (unlinkedBoxes.length > 0) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo de Seguridad de Cierre: No se puede finalizar ni cerrar la recepción porque existen ${unlinkedBoxes.length} bultos comerciales activos sin confirmación canónica de alojamiento en racks (Fase 4 incompleta). Las piezas deben estar alojadas físicamente y vinculadas a LotInventory antes de finiquitar el expediente.`,
+            error: 'Bad Request',
+            detalles: {
+              codigo: 'CIERRE_BLOQUEADO_POR_PUTAWAY_INCOMPLETO',
+              totalBultosPendientes: unlinkedBoxes.length,
+              bultosPendientes: unlinkedBoxes.map((b: any) => ({
+                codigo: b.codigo,
+                ubicacionActual: b.ubicacionActual,
+                lotId: b.lotId,
+                cantidad: b.cantidad,
+              })),
+            },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       const activeLines = receipt.lineas || [];
       const discrepantLines: Array<{
         line: any;
@@ -5833,6 +6868,12 @@ export class OperationsController {
     for (const item of data.lineas) {
       const sku = await this.prisma.skuMaster.findUnique({ where: { id: item.skuId } });
       if (!sku) throw new HttpException(`Producto con ID ${item.skuId} no encontrado`, HttpStatus.BAD_REQUEST);
+      if (sku.activo === false) {
+        throw new HttpException(
+          `El SKU "${sku.codigo}" (${sku.descripcion}) se encuentra INACTIVO en el catálogo y no puede utilizarse para nuevos pedidos ni salidas. Reactívelo antes de continuar.`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
 
       const requestedQty = Number(item.cantidadSolicitada) || 0;
       if (requestedQty <= 0) throw new HttpException(`Cantidad inválida para ${sku.descripcion}`, HttpStatus.BAD_REQUEST);
@@ -5849,15 +6890,28 @@ export class OperationsController {
         lotWhere.ubicacion = { almacenId: data.almacenOrigenId };
       }
 
-      const availableLots = await this.prisma.lotInventory.findMany({
+      const availableLotsRaw = await this.prisma.lotInventory.findMany({
         where: lotWhere,
+        include: {
+          ubicacion: {
+            include: { zona: true, almacen: true },
+          },
+        },
         orderBy: client.reglaInventario === 'FEFO' ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }] : [{ createdAt: 'asc' }],
       });
 
-      // Calcular saldo libre (disponible - reservado)
+      // Filtrar únicamente lotes en condiciones comercialmente elegibles (precedencia central: excluye vencidos, merma, tránsito)
+      const now = new Date();
+      const availableLotsWithState = availableLotsRaw.map(lot => {
+        const role = classifyLocationOperationalRole(lot.ubicacion);
+        const opState = evaluateInventoryItemOperationalState(lot, role, now);
+        return { lot, opState };
+      }).filter(x => x.opState.esVendible && x.opState.cantidadDisponibleVendible > 0);
+
+      // Calcular saldo libre (disponible vendible real según evaluador central)
       let totalStockLibre = 0;
-      for (const lot of availableLots) {
-        totalStockLibre += Math.max(0, lot.cantidadDisponible - lot.cantidadReservada);
+      for (const itemState of availableLotsWithState) {
+        totalStockLibre += itemState.opState.cantidadDisponibleVendible;
       }
 
       if (totalStockLibre < requestedQty) {
@@ -5871,14 +6925,14 @@ export class OperationsController {
       let remainingToReserve = requestedQty;
       let primaryLotId: string | null = null;
 
-      for (const lot of availableLots) {
+      for (const itemState of availableLotsWithState) {
         if (remainingToReserve <= 0) break;
-        const lotFree = Math.max(0, lot.cantidadDisponible - lot.cantidadReservada);
+        const lotFree = itemState.opState.cantidadDisponibleVendible;
         if (lotFree <= 0) continue;
 
         const take = Math.min(remainingToReserve, lotFree);
-        reservationsToApply.push({ lotId: lot.id, cantidad: take });
-        if (!primaryLotId) primaryLotId = lot.id;
+        reservationsToApply.push({ lotId: itemState.lot.id, cantidad: take });
+        if (!primaryLotId) primaryLotId = itemState.lot.id;
         remainingToReserve -= take;
       }
 
@@ -5999,10 +7053,12 @@ export class OperationsController {
         lotWhere.ubicacion = { almacenId: order.almacenOrigenId };
       }
 
-      const candidateLots = await this.prisma.lotInventory.findMany({
+      const candidateLotsRaw = await this.prisma.lotInventory.findMany({
         where: lotWhere,
         include: {
-          ubicacion: true,
+          ubicacion: {
+            include: { zona: true, almacen: true },
+          },
           handlingUnits: {
             where: { estadoHu: 'ACTIVO' },
             select: {
@@ -6021,6 +7077,14 @@ export class OperationsController {
         orderBy: isFefo
           ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }]
           : [{ createdAt: 'asc' }],
+      });
+
+      // Filtrar únicamente lotes comercialmente elegibles (precedencia central: excluye vencidos, merma y tránsito)
+      const now = new Date();
+      const candidateLots = candidateLotsRaw.filter(lot => {
+        const role = classifyLocationOperationalRole(lot.ubicacion);
+        const opState = evaluateInventoryItemOperationalState(lot, role, now);
+        return opState.esElegibleAllocation;
       });
 
       let remainingToAllocate = requestedQty;
@@ -6136,6 +7200,12 @@ export class OperationsController {
     };
   }
 
+  @Post('orders/:id/allocate')
+  @ApiOperation({ summary: 'Asignar/reservar stock para orden de salida (Alias para integración continua)' })
+  async allocateOrder(@Param('id') id: string, @Body() data: any) {
+    return this.prepareOrder(id, data);
+  }
+
   @Post('orders/:id/prepare')
   @ApiOperation({ summary: 'Asignar lotes y ubicaciones a orden de salida (Panel Supervisor / Alejandra)' })
   async prepareOrder(
@@ -6190,16 +7260,67 @@ export class OperationsController {
           }).catch(() => null);
         }
 
-        // Aplicar nuevas reservas a los lotes seleccionados por Alejandra
+        // Aplicar nuevas reservas atómicas a los lotes seleccionados
         for (const alloc of item.lotes) {
           const qty = Number(alloc.cantidad) || 0;
           if (qty <= 0) continue;
 
-          const lot = await tx.lotInventory.findUnique({ where: { id: alloc.lotId } });
+          const lot = await tx.lotInventory.findUnique({ 
+            where: { id: alloc.lotId },
+            include: { ubicacion: { include: { zona: true, almacen: true } } },
+          });
           if (!lot) throw new HttpException(`Lote ${alloc.lotId} no encontrado`, HttpStatus.BAD_REQUEST);
 
-          if (lot.cantidadDisponible < qty) {
-            throw new HttpException(`Stock físico insuficiente en lote ${lot.lote || lot.id} para ${line.sku.descripcion}`, HttpStatus.BAD_REQUEST);
+          const locRole = classifyLocationOperationalRole(lot.ubicacion);
+          const opState = evaluateInventoryItemOperationalState(lot, locRole, new Date());
+          if (!opState.esElegibleAllocation) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.CONFLICT,
+                message: `LOTE_NO_ELEGIBLE_ALLOCATION: El lote ${lot.lote || lot.id} no es elegible para asignación operativa (${opState.badgeTexto}: ${opState.motivo}).`,
+                error: 'Conflict',
+              },
+              HttpStatus.CONFLICT,
+            );
+          }
+
+          const availableToReserve = lot.cantidadDisponible - (lot.cantidadReservada || 0);
+          if (availableToReserve < qty) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.CONFLICT,
+                message: `Stock disponible no reservado insuficiente en lote ${lot.lote || lot.id} para ${line.sku.descripcion}. Disponible libre: ${availableToReserve}, Solicitado: ${qty}`,
+                error: 'Conflict',
+              },
+              HttpStatus.CONFLICT,
+            );
+          }
+
+          // Revalidación autoritativa de compatibilidad con Handling Units indivisibles
+          const huAllocValidation = await validateHuAllocationCompatibility({
+            tx,
+            lotId: alloc.lotId,
+            clienteId: order.clienteId,
+            requestedQty: qty,
+            currentOrderId: order.id,
+            skuCodigo: line.sku?.codigo,
+          });
+
+          if (huAllocValidation.esHuManaged && !huAllocValidation.valido) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.CONFLICT,
+                code: huAllocValidation.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
+                codigoError: huAllocValidation.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
+                message: huAllocValidation.mensaje,
+                error: 'Conflict',
+              },
+              HttpStatus.CONFLICT,
+            );
+          }
+
+          if (huAllocValidation.esHuManaged && huAllocValidation.assignedHus.length > 0) {
+            (alloc as any).husAsignadas = huAllocValidation.assignedHus;
           }
 
           await tx.lotInventory.update({
@@ -6350,6 +7471,11 @@ export class OperationsController {
       lineId: string;
       tipoScan: 'UBICACION' | 'CAJA';
       codigoEscaneado: string;
+      ubicacionEsperada?: string;
+      loteEsperado?: string;
+      cantidadEsperada?: number;
+      taskLotId?: string;
+      cajasYaEscaneadas?: string[];
     },
   ) {
     const line = await this.prisma.salesOrderLine.findUnique({
@@ -6362,11 +7488,40 @@ export class OperationsController {
     });
     if (!line) throw new HttpException('Línea de pedido no encontrada', HttpStatus.NOT_FOUND);
 
+    // Revalidación canónica preventiva de elegibilidad operativa para Picking (read-only)
+    const validation = await validatePickingEligibility(
+      this.prisma,
+      {
+        orderId: id,
+        lineId: body.lineId,
+        taskLotId: body.taskLotId,
+        taskLoteCodigo: body.loteEsperado,
+        taskUbicacionCodigo: body.ubicacionEsperada,
+        requestedQty: body.cantidadEsperada || 1,
+      },
+      { throwOnConflict: false },
+    );
+
+    if (!validation.valido) {
+      const isRegularizacion = validation.codigoError === 'INVENTARIO_LEGADO_SIN_HU';
+      return {
+        valid: false,
+        requiereRevalidacion: true,
+        requiereRegularizacion: isRegularizacion,
+        codigoError: validation.codigoError,
+        motivo: validation.motivo,
+        mensaje: isRegularizacion
+          ? 'ASIGNACIÓN REQUIERE REGULARIZACIÓN: El inventario asignado no cuenta con unidades de manejo físicas trazables. No puede surtirse mediante el flujo de escaneo de cajas.'
+          : `ASIGNACIÓN REQUIERE REVALIDACIÓN: ${validation.motivo}`,
+        tipoScan: body.tipoScan,
+      };
+    }
+
     const raw = (body.codigoEscaneado || '').trim();
     const cleanScan = raw.toUpperCase();
 
     if (body.tipoScan === 'UBICACION') {
-      let expectedLocation = (line.ubicacionAsignada || line.lote?.ubicacion?.codigo || '').toUpperCase();
+      let expectedLocation = (body.ubicacionEsperada || line.ubicacionAsignada || line.lote?.ubicacion?.codigo || '').toUpperCase();
       let validLocations = [expectedLocation];
 
       if (line.asignacionesJson) {
@@ -6403,42 +7558,154 @@ export class OperationsController {
     if (body.tipoScan === 'CAJA') {
       const skuCodigo = (line.sku.codigo || '').toUpperCase();
       const skuEan = (line.sku.codigoBarras || '').toUpperCase();
-      const loteAsignado = (line.loteAsignado || line.lote?.lote || '').toUpperCase();
+      const loteAsignado = (body.loteEsperado || line.loteAsignado || line.lote?.lote || '').toUpperCase();
+      const expectedLocation = (body.ubicacionEsperada || line.ubicacionAsignada || line.lote?.ubicacion?.codigo || '').toUpperCase();
 
-      const matchesSku = cleanScan === skuCodigo || cleanScan.includes(skuCodigo);
-      const matchesEan = Boolean(skuEan && (cleanScan === skuEan || cleanScan.includes(skuEan)));
-      const matchesLote = Boolean(loteAsignado && (cleanScan === loteAsignado || cleanScan.includes(loteAsignado)));
+      // 1. REGLA: No permitir que un SKU o lote se hagan pasar por una Caja/HU
+      const isSkuInput = cleanScan === skuCodigo || (skuEan && cleanScan === skuEan);
+      const isLoteInput = Boolean(loteAsignado && cleanScan === loteAsignado);
 
+      if (isSkuInput || isLoteInput) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_REQUERIDA',
+          mensaje: 'Esta operación requiere una unidad de manejo física. Escanea la etiqueta Code-128 de la caja/HU.',
+        };
+      }
+
+      // 2. Búsqueda autoritativa de la Handling Unit por código exacto
       const hu = await this.prisma.handlingUnit.findFirst({
         where: {
           codigo: { equals: raw, mode: 'insensitive' },
-          clienteId: line.orden.clienteId,
         },
         include: { lote: true },
       });
 
-      let huMatches = false;
-      if (hu) {
-        const huSkuMatch = hu.skuCodigo?.toUpperCase() === skuCodigo || hu.lote?.skuId === line.skuId;
-        const huLoteMatch = !loteAsignado || (hu.loteTexto?.toUpperCase() === loteAsignado) || (hu.lote?.lote?.toUpperCase() === loteAsignado);
-        huMatches = huSkuMatch && huLoteMatch;
-      }
-
-      if (!matchesSku && !matchesEan && !matchesLote && !huMatches) {
+      if (!hu) {
         return {
           valid: false,
           tipoScan: 'CAJA',
-          mensaje: `Etiqueta de caja no válida: "${raw}" no coincide con el producto ${skuCodigo} ni con el lote asignado ${loteAsignado || 'N/A'}.`,
+          codigoError: 'HU_NO_ENCONTRADA',
+          mensaje: `Unidad de manejo no encontrada: La etiqueta "${raw}" no corresponde a ninguna caja/HU registrada en el almacén.`,
+        };
+      }
+
+      // 3. Validar estado ACTIVO
+      if (hu.estadoHu !== 'ACTIVO') {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_NO_ACTIVA',
+          mensaje: `Caja no disponible: La HU "${raw}" se encuentra en estado ${hu.estadoHu} (no conforme/inactiva).`,
+        };
+      }
+
+      // 4. Validar pertenencia al cliente de la orden
+      if (hu.clienteId && line.orden?.clienteId && hu.clienteId !== line.orden.clienteId) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_SKU_NO_COINCIDE',
+          mensaje: `La caja "${raw}" pertenece a otro depositante/cliente y no corresponde a este pedido.`,
+        };
+      }
+
+      // 5. Validar SKU
+      const huSku = (hu.skuCodigo || (hu.lote as any)?.sku?.codigo || '').toUpperCase();
+      if (huSku !== skuCodigo && hu.lote?.skuId !== line.skuId) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_SKU_NO_COINCIDE',
+          mensaje: `La caja "${raw}" contiene ${huSku || 'otro producto'}, pero la orden requiere ${skuCodigo}.`,
+        };
+      }
+
+      // 6. Validar Lote Asignado
+      const huLote = (hu.loteTexto || hu.lote?.lote || '').toUpperCase();
+      if (loteAsignado && huLote !== loteAsignado) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_LOTE_NO_COINCIDE',
+          mensaje: `La caja "${raw}" pertenece al lote "${huLote || 'N/A'}", pero la orden tiene asignado el lote "${loteAsignado}".`,
+        };
+      }
+
+      // 7. Validar Ubicación física actual de la HU (debe coincidir con el rack verificado)
+      const huUbi = (hu.ubicacionActual || '').trim().toUpperCase();
+      if (expectedLocation && huUbi !== expectedLocation) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_UBICACION_NO_COINCIDE',
+          mensaje: `La caja "${raw}" está registrada en la ubicación "${huUbi || 'SIN UBICACIÓN'}", pero el surtido actual es en "${expectedLocation}".`,
+        };
+      }
+
+      // 8. Prevención de Doble Escaneo en Backend
+      const yaEscaneadasEnFront = Array.isArray(body.cajasYaEscaneadas) ? body.cajasYaEscaneadas.map(c => c.toUpperCase()) : [];
+      const cajasEnLinea = (line.cajaEscaneada || '').toUpperCase();
+      let cajasHistorialLinea: string[] = [];
+      if (line.asignacionesJson) {
+        try {
+          const parsed = JSON.parse(line.asignacionesJson);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((a: any) => {
+              if (Array.isArray(a.cajasEscaneadas)) {
+                cajasHistorialLinea.push(...a.cajasEscaneadas.map((c: string) => c.toUpperCase()));
+              }
+            });
+          }
+        } catch (_) {}
+      }
+
+      const yaRegistrada =
+        yaEscaneadasEnFront.includes(cleanScan) ||
+        cajasEnLinea.includes(cleanScan) ||
+        cajasHistorialLinea.includes(cleanScan);
+
+      if (yaRegistrada) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_YA_ESCANEADA',
+          mensaje: `Caja duplicada: La HU "${raw}" ya fue escaneada y registrada previamente en esta orden.`,
+        };
+      }
+
+      // 9. Cantidad de la HU y Regla de Caja Parcial
+      const huPiezas = Number(hu.cantidad || hu.piezasPorCaja || 0);
+      const cantPickeadaActual = Number(line.cantidadPickeada || 0);
+      const pendiente = Math.max(0, Number(line.cantidadSolicitada) - cantPickeadaActual);
+
+      if (huPiezas <= 0) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_VACIA',
+          mensaje: `La caja "${raw}" no cuenta con existencias físicas registradas (0 piezas).`,
+        };
+      }
+
+      if (huPiezas > pendiente) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_CANTIDAD_EXCEDE_PENDIENTE',
+          mensaje: `HU indivisible: La caja "${raw}" contiene ${huPiezas} pzas pero el pedido solo requiere ${pendiente} pzas pendientes. No se permite fraccionamiento automático (split de HU) sin flujo formal auditado de acondicionamiento.`,
         };
       }
 
       return {
         valid: true,
         tipoScan: 'CAJA',
-        mensaje: `Caja y lote validados con éxito: ${skuCodigo} (Lote: ${loteAsignado || 'Asignado'}).`,
+        mensaje: `Caja y lote validados con éxito: ${skuCodigo} (Lote: ${loteAsignado}). Contiene ${huPiezas} piezas.`,
         sku: line.sku.codigo,
         lote: loteAsignado,
-        huCodigo: hu?.codigo,
+        huCodigo: hu.codigo,
+        cantidadCaja: huPiezas,
       };
     }
 
@@ -6446,7 +7713,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/record-pick')
-  @ApiOperation({ summary: 'Fase 6: Registrar conteo pickeado por línea con doble escaneo' })
+  @ApiOperation({ summary: 'Fase 6: Registrar conteo pickeado por línea con doble escaneo y revalidación canónica' })
   async recordPick(
     @Param('id') id: string,
     @Body() body: {
@@ -6455,69 +7722,412 @@ export class OperationsController {
       ubicacionEscaneada?: string;
       cajaEscaneada?: string;
       usuario?: string;
+      taskUbicacionCodigo?: string;
+      taskLotId?: string;
+      taskCantidadPickeada?: number;
+      asignacionesActualizadas?: any[];
+      esAjusteManual?: boolean;
+      motivoAjuste?: string;
     },
   ) {
-    const line = await this.prisma.salesOrderLine.findUnique({
-      where: { id: body.lineId },
-      include: { orden: { include: { lineas: true } } },
-    });
-    if (!line) throw new HttpException('Línea de pedido no encontrada', HttpStatus.NOT_FOUND);
+    return await this.prisma.$transaction(async (tx) => {
+      // 0. Bloqueo de Bypass: Si se intenta ajuste manual sin flujo formal de supervisor activo
+      if (body.esAjusteManual) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.FORBIDDEN,
+            code: 'AJUSTE_MANUAL_NO_AUTORIZADO',
+            codigoError: 'AJUSTE_MANUAL_NO_AUTORIZADO',
+            message: 'El ajuste manual por excepción se encuentra deshabilitado. El surtido requiere validación física mediante escaneo de Rack y Caja/HU.',
+            motivo: 'Protocolo formal de supervisor no habilitado para excepciones directas.',
+            error: 'Forbidden',
+          },
+          HttpStatus.FORBIDDEN,
+        );
+      }
 
-    const newQty = Math.max(0, Math.min(body.cantidadPickeada, line.cantidadSolicitada));
-    const isCompleted = newQty >= line.cantidadSolicitada;
+      // Bloqueo de Bypass: Si se intenta registrar cantidad > 0 sin los escaneos físicos
+      if (body.cantidadPickeada > 0 && (!body.ubicacionEscaneada || !body.cajaEscaneada)) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            code: 'ESCANEO_FISICO_OBLIGATORIO',
+            codigoError: 'ESCANEO_FISICO_OBLIGATORIO',
+            message: 'Se requiere el escaneo obligatorio de Rack y Caja/HU para confirmar el picking.',
+            motivo: 'Falta registro de ubicación física o etiqueta de caja escaneada.',
+            error: 'Bad Request',
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
 
-    await this.prisma.salesOrderLine.update({
-      where: { id: body.lineId },
-      data: {
+      // 1. Revalidación canónica obligatoria bajo transacción antes de cualquier mutación
+      const validation = await validatePickingEligibility(
+        tx,
+        {
+          orderId: id,
+          lineId: body.lineId,
+          requestedQty: body.cantidadPickeada,
+          taskLotId: body.taskLotId,
+          taskUbicacionCodigo: body.taskUbicacionCodigo,
+          businessDate: new Date(),
+        },
+        { throwOnConflict: true },
+      );
+
+      const line = validation.line;
+
+      // 2. Validación autoritativa de la Handling Unit en confirmación mutante
+      if (body.cajaEscaneada) {
+        const rawCaja = body.cajaEscaneada.trim();
+        const cleanCaja = rawCaja.toUpperCase();
+        const skuCodigo = (line.sku?.codigo || '').toUpperCase();
+        const loteAsignado = (validation.freshLot?.lote || line.loteAsignado || '').toUpperCase();
+
+        if (cleanCaja === skuCodigo || cleanCaja === loteAsignado) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'HU_REQUERIDA',
+              codigoError: 'HU_REQUERIDA',
+              message: 'Esta operación requiere una unidad de manejo física. Escanea la etiqueta Code-128 de la caja/HU.',
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        const hu = await tx.handlingUnit.findFirst({
+          where: { codigo: { equals: rawCaja, mode: 'insensitive' } },
+        });
+
+        if (!hu) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'HU_NO_ENCONTRADA',
+              codigoError: 'HU_NO_ENCONTRADA',
+              message: `Unidad de manejo no encontrada: La etiqueta "${rawCaja}" no corresponde a ninguna caja/HU registrada.`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        if (hu.estadoHu !== 'ACTIVO') {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'HU_NO_ACTIVA',
+              codigoError: 'HU_NO_ACTIVA',
+              message: `Caja no disponible: La HU "${rawCaja}" se encuentra en estado ${hu.estadoHu}.`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        const huSku = (hu.skuCodigo || '').toUpperCase();
+        if (huSku !== skuCodigo && hu.lotId !== validation.targetLotId) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'HU_SKU_NO_COINCIDE',
+              codigoError: 'HU_SKU_NO_COINCIDE',
+              message: `La caja "${rawCaja}" contiene ${huSku}, pero la orden requiere ${skuCodigo}.`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        const huLote = (hu.loteTexto || '').toUpperCase();
+        if (loteAsignado && huLote !== loteAsignado) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'HU_LOTE_NO_COINCIDE',
+              codigoError: 'HU_LOTE_NO_COINCIDE',
+              message: `La caja "${rawCaja}" pertenece al lote "${huLote}", pero la orden tiene asignado "${loteAsignado}".`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+      }
+
+      let stagingTransferResult: any = null;
+      const usuarioResponsable = body.usuario || line.orden?.surtidor || 'Surtidor';
+
+      if (body.cajaEscaneada) {
+        stagingTransferResult = await transferHuToStaging(tx, {
+          orderId: id,
+          orderCodigo: line.orden?.codigo,
+          lineId: body.lineId,
+          huCode: body.cajaEscaneada,
+          rackLocationCode: body.ubicacionEscaneada || line.ubicacionAsignada || validation.targetLocCodigo,
+          usuario: usuarioResponsable,
+        });
+      }
+
+      const newQty = Math.max(0, Math.min(body.cantidadPickeada, line.cantidadSolicitada));
+      const isCompleted = newQty >= line.cantidadSolicitada;
+
+      const updateData: any = {
         cantidadPickeada: newQty,
         cantidadAsignada: newQty,
         ubicacionEscaneada: body.ubicacionEscaneada || line.ubicacionEscaneada,
         cajaEscaneada: body.cajaEscaneada || line.cajaEscaneada,
         pickingCompletado: isCompleted,
         fechaPicking: new Date(),
-      },
-    });
+      };
 
-    const allLines = await this.prisma.salesOrderLine.findMany({
-      where: { orderId: line.orderId },
-    });
+      if (stagingTransferResult) {
+        updateData.huId = stagingTransferResult.huId;
+        let parsedAsignaciones: any[] = [];
+        if (body.asignacionesActualizadas && Array.isArray(body.asignacionesActualizadas)) {
+          parsedAsignaciones = body.asignacionesActualizadas;
+        } else if (line.asignacionesJson) {
+          try {
+            const p = JSON.parse(line.asignacionesJson);
+            if (Array.isArray(p)) parsedAsignaciones = p;
+          } catch (_) {}
+        }
+        const matchingAlloc = parsedAsignaciones[0] || {};
+        matchingAlloc.huId = stagingTransferResult.huId;
+        matchingAlloc.huCodigo = stagingTransferResult.huCodigo;
+        matchingAlloc.stagingLocationId = stagingTransferResult.stagingLocation.id;
+        matchingAlloc.stagingLocationCodigo = stagingTransferResult.stagingLocation.codigo;
+        matchingAlloc.stagingLotId = stagingTransferResult.stagingLotId;
+        const currentCajas = Array.isArray(matchingAlloc.cajasEscaneadas) ? matchingAlloc.cajasEscaneadas : [];
+        if (!currentCajas.includes(stagingTransferResult.huCodigo)) {
+          matchingAlloc.cajasEscaneadas = [...currentCajas, stagingTransferResult.huCodigo];
+        }
+        updateData.asignacionesJson = JSON.stringify(parsedAsignaciones.length > 0 ? parsedAsignaciones : [matchingAlloc]);
+      } else if (body.asignacionesActualizadas && Array.isArray(body.asignacionesActualizadas)) {
+        updateData.asignacionesJson = JSON.stringify(body.asignacionesActualizadas);
+      }
 
-    const orderFullyPicked = allLines.every(l =>
-      l.id === body.lineId ? isCompleted : l.pickingCompletado || l.cantidadPickeada >= l.cantidadSolicitada,
-    );
-
-    let updatedOrder: any = null;
-    if (orderFullyPicked) {
-      updatedOrder = await this.prisma.salesOrder.update({
-        where: { id: line.orderId },
-        data: {
-          estado: 'CONSOLIDADO',
-          fechaFinPicking: new Date(),
-        },
-        include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
+      await tx.salesOrderLine.update({
+        where: { id: body.lineId },
+        data: updateData,
       });
 
-      await this.audit(
-        body.usuario || line.orden.surtidor || 'Surtidor',
-        'PICKING_COMPLETADO',
-        'SalesOrder',
-        line.orderId,
-        `Pedido ${line.orden.codigo} consolidado al 100% listo para despacho`,
+      await tx.auditLog.create({
+        data: {
+          usuario: usuarioResponsable,
+          accion: 'PICKING_LINEA_REGISTRADO',
+          entidad: 'SalesOrderLine',
+          entidadId: line.id,
+          detalle: `Picking registrado para orden ${line.orden?.codigo || id}: ${newQty} pzas pickeadas en ${validation.targetLocCodigo} (Lote: ${validation.freshLot.lote})`,
+        },
+      });
+
+      const allLines = await tx.salesOrderLine.findMany({
+        where: { orderId: line.orderId },
+      });
+
+      const orderFullyPicked = allLines.every(l =>
+        l.id === body.lineId ? isCompleted : l.pickingCompletado || l.cantidadPickeada >= l.cantidadSolicitada,
       );
+
+      let updatedOrder: any = null;
+      if (orderFullyPicked) {
+        updatedOrder = await tx.salesOrder.update({
+          where: { id: line.orderId },
+          data: {
+            estado: 'CONSOLIDADO',
+            fechaFinPicking: new Date(),
+          },
+          include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            usuario: usuarioResponsable,
+            accion: 'PICKING_COMPLETADO',
+            entidad: 'SalesOrder',
+            entidadId: line.orderId,
+            detalle: `Pedido ${line.orden?.codigo || id} consolidado al 100% bajo protocolo de revalidación canónica`,
+          },
+        });
+      }
+
+      return {
+        success: true,
+        lineId: body.lineId,
+        cantidadPickeada: newQty,
+        lineCompleted: isCompleted,
+        orderFullyPicked,
+        order: updatedOrder,
+      };
+    });
+  }
+
+  @Post('orders/:id/pick')
+  @ApiOperation({ summary: 'Fase 6: Pickear unidades de rack bajo protocolo transaccional con bloqueo pesimista (Etapa 5A.1)' })
+  async pickOrderItem(
+    @Param('id') id: string,
+    @Body() body: {
+      lineId: string;
+      cantidadPickeada: number;
+      lotId?: string;
+      ubicacionId?: string;
+      huId?: string;
+      cajaEscaneada?: string;
+      ubicacionEscaneada?: string;
+      usuario?: string;
+    },
+  ) {
+    const line = await this.prisma.salesOrderLine.findUnique({
+      where: { id: body.lineId },
+      include: { orden: { include: { lineas: true } }, lote: true },
+    });
+    if (!line) throw new HttpException('Línea de pedido no encontrada', HttpStatus.NOT_FOUND);
+
+    const targetLotId = body.lotId || line.lotId;
+    let targetLocId = body.ubicacionId || line.lote?.ubicacionId;
+
+    if (!targetLocId && targetLotId) {
+      const lotRec = await this.prisma.lotInventory.findUnique({ where: { id: targetLotId } });
+      if (lotRec?.ubicacionId) targetLocId = lotRec.ubicacionId;
     }
 
-    return {
-      success: true,
-      lineId: body.lineId,
-      cantidadPickeada: newQty,
-      lineCompleted: isCompleted,
-      orderFullyPicked,
-      order: updatedOrder,
-    };
+    const locationIds = targetLocId ? [targetLocId] : [];
+    const huIds = body.huId ? [body.huId] : [];
+
+    return await this.putawayEngine.executePhysicalMovementProtocol(
+      this.prisma,
+      {
+        huIds,
+        locationIds,
+        opName: 'pickOrderItem',
+      },
+      async (tx) => {
+        // Revalidación canónica compartida y centralizada bajo transacción
+        const validation = await validatePickingEligibility(
+          tx,
+          {
+            orderId: id,
+            lineId: body.lineId,
+            requestedQty: body.cantidadPickeada,
+            taskLotId: targetLotId,
+            taskUbicacionCodigo: body.ubicacionEscaneada,
+            businessDate: new Date(),
+          },
+          { throwOnConflict: true },
+        );
+
+        let stagingTransferResult: any = null;
+        const usuarioResponsable = body.usuario || line.orden?.surtidor || 'Surtidor';
+
+        const huCodeToTransfer = body.cajaEscaneada || (body.huId ? (await tx.handlingUnit.findUnique({ where: { id: body.huId } }))?.codigo : null);
+        if (huCodeToTransfer) {
+          stagingTransferResult = await transferHuToStaging(tx, {
+            orderId: id,
+            orderCodigo: line.orden?.codigo,
+            lineId: body.lineId,
+            huCode: huCodeToTransfer,
+            rackLocationCode: body.ubicacionEscaneada || line.ubicacionAsignada || validation.targetLocCodigo,
+            usuario: usuarioResponsable,
+          });
+        }
+
+        const qty = Math.max(0, Math.min(body.cantidadPickeada, line.cantidadSolicitada));
+        const isCompleted = qty >= line.cantidadSolicitada;
+
+        const updateData: any = {
+          cantidadPickeada: qty,
+          cantidadAsignada: qty,
+          ubicacionEscaneada: body.ubicacionEscaneada || line.ubicacionEscaneada,
+          cajaEscaneada: body.cajaEscaneada || line.cajaEscaneada,
+          pickingCompletado: isCompleted,
+          fechaPicking: new Date(),
+        };
+
+        if (stagingTransferResult) {
+          updateData.huId = stagingTransferResult.huId;
+          let parsedAsignaciones: any[] = [];
+          if (line.asignacionesJson) {
+            try {
+              const p = JSON.parse(line.asignacionesJson);
+              if (Array.isArray(p)) parsedAsignaciones = p;
+            } catch (_) {}
+          }
+          const matchingAlloc = parsedAsignaciones[0] || {};
+          matchingAlloc.huId = stagingTransferResult.huId;
+          matchingAlloc.huCodigo = stagingTransferResult.huCodigo;
+          matchingAlloc.stagingLocationId = stagingTransferResult.stagingLocation.id;
+          matchingAlloc.stagingLocationCodigo = stagingTransferResult.stagingLocation.codigo;
+          matchingAlloc.stagingLotId = stagingTransferResult.stagingLotId;
+          const currentCajas = Array.isArray(matchingAlloc.cajasEscaneadas) ? matchingAlloc.cajasEscaneadas : [];
+          if (!currentCajas.includes(stagingTransferResult.huCodigo)) {
+            matchingAlloc.cajasEscaneadas = [...currentCajas, stagingTransferResult.huCodigo];
+          }
+          updateData.asignacionesJson = JSON.stringify(parsedAsignaciones.length > 0 ? parsedAsignaciones : [matchingAlloc]);
+        }
+
+        // Actualizar línea de pedido
+        await tx.salesOrderLine.update({
+          where: { id: body.lineId },
+          data: updateData,
+        });
+
+        await tx.auditLog.create({
+          data: {
+            usuario: usuarioResponsable,
+            accion: 'PICKING_LINEA_REGISTRADO',
+            entidad: 'SalesOrderLine',
+            entidadId: line.id,
+            detalle: `Picking registrado para orden ${line.orden.codigo}: ${qty} pzas pickeadas en ${validation.targetLocCodigo} (Lote: ${validation.freshLot.lote})`,
+          },
+        });
+
+        const allLines = await tx.salesOrderLine.findMany({
+          where: { orderId: line.orderId },
+        });
+
+        const orderFullyPicked = allLines.every(l =>
+          l.id === body.lineId ? isCompleted : l.pickingCompletado || l.cantidadPickeada >= l.cantidadSolicitada,
+        );
+
+        let updatedOrder: any = null;
+        if (orderFullyPicked) {
+          updatedOrder = await tx.salesOrder.update({
+            where: { id: line.orderId },
+            data: {
+              estado: 'CONSOLIDADO',
+              fechaFinPicking: new Date(),
+            },
+            include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
+          });
+
+          await tx.auditLog.create({
+            data: {
+              usuario: usuarioResponsable,
+              accion: 'PICKING_COMPLETADO',
+              entidad: 'SalesOrder',
+              entidadId: line.orderId,
+              detalle: `Pedido ${line.orden.codigo} consolidado al 100% bajo protocolo de concurrencia`,
+            },
+          });
+        }
+
+        return {
+          success: true,
+          message: `Picking registrado exitosamente para línea ${line.id} (${qty} pzas)`,
+          lineId: body.lineId,
+          cantidadPickeada: qty,
+          lineCompleted: isCompleted,
+          orderFullyPicked,
+          order: updatedOrder,
+        };
+      },
+    );
   }
 
   @Post('orders/:id/dispatch')
-  @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario físico y reservas, liberando ubicaciones' })
+  @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario físico y reservas bajo protocolo transaccional de concurrencia (Etapa 5A.1)' })
   async dispatchOrder(
     @Param('id') id: string,
     @Body() data: {
@@ -6545,6 +8155,14 @@ export class OperationsController {
       },
     });
     if (!fullOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+    const plannedDeductions: Array<{
+      line: any;
+      allocations: Array<{ lotId: string; cantidad: number; ubicacionId?: string }>;
+    }> = [];
+
+    const allLotIds: string[] = [];
+    const allLocIds: string[] = [];
 
     for (const line of fullOrder.lineas) {
       let allocationsToDeduct: Array<{ lotId: string; cantidad: number; ubicacionId?: string }> = [];
@@ -6575,11 +8193,12 @@ export class OperationsController {
       // 3. Fallback FEFO si no hubo asignación previa
       if (allocationsToDeduct.length === 0) {
         let remaining = line.cantidadSolicitada;
-        const candidateLots = await this.prisma.lotInventory.findMany({
+        const candidateLotsRaw = await this.prisma.lotInventory.findMany({
           where: { skuId: line.skuId, clienteId: fullOrder.clienteId, cantidadDisponible: { gt: 0 }, estadoCalidad: 'LIBERADO' },
           orderBy: { fechaVencimiento: 'asc' },
-          include: { ubicacion: true },
+          include: { ubicacion: { include: { zona: true, almacen: true } } },
         });
+        const candidateLots = candidateLotsRaw.filter(cl => classifyLocationOperationalRole(cl.ubicacion).esVendible);
         for (const cl of candidateLots) {
           if (remaining <= 0) break;
           const take = Math.min(remaining, cl.cantidadDisponible);
@@ -6588,99 +8207,206 @@ export class OperationsController {
         }
       }
 
-      // Procesar cada deducción física
-      let totalDeductedForLine = 0;
-      for (const alloc of allocationsToDeduct) {
-        if (alloc.cantidad <= 0) continue;
-        const lot = await this.prisma.lotInventory.findUnique({
-          where: { id: alloc.lotId },
-          include: { ubicacion: true },
-        });
-        if (!lot) continue;
-
-        const toTake = Math.min(alloc.cantidad, lot.cantidadDisponible);
-        const reservedToDeduct = Math.min(toTake, lot.cantidadReservada);
-
-        await this.prisma.lotInventory.update({
-          where: { id: lot.id },
-          data: {
-            cantidadDisponible: { decrement: toTake },
-            cantidadReservada: { decrement: reservedToDeduct },
-          },
-        });
-        totalDeductedForLine += toTake;
-
-        // Liberar ubicación física si el inventario queda en 0
-        if (lot.ubicacionId) {
-          const remainingInLocation = await this.prisma.lotInventory.aggregate({
-            where: { ubicacionId: lot.ubicacionId, id: { not: lot.id } },
-            _sum: { cantidadDisponible: true },
-          });
-          const otherQty = remainingInLocation._sum.cantidadDisponible || 0;
-          const thisRemaining = lot.cantidadDisponible - toTake;
-          if (thisRemaining <= 0 && otherQty <= 0) {
-            await this.prisma.location.update({
-              where: { id: lot.ubicacionId },
-              data: { ocupacion: 0, estado: 'LIBRE' },
-            });
-          }
-        }
-
-        // Trazabilidad Kárdex oficial Giving Out
-        await this.prisma.inventoryMovement.create({
-          data: {
-            tipoMovimiento: 'SALIDA_PEDIDO',
-            skuId: line.skuId,
-            clienteId: fullOrder.clienteId,
-            lotId: lot.id,
-            fromLocationId: lot.ubicacionId || undefined,
-            cantidad: toTake,
-            usuario: data.despachador,
-            motivo: `Despacho ${fullOrder.codigo} → ${(fullOrder as any).endCustomer?.nombre || fullOrder.cliente.nombreComercial}`,
-            documentoOrigen: fullOrder.codigo,
-          },
-        });
-
-        // Actualizar HandlingUnits asociados a DESPACHADO
-        await this.prisma.handlingUnit.updateMany({
-          where: { lotId: lot.id, clienteId: fullOrder.clienteId, estadoHu: 'ACTIVO' },
-          data: { estadoHu: 'DESPACHADO' },
-        }).catch(() => null);
+      plannedDeductions.push({ line, allocations: allocationsToDeduct });
+      for (const a of allocationsToDeduct) {
+        if (a.lotId) allLotIds.push(a.lotId);
+        if (a.ubicacionId) allLocIds.push(a.ubicacionId);
       }
-
-      await this.prisma.salesOrderLine.update({
-        where: { id: line.id },
-        data: {
-          cantidadAsignada: totalDeductedForLine,
-          pickingCompletado: true,
-          cantidadPickeada: line.cantidadPickeada || totalDeductedForLine,
-        },
-      });
     }
 
-    const folioManifiesto = data.folioManifiesto || `MAN-${fullOrder.codigo}`;
-
-    const order = await this.prisma.salesOrder.update({
-      where: { id: fullOrder.id },
-      data: {
-        estado: 'DESPACHADO',
-        despachador: data.despachador,
-        fechaDespacho: new Date(),
-        vehiculoPlaca: data.vehiculoPlaca,
-        estadoEntrega: 'EN_RUTA',
-        tipoTransporte: data.tipoTransporte || 'DIRECTO',
-        paqueteria: data.paqueteria,
-        numeroGuia: data.numeroGuia,
-        fletera: data.fletera,
-        choferNombre: data.choferNombre,
-        choferLicencia: data.choferLicencia,
-        selloSeguridad: data.selloSeguridad,
-        firmaDespachador: data.firmaDespachador,
-        firmaChofer: data.firmaChofer,
-        folioManifiesto,
+    // Identificar HandlingUnits activas asociadas a los lotes a despachar
+    const candidateHus = await this.prisma.handlingUnit.findMany({
+      where: {
+        lotId: { in: [...new Set(allLotIds)] },
+        clienteId: fullOrder.clienteId,
+        estadoHu: 'ACTIVO',
       },
-      include: { cliente: true, endCustomer: true },
+      select: { id: true },
     });
+    const huIds = candidateHus.map(h => h.id);
+    const locationIds = [...new Set(allLocIds.filter(Boolean))];
+
+    const folioManifiesto = data.folioManifiesto && !data.folioManifiesto.startsWith('PRE-')
+      ? data.folioManifiesto
+      : (fullOrder.folioManifiesto && !fullOrder.folioManifiesto.startsWith('PRE-')
+          ? fullOrder.folioManifiesto
+          : `MAN-${fullOrder.codigo}`);
+
+    const order = await this.putawayEngine.executePhysicalMovementProtocol(
+      this.prisma,
+      {
+        huIds,
+        locationIds,
+        opName: 'dispatchOrder',
+      },
+      async (tx) => {
+        for (const { line, allocations } of plannedDeductions) {
+          let totalDeductedForLine = 0;
+
+          // 1. Identificar HUs recolectadas formalmente para esta línea
+          let linePickedHuCodes: string[] = [];
+          if (line.cajaEscaneada) {
+            linePickedHuCodes.push(...line.cajaEscaneada.split(',').map((s: string) => s.trim().toUpperCase()));
+          }
+          if (line.asignacionesJson) {
+            try {
+              const parsed = JSON.parse(line.asignacionesJson);
+              if (Array.isArray(parsed)) {
+                parsed.forEach((a: any) => {
+                  if (a.huCodigo) linePickedHuCodes.push(a.huCodigo.toUpperCase());
+                  if (Array.isArray(a.cajasEscaneadas)) {
+                    linePickedHuCodes.push(...a.cajasEscaneadas.map((c: string) => c.toUpperCase()));
+                  }
+                });
+              }
+            } catch (_) {}
+          }
+          linePickedHuCodes = [...new Set(linePickedHuCodes.filter(Boolean))];
+
+          if (linePickedHuCodes.length > 0) {
+            // Despacho HU-Managed estricto: Descontar solo las HUs pickeadas y marcarlas a DESPACHADO
+            const husToDispatch = await tx.handlingUnit.findMany({
+              where: {
+                codigo: { in: linePickedHuCodes },
+                clienteId: fullOrder.clienteId,
+                estadoHu: 'ACTIVO',
+              },
+              include: {
+                lote: { include: { ubicacion: true } },
+              },
+            });
+
+            for (const hu of husToDispatch) {
+              const huQty = Number(hu.cantidad || hu.piezasPorCaja || 0);
+              if (huQty <= 0) continue;
+
+              // Descontar del LotInventory donde reside la HU (Staging)
+              if (hu.lotId) {
+                const stagingLot = await tx.lotInventory.findUnique({
+                  where: { id: hu.lotId },
+                  include: { ubicacion: true },
+                });
+                if (stagingLot) {
+                  const toTake = Math.min(huQty, stagingLot.cantidadDisponible);
+                  const reservedToDeduct = Math.min(toTake, stagingLot.cantidadReservada);
+
+                  await tx.lotInventory.update({
+                    where: { id: stagingLot.id },
+                    data: {
+                      cantidadDisponible: { decrement: toTake },
+                      cantidadReservada: { decrement: reservedToDeduct },
+                    },
+                  });
+                  totalDeductedForLine += toTake;
+                }
+              }
+
+              // Marcar ÚNICAMENTE esta HU como DESPACHADO (nunca tocar HUs hermanas no surtidas)
+              await tx.handlingUnit.update({
+                where: { id: hu.id },
+                data: { estadoHu: 'DESPACHADO' },
+              });
+
+              // Trazabilidad Kárdex oficial Giving Out
+              await tx.inventoryMovement.create({
+                data: {
+                  tipoMovimiento: 'SALIDA_PEDIDO',
+                  skuId: line.skuId,
+                  clienteId: fullOrder.clienteId,
+                  lotId: hu.lotId,
+                  huId: hu.id,
+                  fromLocationId: hu.lote?.ubicacionId || undefined,
+                  toLocationId: null,
+                  cantidad: huQty,
+                  usuario: data.despachador,
+                  motivo: `Despacho ${fullOrder.codigo} (HU ${hu.codigo}) → ${(fullOrder as any).endCustomer?.nombre || fullOrder.cliente.nombreComercial}`,
+                  documentoOrigen: fullOrder.codigo,
+                },
+              });
+            }
+          } else {
+            // Fallback para líneas legado sin HUs
+            for (const alloc of allocations) {
+              if (alloc.cantidad <= 0) continue;
+              const lot = await tx.lotInventory.findUnique({
+                where: { id: alloc.lotId },
+                include: { ubicacion: true },
+              });
+              if (!lot) continue;
+
+              const toTake = Math.min(alloc.cantidad, lot.cantidadDisponible);
+              const reservedToDeduct = Math.min(toTake, lot.cantidadReservada);
+
+              await tx.lotInventory.update({
+                where: { id: lot.id },
+                data: {
+                  cantidadDisponible: { decrement: toTake },
+                  cantidadReservada: { decrement: reservedToDeduct },
+                },
+              });
+              totalDeductedForLine += toTake;
+
+              await tx.inventoryMovement.create({
+                data: {
+                  tipoMovimiento: 'SALIDA_PEDIDO',
+                  skuId: line.skuId,
+                  clienteId: fullOrder.clienteId,
+                  lotId: lot.id,
+                  fromLocationId: lot.ubicacionId || undefined,
+                  cantidad: toTake,
+                  usuario: data.despachador,
+                  motivo: `Despacho ${fullOrder.codigo} → ${(fullOrder as any).endCustomer?.nombre || fullOrder.cliente.nombreComercial}`,
+                  documentoOrigen: fullOrder.codigo,
+                },
+              });
+            }
+          }
+
+          await tx.salesOrderLine.update({
+            where: { id: line.id },
+            data: {
+              cantidadAsignada: totalDeductedForLine,
+              pickingCompletado: true,
+              cantidadPickeada: line.cantidadPickeada || totalDeductedForLine,
+            },
+          });
+        }
+
+        const updatedOrder = await tx.salesOrder.update({
+          where: { id: fullOrder.id },
+          data: {
+            estado: 'DESPACHADO',
+            despachador: data.despachador,
+            fechaDespacho: new Date(),
+            vehiculoPlaca: data.vehiculoPlaca,
+            estadoEntrega: 'EN_RUTA',
+            tipoTransporte: data.tipoTransporte || 'DIRECTO',
+            paqueteria: data.paqueteria,
+            numeroGuia: data.numeroGuia,
+            fletera: data.fletera,
+            choferNombre: data.choferNombre,
+            choferLicencia: data.choferLicencia,
+            selloSeguridad: data.selloSeguridad,
+            firmaDespachador: data.firmaDespachador,
+            firmaChofer: data.firmaChofer,
+            folioManifiesto,
+          },
+          include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            usuario: data.despachador,
+            accion: 'ORDEN_DESPACHADA',
+            entidad: 'SalesOrder',
+            entidadId: fullOrder.id,
+            detalle: `Despacho de pedido ${fullOrder.codigo} completado bajo protocolo transaccional. Manifiesto: ${folioManifiesto}. Chofer: ${data.choferNombre || 'N/A'}. Placas: ${data.vehiculoPlaca || 'N/A'}.`,
+          },
+        });
+
+        return updatedOrder;
+      },
+    );
 
     await this.prisma.dispatchTracking.create({
       data: {
@@ -6717,12 +8443,23 @@ export class OperationsController {
     if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
     const lotIdsToFetch: string[] = [];
+    const huCodesToFetch: string[] = [];
+
     order.lineas.forEach(l => {
+      if (l.cajaEscaneada) {
+        l.cajaEscaneada.split(',').forEach((c: string) => { if (c.trim()) huCodesToFetch.push(c.trim()); });
+      }
       if (l.asignacionesJson) {
         try {
           const parsed = typeof l.asignacionesJson === 'string' ? JSON.parse(l.asignacionesJson) : l.asignacionesJson;
           if (Array.isArray(parsed)) {
-            parsed.forEach((a: any) => { if (a.lotId) lotIdsToFetch.push(a.lotId); });
+            parsed.forEach((a: any) => {
+              if (a.lotId) lotIdsToFetch.push(a.lotId);
+              if (a.huCodigo) huCodesToFetch.push(a.huCodigo);
+              if (Array.isArray(a.cajasEscaneadas)) {
+                a.cajasEscaneadas.forEach((c: string) => { if (c) huCodesToFetch.push(c); });
+              }
+            });
           }
         } catch {}
       }
@@ -6737,6 +8474,16 @@ export class OperationsController {
       dbLots.forEach(dl => lotsMap.set(dl.id, dl));
     }
 
+    const husMap = new Map<string, any>();
+    if (huCodesToFetch.length > 0) {
+      const dbHus = await this.prisma.handlingUnit.findMany({
+        where: { codigo: { in: [...new Set(huCodesToFetch)] } },
+        include: { lote: { include: { ubicacion: true } } },
+      });
+      dbHus.forEach(h => husMap.set(h.codigo.toUpperCase(), h));
+    }
+
+    const isDispatched = order.estado === 'DESPACHADO' || order.estado === 'ENTREGADO';
     const lineasDesglose: any[] = [];
     let totalCajas = 0;
     let totalPiezas = 0;
@@ -6759,18 +8506,32 @@ export class OperationsController {
           totalCajas += boxesCount;
           totalPiezas += qty;
 
+          const firstHuCode = hus[0] || (l.cajaEscaneada ? l.cajaEscaneada.split(',')[0]?.trim() : null);
+          const matchedHu = firstHuCode ? husMap.get(firstHuCode.toUpperCase()) : null;
+          const stagingUbi = a.stagingLocationCodigo ||
+            (matchedHu?.lote?.ubicacion?.codigo?.startsWith('STG') ? matchedHu.lote.ubicacion.codigo : null) ||
+            (matchedHu?.ubicacionActual?.startsWith('STG') ? matchedHu.ubicacionActual : null) ||
+            (order.estado === 'CONSOLIDADO' || order.estado === 'DESPACHADO' ? 'STG-01' : null) ||
+            'STG-01';
+
           lineasDesglose.push({
             lineaId: l.id,
             sku: l.sku.codigo,
             descripcion: l.sku.descripcion,
             cantidadSolicitada: l.cantidadSolicitada,
-            cantidadDespachada: qty,
+            cantidadDespachada: isDispatched ? qty : 0,
+            cantidadPreparada: qty,
             lote: a.lote || dl?.lote || l.loteAsignado || 'N/A',
             caducidad: a.caducidad || dl?.fechaVencimiento || l.lote?.fechaVencimiento || null,
             ubicacion: a.ubicacionCodigo || dl?.ubicacion?.codigo || l.ubicacionAsignada || 'RACK',
+            rackOrigen: a.ubicacionCodigo || dl?.ubicacion?.codigo || l.ubicacionAsignada || 'RACK',
+            stagingUbicacion: stagingUbi,
             cajasEscaneadas: hus,
             huCodigo: hus.length > 0 ? hus.join(', ') : 'N/A',
             totalCajas: boxesCount,
+            totalHus: boxesCount,
+            totalBultos: boxesCount,
+            totalPiezas: qty,
             uom: l.sku.uomBase || 'PZA',
           });
         }
@@ -6778,32 +8539,53 @@ export class OperationsController {
         const qty = l.cantidadPickeada || l.cantidadSolicitada || 0;
         totalPiezas += qty;
         totalCajas += 1;
+
+        const firstHuCode = l.cajaEscaneada ? l.cajaEscaneada.split(',')[0]?.trim() : null;
+        const matchedHu = firstHuCode ? husMap.get(firstHuCode.toUpperCase()) : null;
+        const stagingUbi = (matchedHu?.lote?.ubicacion?.codigo?.startsWith('STG') ? matchedHu.lote.ubicacion.codigo : null) ||
+          (matchedHu?.ubicacionActual?.startsWith('STG') ? matchedHu.ubicacionActual : null) ||
+          (order.estado === 'CONSOLIDADO' || order.estado === 'DESPACHADO' ? 'STG-01' : null) ||
+          'STG-01';
+
         lineasDesglose.push({
           lineaId: l.id,
           sku: l.sku.codigo,
           descripcion: l.sku.descripcion,
           cantidadSolicitada: l.cantidadSolicitada,
-          cantidadDespachada: qty,
+          cantidadDespachada: isDispatched ? qty : 0,
+          cantidadPreparada: qty,
           lote: l.loteAsignado || l.lote?.lote || 'N/A',
           caducidad: l.lote?.fechaVencimiento || null,
           ubicacion: l.ubicacionAsignada || l.lote?.ubicacion?.codigo || 'RACK',
+          rackOrigen: l.ubicacionAsignada || l.lote?.ubicacion?.codigo || 'RACK',
+          stagingUbicacion: stagingUbi,
           cajasEscaneadas: l.cajaEscaneada ? l.cajaEscaneada.split(',').map((s: string) => s.trim()) : [],
           huCodigo: l.cajaEscaneada || 'N/A',
           totalCajas: 1,
+          totalHus: 1,
+          totalBultos: 1,
+          totalPiezas: qty,
           uom: l.sku.uomBase || 'PZA',
         });
       }
     }
 
-    const folio = order.folioManifiesto || `MAN-${order.codigo}`;
+    const folio = isDispatched
+      ? (order.folioManifiesto && !order.folioManifiesto.startsWith('PRE-') ? order.folioManifiesto : `MAN-${order.codigo}`)
+      : `PRE-${order.codigo}`;
 
     return {
       success: true,
       folio,
       order,
-      fechaEmbarque: order.fechaDespacho || new Date(),
-      totalBultos: totalPiezas,
-      totalCajas,
+      isDispatched,
+      esPreliminar: !isDispatched,
+      fechaEmbarque: order.fechaDespacho || null,
+      totalBultos: totalCajas,        // Semántica física real de manejo: 1 bulto / HU / caja
+      totalHus: totalCajas,           // Alias canónico de unidades de manejo
+      totalCajas: totalCajas,         // Alias canónico
+      totalPiezas: totalPiezas,       // Contenido real de piezas
+      totalUnidades: totalPiezas,     // Alias de unidades de producto
       lineasDesglose,
     };
   }
@@ -6811,36 +8593,125 @@ export class OperationsController {
   @Post('orders/:id/confirm-delivery')
   @ApiOperation({ summary: 'Confirmar entrega al cliente final' })
   async confirmDelivery(@Param('id') id: string, @Body() data: { usuario: string; nombreReceptor: string; notasEntrega?: string; firmaBase64?: string }) {
-    const order = await this.prisma.salesOrder.findUnique({ where: { id }, include: { cliente: true, endCustomer: true } });
-    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
-    const updated = await this.prisma.salesOrder.update({
-      where: { id },
-      data: {
-        estado: 'ENTREGADO',
-        estadoEntrega: 'ENTREGADO',
-        fechaEntrega: new Date(),
-        nombreReceptor: data.nombreReceptor,
-        notasEntrega: data.notasEntrega || null,
-        firmaReceptor: data.firmaBase64 || null,
+    return await this.prisma.$transaction(
+      async (tx) => {
+        // 1. Configurar lock_timeout para evitar bloqueos indefinidos
+        try {
+          if (typeof tx.$executeRawUnsafe === 'function') {
+            await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '5000ms'");
+          }
+        } catch {
+          // Fallback para entornos que no sean Postgres directo
+        }
+
+        // 2. Resolver id canónico de la orden
+        let orderId = id;
+        if (!isUuid) {
+          const found = await tx.salesOrder.findFirst({
+            where: { OR: [{ id }, { codigo: id }] },
+            select: { id: true },
+          });
+          if (!found) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+          orderId = found.id;
+        }
+
+        // 3. Bloqueo pesimista con FOR UPDATE en la fila de SalesOrder (concurrencia atómica)
+        try {
+          if (typeof tx.$queryRaw === 'function') {
+            await tx.$queryRaw`SELECT id FROM "SalesOrder" WHERE id = ${orderId} FOR UPDATE`;
+          } else if (typeof tx.$queryRawUnsafe === 'function') {
+            await tx.$queryRawUnsafe('SELECT id FROM "SalesOrder" WHERE id = $1 FOR UPDATE', orderId);
+          }
+        } catch {
+          // Fallback seguro si el motor mock o DB no soporta FOR UPDATE
+        }
+
+        // 4. Releer el estado canónico fresco de la orden dentro de la transacción
+        const order = await tx.salesOrder.findUnique({
+          where: { id: orderId },
+          include: { cliente: true, endCustomer: true },
+        });
+        if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+        // 5. Idempotencia backend real: si ya fue entregada, retornar sin mutar absolutamente nada
+        const isAlreadyDelivered = order.estado === 'ENTREGADO' || order.estadoEntrega === 'ENTREGADO';
+        if (isAlreadyDelivered) {
+          return {
+            success: true,
+            alreadyDelivered: true,
+            message: `La orden ${order.codigo} ya fue entregada previamente el ${order.fechaEntrega ? new Date(order.fechaEntrega).toISOString() : 'fecha no registrada'}. Operación idempotente: no se generaron cambios ni eventos duplicados.`,
+            order,
+          };
+        }
+
+        // 6. Validación de estado previo obligatorio
+        // Solo se permite confirmar entrega si el estado es DESPACHADO y estadoEntrega es EN_RUTA (o nulo por compatibilidad)
+        const isEligible = order.estado === 'DESPACHADO' && (!order.estadoEntrega || order.estadoEntrega === 'EN_RUTA');
+        if (!isEligible) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              error: 'ESTADO_NO_APTO_PARA_ENTREGA',
+              message: `No se puede confirmar la entrega de la orden ${order.codigo}. Su estado actual es "${order.estado}" (estadoEntrega: "${order.estadoEntrega || 'N/A'}"). Solo se permite confirmar entrega para órdenes en estado "DESPACHADO" con entrega "EN_RUTA".`,
+              estadoActual: order.estado,
+              estadoEntregaActual: order.estadoEntrega,
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        // 7. Validación de datos obligatorios de recepción
+        if (!data.nombreReceptor || !data.nombreReceptor.trim()) {
+          throw new HttpException('El nombre de la persona que recibe es obligatorio.', HttpStatus.BAD_REQUEST);
+        }
+
+        // 8. Inmutabilidad y actualización atómica de SalesOrder
+        const updated = await tx.salesOrder.update({
+          where: { id: order.id },
+          data: {
+            estado: 'ENTREGADO',
+            estadoEntrega: 'ENTREGADO',
+            fechaEntrega: new Date(),
+            nombreReceptor: data.nombreReceptor.trim(),
+            notasEntrega: data.notasEntrega?.trim() || null,
+            firmaReceptor: data.firmaBase64 || null,
+          },
+          include: { cliente: true, endCustomer: true },
+        });
+
+        // 9. Crear exactamente un DispatchTracking en la misma transacción
+        await tx.dispatchTracking.create({
+          data: {
+            orderId: order.id,
+            estado: 'ENTREGADO',
+            usuario: data.usuario || 'admin',
+            notas: `Recibió: ${data.nombreReceptor.trim()}${data.notasEntrega?.trim() ? ` — ${data.notasEntrega.trim()}` : ''}`,
+            nombreFirmante: data.nombreReceptor.trim(),
+            firmaBase64: data.firmaBase64 || null,
+          },
+        });
+
+        // 10. Crear exactamente un AuditLog en la misma transacción
+        await this.audit(
+          data.usuario || 'admin',
+          'ENTREGA_CONFIRMADA',
+          'SalesOrder',
+          order.id,
+          `${order.codigo} entregado a ${data.nombreReceptor.trim()} en ${(order as any).endCustomer?.nombre || 'destino'}`,
+          tx,
+        );
+
+        return {
+          success: true,
+          alreadyDelivered: false,
+          message: `Entrega de la orden ${order.codigo} confirmada exitosamente.`,
+          order: updated,
+        };
       },
-      include: { cliente: true, endCustomer: true },
-    });
-
-    await this.prisma.dispatchTracking.create({
-      data: {
-        orderId: id,
-        estado: 'ENTREGADO',
-        usuario: data.usuario,
-        notas: `Recibió: ${data.nombreReceptor}${data.notasEntrega ? ` — ${data.notasEntrega}` : ''}`,
-        nombreFirmante: data.nombreReceptor,
-        firmaBase64: data.firmaBase64,
-      },
-    });
-
-    await this.audit(data.usuario, 'ENTREGA_CONFIRMADA', 'SalesOrder', id,
-      `${order.codigo} entregado a ${data.nombreReceptor} en ${(order as any).endCustomer?.nombre || 'destino'}`);
-    return { success: true, order: updated };
+      { timeout: 10000 },
+    );
   }
 
   // ============ MOVEMENTS (manual) ============
@@ -6887,20 +8758,67 @@ export class OperationsController {
   async getCycleCounts(@Query('estado') estado?: string) {
     const where: any = {};
     if (estado) where.estado = estado;
-    return this.prisma.cycleCount.findMany({
+    const counts = await this.prisma.cycleCount.findMany({
       where,
       include: { lineas: { include: { sku: { select: { codigo: true, descripcion: true } } } } },
       orderBy: { fechaProgramada: 'desc' },
     });
+
+    // Enriquecer en memoria cualquier línea sin metadata de depositante a partir del inventario histórico/canónico (Read-Only)
+    for (const count of counts) {
+      for (const line of count.lineas) {
+        let parsed: any = null;
+        try {
+          if (line.notas && typeof line.notas === 'string' && line.notas.startsWith('{')) {
+            parsed = JSON.parse(line.notas);
+          }
+        } catch { }
+
+        if (!parsed || !parsed.clienteNombre) {
+          const lotWhere: any = { skuId: line.skuId };
+          if (line.ubicacionId) lotWhere.ubicacionId = line.ubicacionId;
+          if (line.lote) lotWhere.lote = line.lote;
+
+          const lot = await this.prisma.lotInventory.findFirst({
+            where: lotWhere,
+            include: { cliente: true, ubicacion: true },
+          });
+
+          if (lot) {
+            const clienteNombre = lot.cliente?.nombreComercial || lot.cliente?.razonSocial || null;
+            const clienteId = lot.clienteId || null;
+            const ubicacionCodigo = lot.ubicacion?.codigo || null;
+
+            const enrichedNotas = {
+              ...(parsed || {}),
+              clienteNombre: clienteNombre || parsed?.clienteNombre || null,
+              clienteId: clienteId || parsed?.clienteId || null,
+              ubicacionCodigo: ubicacionCodigo || parsed?.ubicacionCodigo || null,
+            };
+
+            (line as any).notas = JSON.stringify(enrichedNotas);
+            (line as any).clienteNombre = clienteNombre;
+          }
+        } else {
+          (line as any).clienteNombre = parsed.clienteNombre;
+        }
+      }
+    }
+
+    return counts;
   }
 
   @Post('cycle-counts')
-  @ApiOperation({ summary: 'Crear conteo cíclico' })
+  @ApiOperation({ summary: 'Crear conteo cíclico con snapshot granular inequívoco' })
   async createCycleCount(@Body() data: any) {
-    const lotWhere: any = { cantidadDisponible: { gt: 0 }, estadoCalidad: 'LIBERADO' };
+    const lotWhere: any = {};
+
+    if (data.almacenId) {
+      lotWhere.ubicacion = { ...(lotWhere.ubicacion || {}), almacenId: data.almacenId };
+    }
 
     if (data.tipo === 'ZONA' && data.zonaId) {
-      lotWhere.ubicacion = { zonaId: data.zonaId };
+      lotWhere.ubicacion = { ...(lotWhere.ubicacion || {}), zonaId: data.zonaId };
     } else if (data.tipo === 'UBICACION' && data.ubicacionId) {
       lotWhere.ubicacionId = data.ubicacionId;
     } else if (data.tipo === 'SKU' && data.skuId) {
@@ -6909,14 +8827,70 @@ export class OperationsController {
 
     const lots = await this.prisma.lotInventory.findMany({
       where: lotWhere,
-      include: { sku: true },
+      include: {
+        sku: true,
+        cliente: true,
+        ubicacion: { include: { zona: true } },
+        handlingUnits: { where: { estadoHu: 'ACTIVO' } },
+      },
     });
 
-    const lineMap = new Map<string, { skuId: string; ubicacionId: string | null; lote: string | null; total: number }>();
+    // Agrupación granular por SKU + UBICACION + LOTE (sin colapsar ubicaciones distintas)
+    const snapshotMap = new Map<string, {
+      skuId: string;
+      ubicacionId: string | null;
+      ubicacionCodigo: string | null;
+      lote: string | null;
+      lots: typeof lots;
+      totalFisico: number;
+      totalDisponible: number;
+      totalReservado: number;
+      totalBloqueado: number;
+      hus: any[];
+      clientes: Set<string>;
+      clientesNombres: Set<string>;
+    }>();
+
     for (const lot of lots) {
-      const key = lot.skuId;
-      if (lineMap.has(key)) { lineMap.get(key)!.total += lot.cantidadDisponible; }
-      else { lineMap.set(key, { skuId: lot.skuId, ubicacionId: lot.ubicacionId, lote: lot.lote, total: lot.cantidadDisponible }); }
+      // Si el conteo no es explícito de una ubicación específica, excluir ubicaciones de tránsito o no conformes
+      if (data.tipo !== 'UBICACION') {
+        const locRole = classifyLocationOperationalRole(lot.ubicacion);
+        if (locRole.esTransitoInterno || locRole.esNoConforme) {
+          continue; // No mezclar andenes, mermas o devoluciones en racks comerciales
+        }
+      }
+
+      const cleanLote = lot.lote ? lot.lote.trim() : null;
+      const key = `${lot.skuId}__${lot.ubicacionId || 'SIN_UBI'}__${cleanLote || 'SIN_LOTE'}`;
+
+      if (!snapshotMap.has(key)) {
+        snapshotMap.set(key, {
+          skuId: lot.skuId,
+          ubicacionId: lot.ubicacionId,
+          ubicacionCodigo: lot.ubicacion?.codigo || null,
+          lote: cleanLote,
+          lots: [],
+          totalFisico: 0,
+          totalDisponible: 0,
+          totalReservado: 0,
+          totalBloqueado: 0,
+          hus: [],
+          clientes: new Set(),
+          clientesNombres: new Set(),
+        });
+      }
+
+      const item = snapshotMap.get(key)!;
+      item.lots.push(lot);
+      item.totalFisico += (lot.cantidadDisponible + lot.cantidadReservada + lot.cantidadBloqueada);
+      item.totalDisponible += lot.cantidadDisponible;
+      item.totalReservado += lot.cantidadReservada;
+      item.totalBloqueado += lot.cantidadBloqueada;
+      if (lot.clienteId) item.clientes.add(lot.clienteId);
+      if (lot.cliente?.nombreComercial) item.clientesNombres.add(lot.cliente.nombreComercial);
+      if (lot.handlingUnits && lot.handlingUnits.length > 0) {
+        item.hus.push(...lot.handlingUnits);
+      }
     }
 
     return withConcurrencyRetry(async () => {
@@ -6934,14 +8908,47 @@ export class OperationsController {
 
       return this.prisma.cycleCount.create({
         data: {
-          codigo, nombre: data.nombre, tipo: data.tipo || 'SKU',
+          codigo,
+          nombre: data.nombre,
+          tipo: data.tipo || 'SKU',
           fechaProgramada: new Date(data.fechaProgramada),
-          almacenId: data.almacenId, asignadoA: data.asignadoA, notas: data.notas,
+          almacenId: data.almacenId,
+          asignadoA: data.asignadoA,
+          notas: data.notas,
           lineas: {
-            create: Array.from(lineMap.values()).map(item => ({
-              skuId: item.skuId, ubicacionId: item.ubicacionId,
-              lote: item.lote, cantidadSistema: item.total,
-            })),
+            create: Array.from(snapshotMap.values()).map(group => {
+              let bloqueoInicial: string | null = null;
+              if (group.clientes.size > 1) {
+                bloqueoInicial = 'SALDO_AMBIGUO_MULTI_CLIENTE';
+              } else if (group.lots.length > 1) {
+                bloqueoInicial = 'SALDO_AMBIGUO_MULTI_LOTE';
+              } else if (group.hus.length > 0) {
+                bloqueoInicial = 'REQUIERE_CONCILIACION_HU';
+              } else if (group.totalReservado > 0) {
+                bloqueoInicial = 'BLOQUEADO_POR_PROCESO';
+              }
+
+              const notasObj = {
+                ubicacionCodigo: group.ubicacionCodigo,
+                clienteId: Array.from(group.clientes)[0] || null,
+                clienteNombre: Array.from(group.clientesNombres)[0] || null,
+                disponible: group.totalDisponible,
+                reservado: group.totalReservado,
+                bloqueado: group.totalBloqueado,
+                tieneHUs: group.hus.length > 0,
+                huCount: group.hus.length,
+                huCodigos: group.hus.map(h => h.codigo),
+                bloqueoInicial,
+              };
+
+              return {
+                skuId: group.skuId,
+                ubicacionId: group.ubicacionId,
+                lote: group.lote,
+                cantidadSistema: group.totalFisico, // Magnitud física canónica esperada
+                notas: JSON.stringify(notasObj),
+              };
+            }),
           },
         },
         include: { lineas: { include: { sku: { select: { codigo: true, descripcion: true } } } } },
@@ -6952,19 +8959,28 @@ export class OperationsController {
   @Put('cycle-counts/:id/count')
   @ApiOperation({ summary: 'Registrar conteo físico de líneas' })
   async registerCycleCount(@Param('id') id: string, @Body() data: any) {
-    // data.lineas = [{ id: lineId, cantidadFisica: number }]
     const cc = await this.prisma.cycleCount.findUnique({ where: { id } });
-    if (!cc) throw new Error('Conteo no encontrado');
+    if (!cc) throw new HttpException('Conteo no encontrado', HttpStatus.NOT_FOUND);
+
+    if (cc.estado === 'COMPLETADO' || cc.estado === 'CERRADO') {
+      throw new HttpException('Operación rechazada: El conteo ya fue COMPLETADO y es inmutable.', HttpStatus.CONFLICT);
+    }
+    if (cc.estado === 'CANCELADO') {
+      throw new HttpException('Operación rechazada: El conteo está CANCELADO.', HttpStatus.CONFLICT);
+    }
 
     for (const line of data.lineas) {
-      const disc = line.cantidadFisica - (line.cantidadSistema || 0);
+      const disc = line.cantidadFisica !== null && line.cantidadFisica !== undefined
+        ? (Number(line.cantidadFisica) - (line.cantidadSistema || 0))
+        : null;
+
       await this.prisma.cycleCountLine.update({
         where: { id: line.id },
         data: {
-          cantidadFisica: line.cantidadFisica,
+          cantidadFisica: line.cantidadFisica !== null && line.cantidadFisica !== undefined ? Number(line.cantidadFisica) : null,
           discrepancia: disc,
-          porcentajeDisc: line.cantidadSistema ? (disc / line.cantidadSistema) * 100 : 0,
-          contadoPor: data.usuario || 'admin',
+          porcentajeDisc: (disc !== null && line.cantidadSistema) ? (disc / line.cantidadSistema) * 100 : 0,
+          contadoPor: data.usuario || 'Operador de Inventario',
           contadoEn: new Date(),
           estado: 'CONTADO',
         },
@@ -6973,92 +8989,387 @@ export class OperationsController {
 
     await this.prisma.cycleCount.update({
       where: { id },
-      data: { estado: 'EN_PROGRESO', fechaInicio: new Date() },
+      data: { estado: 'EN_PROGRESO', fechaInicio: cc.fechaInicio || new Date() },
     });
 
-    return { message: 'Conteo físico registrado', id };
+    return { message: 'Conteo físico registrado exitosamente', id };
+  }
+
+  @Post('cycle-counts/:id/reconcile')
+  @ApiOperation({ summary: 'Conciliar conteo cíclico y ajustar inventario real bajo protocolo transaccional (Etapa 5A.1)' })
+  async reconcileCycleCount(@Param('id') id: string, @Body() data: any, @Headers('authorization') authHeader?: string) {
+    return this.finalizeCycleCount(id, data, authHeader);
   }
 
   @Post('cycle-counts/:id/finalize')
-  @ApiOperation({ summary: 'Finalizar conteo y ajustar inventario real' })
-  async finalizeCycleCount(@Param('id') id: string, @Body() data: any) {
+  @ApiOperation({ summary: 'Finalizar conteo y ajustar inventario real bajo protocolo transaccional seguro' })
+  async finalizeCycleCount(@Param('id') id: string, @Body() data: any, @Headers('authorization') authHeader?: string) {
     const cc = await this.prisma.cycleCount.findUnique({
       where: { id },
       include: { lineas: { include: { sku: true } } },
     });
-    if (!cc) throw new Error('Conteo no encontrado');
+    if (!cc) throw new HttpException('Conteo no encontrado', HttpStatus.NOT_FOUND);
 
-    let adjustments = 0;
+    // 1. Candado de Inmutabilidad e Idempotencia
+    if (cc.estado === 'COMPLETADO' || cc.estado === 'CERRADO') {
+      throw new HttpException('Operación rechazada: El conteo ya está COMPLETADO e inmutable. No se permite re-finalización ni doble ajuste.', HttpStatus.CONFLICT);
+    }
+    if (cc.estado === 'CANCELADO') {
+      throw new HttpException('Operación rechazada: El conteo está CANCELADO.', HttpStatus.CONFLICT);
+    }
 
-    for (const line of cc.lineas) {
-      if (line.cantidadFisica === null) continue;
-      const diff = line.cantidadFisica - line.cantidadSistema;
-      if (diff === 0) continue;
+    // 2. Control de Permisos / Rol Reutilizable
+    let userRole = '';
+    let userEmail = data.usuario || '';
+    if (authHeader) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const decoded: any = jwt.verify(token, JWT_SECRET);
+        userRole = decoded.rol || '';
+        userEmail = decoded.email || userEmail;
+      } catch (e) {}
+    }
+    if (userRole && !['Super Admin', 'Administrador', 'Supervisor', 'DIRECTOR', 'ADMIN', 'SUPER_ADMIN'].some(r => r.toLowerCase() === userRole.toLowerCase())) {
+      throw new HttpException(`Permiso denegado: El rol "${userRole}" no tiene autorización para finalizar y ajustar inventario. Requiere Supervisor o Administrador.`, HttpStatus.FORBIDDEN);
+    }
 
-      // Find matching lot to adjust
-      const lots = await this.prisma.lotInventory.findMany({
-        where: { skuId: line.skuId, cantidadDisponible: { gt: 0 } },
-        orderBy: { createdAt: 'asc' },
-      });
+    // 3. Verificación de completitud de conteo físico
+    const uncountedLines = cc.lineas.filter(l => l.cantidadFisica === null || l.cantidadFisica === undefined);
+    if (uncountedLines.length > 0) {
+      throw new HttpException(`Operación rechazada: Existen ${uncountedLines.length} línea(s) pendientes de conteo físico.`, HttpStatus.BAD_REQUEST);
+    }
 
-      if (lots.length > 0) {
-        const lot = lots[0];
-        const newQty = Math.max(0, lot.cantidadDisponible + diff);
-        await this.prisma.lotInventory.update({
-          where: { id: lot.id },
-          data: { cantidadDisponible: newQty },
-        });
+    // 4. Identificar ubicaciones afectadas para protocolo de concurrencia
+    const affectedLocations = cc.lineas.map(l => l.ubicacionId).filter(Boolean) as string[];
+    const locationIds = [...new Set(affectedLocations)];
 
-        // If quantity went to zero, free the location
-        if (newQty === 0 && lot.ubicacionId) {
-          await this.prisma.location.update({
-            where: { id: lot.ubicacionId },
-            data: { estado: 'LIBRE' },
+    return await this.putawayEngine.executePhysicalMovementProtocol(
+      this.prisma,
+      {
+        locationIds,
+        opName: 'finalizeCycleCount',
+      },
+      async (tx) => {
+        // Evaluación exhaustiva línea por línea
+        const evaluations: {
+          line: typeof cc.lineas[0];
+          diff: number;
+          status: 'COINCIDE' | 'DIFERENCIA_AJUSTABLE' | 'REQUIERE_CONCILIACION_HU' | 'BLOQUEADO_POR_PROCESO' | 'SALDO_AMBIGUO' | 'SOBRANTE_NO_IDENTIFICADO';
+          targetLot: any | null;
+          blockReason?: string;
+        }[] = [];
+
+        for (const line of cc.lineas) {
+          const diff = Number(line.cantidadFisica) - Number(line.cantidadSistema);
+
+          if (diff === 0) {
+            evaluations.push({ line, diff: 0, status: 'COINCIDE', targetLot: null });
+            continue;
+          }
+
+          // A. Detección de HandlingUnits (Blindaje HU-managed)
+          const activeHUs = await tx.handlingUnit.findMany({
+            where: {
+              ubicacionActual: line.ubicacionId || '',
+              estadoHu: 'ACTIVO',
+              OR: [
+                { skuCodigo: line.sku?.codigo },
+                { lote: { skuId: line.skuId } },
+              ],
+            },
+          });
+
+          if (activeHUs.length > 0) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'REQUIERE_CONCILIACION_HU',
+              targetLot: null,
+              blockReason: `Línea gestionada por ${activeHUs.length} Unidad(es) de Manejo (HUs: ${activeHUs.map(h => h.codigo).join(', ')}). Prohibido ajuste automático escalar.`,
+            });
+            continue;
+          }
+
+          // B. Búsqueda de lote objetivo inequívoco (Sin lots[0])
+          const candidateLots = await tx.lotInventory.findMany({
+            where: {
+              skuId: line.skuId,
+              ubicacionId: line.ubicacionId,
+              ...(line.lote ? { lote: line.lote } : {}),
+            },
+            include: {
+              sku: true,
+              cliente: true,
+              ubicacion: { include: { zona: true } },
+            },
+          });
+
+          if (candidateLots.length === 0) {
+            if (diff > 0) {
+              evaluations.push({
+                line,
+                diff,
+                status: 'SOBRANTE_NO_IDENTIFICADO',
+                targetLot: null,
+                blockReason: `Sobrante físico (+${diff} pza) detectado sin lote ni cliente registrado en esta ubicación. Prohibido crear inventario artificial sin alta formal.`,
+              });
+            } else {
+              evaluations.push({
+                line,
+                diff,
+                status: 'SALDO_AMBIGUO',
+                targetLot: null,
+                blockReason: `Faltante físico (${diff} pza) en ubicación sin lote registrado.`,
+              });
+            }
+            continue;
+          }
+
+          if (candidateLots.length > 1) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'SALDO_AMBIGUO',
+              targetLot: null,
+              blockReason: `Existen ${candidateLots.length} lotes/saldos candidatos en la misma ubicación. Prohibido ajuste ciego.`,
+            });
+            continue;
+          }
+
+          const targetLot = candidateLots[0];
+
+          // C. Validación de Reservas y Pedidos Activos
+          if (targetLot.cantidadReservada > 0) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'BLOQUEADO_POR_PROCESO',
+              targetLot: null,
+              blockReason: `Lote cuenta con ${targetLot.cantidadReservada} piezas reservadas para pedidos activos.`,
+            });
+            continue;
+          }
+
+          const activePickingLines = await tx.salesOrderLine.findMany({
+            where: {
+              lotId: targetLot.id,
+              pickingCompletado: false,
+              orden: { estado: { in: ['SOLICITADO', 'APROBADO', 'EN_PICKING'] } },
+            },
+          });
+
+          if (activePickingLines.length > 0) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'BLOQUEADO_POR_PROCESO',
+              targetLot: null,
+              blockReason: `Lote comprometido en picking activo (${activePickingLines.length} ordenes).`,
+            });
+            continue;
+          }
+
+          // D. Validación de Ubicación y Estado de Calidad
+          const locRole = classifyLocationOperationalRole(targetLot.ubicacion);
+          if (locRole.esTransitoInterno) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'BLOQUEADO_POR_PROCESO',
+              targetLot: null,
+              blockReason: `Ubicación en andén/recepción (${targetLot.ubicacion?.codigo}). Requiere Putaway antes de ajuste comercial.`,
+            });
+            continue;
+          }
+
+          if (locRole.esNoConforme || targetLot.estadoCalidad !== 'LIBERADO') {
+            evaluations.push({
+              line,
+              diff,
+              status: 'BLOQUEADO_POR_PROCESO',
+              targetLot: null,
+              blockReason: `Lote en condición no liberada (${targetLot.estadoCalidad} / ${locRole.badgeTexto}). Prohibido ajuste comercial.`,
+            });
+            continue;
+          }
+
+          if (targetLot.fechaVencimiento && targetLot.fechaVencimiento < new Date()) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'BLOQUEADO_POR_PROCESO',
+              targetLot: null,
+              blockReason: `Lote vencido (${new Date(targetLot.fechaVencimiento).toLocaleDateString('es-MX')}). Prohibido reactivar como stock liberado.`,
+            });
+            continue;
+          }
+
+          // E. Validación de no-negatividad
+          if (diff < 0 && (targetLot.cantidadDisponible + diff < 0)) {
+            evaluations.push({
+              line,
+              diff,
+              status: 'SALDO_AMBIGUO',
+              targetLot: null,
+              blockReason: `Faltante (${diff} pza) excede el saldo disponible actual (${targetLot.cantidadDisponible} pza).`,
+            });
+            continue;
+          }
+
+          // Línea 100% elegible para ajuste seguro
+          evaluations.push({
+            line,
+            diff,
+            status: 'DIFERENCIA_AJUSTABLE',
+            targetLot,
           });
         }
 
-        // Create inventory movement for the adjustment
-        await this.prisma.inventoryMovement.create({
+        // 5. Criterio de Decisión: Si existen líneas bloqueantes, NO tocar inventario
+        const blockedItems = evaluations.filter(e => e.status !== 'COINCIDE' && e.status !== 'DIFERENCIA_AJUSTABLE');
+
+        if (blockedItems.length > 0) {
+          // Persistir notas de diagnóstico en las líneas para visualización en UI
+          for (const item of evaluations) {
+            let notasPrevias: any = {};
+            try { notasPrevias = JSON.parse(item.line.notas || '{}'); } catch (e) {}
+            notasPrevias.estadoConciliacion = item.status;
+            notasPrevias.motivoBloqueo = item.blockReason || null;
+            await tx.cycleCountLine.update({
+              where: { id: item.line.id },
+              data: { notas: JSON.stringify(notasPrevias) },
+            });
+          }
+
+          return {
+            success: false,
+            requiresReview: true,
+            codigo: cc.codigo,
+            estado: 'EN_PROGRESO',
+            message: `Ajuste bloqueado preventivamente: Existen ${blockedItems.length} línea(s) con incidencias que impiden el ajuste automático (HUs activas, reservas o ambigüedad). El inventario NO fue modificado.`,
+            lineasBloqueadas: blockedItems.map(b => ({
+              lineId: b.line.id,
+              sku: b.line.sku?.codigo,
+              ubicacionId: b.line.ubicacionId,
+              status: b.status,
+              motivo: b.blockReason,
+            })),
+          };
+        }
+
+        // 6. Aplicar ajustes de forma atómica (todas las líneas son COINCIDE o DIFERENCIA_AJUSTABLE)
+        let adjustmentsCount = 0;
+        for (const item of evaluations) {
+          if (item.status === 'COINCIDE') continue;
+          const { line, diff, targetLot } = item;
+
+          const newQty = targetLot.cantidadDisponible + diff;
+          await tx.lotInventory.update({
+            where: { id: targetLot.id },
+            data: { cantidadDisponible: newQty },
+          });
+
+          await tx.inventoryMovement.create({
+            data: {
+              tipoMovimiento: diff > 0 ? 'AJUSTE_ENTRADA' : 'AJUSTE_SALIDA',
+              almacenId: cc.almacenId,
+              skuId: line.skuId,
+              clienteId: targetLot.clienteId,
+              lotId: targetLot.id,
+              fromLocationId: diff < 0 ? targetLot.ubicacionId : null,
+              toLocationId: diff > 0 ? targetLot.ubicacionId : null,
+              cantidad: Math.abs(diff),
+              usuario: userEmail || 'Supervisor de Inventario',
+              motivo: `Ajuste por Conteo Cíclico ${cc.codigo} — ${line.sku?.descripcion || ''} (${diff > 0 ? '+' : ''}${diff} pza)`,
+              documentoOrigen: cc.codigo,
+            },
+          });
+          adjustmentsCount++;
+        }
+
+        // Marcar conteo y líneas como COMPLETADO / CONCILIADO
+        await tx.cycleCount.update({
+          where: { id },
           data: {
-            tipoMovimiento: diff > 0 ? 'AJUSTE_ENTRADA' : 'AJUSTE_SALIDA',
-            almacenId: cc.almacenId,
-            skuId: line.skuId,
-            clienteId: lot.clienteId,
-            lotId: lot.id,
-            toLocationId: lot.ubicacionId,
-            cantidad: Math.abs(diff),
-            usuario: data.usuario || 'admin@givingout.com',
-            motivo: `Ajuste conteo cíclico ${cc.codigo} — ${line.sku?.descripcion || ''}`,
+            estado: 'COMPLETADO',
+            fechaCierre: new Date(),
           },
         });
 
-        adjustments++;
-      } else if (diff > 0) {
-        // Physical count found items not in system — flag but don't create lots
-        adjustments++;
-      }
-    }
+        await tx.cycleCountLine.updateMany({
+          where: { cycleCountId: id },
+          data: { estado: 'CONCILIADO' },
+        });
 
-    await this.prisma.cycleCount.update({
-      where: { id },
-      data: {
-        estado: 'COMPLETADO',
-        fechaCierre: new Date(),
+        await tx.auditLog.create({
+          data: {
+            usuario: userEmail || 'Supervisor de Inventario',
+            accion: 'CONTEO_CICLICO_FINALIZADO',
+            entidad: 'CycleCount',
+            entidadId: cc.id,
+            detalle: `Conteo ${cc.codigo} finalizado y conciliado con ${adjustmentsCount} ajuste(s) seguros aplicados. Inventario inmutable bajo protocolo transaccional.`,
+          },
+        });
+
+        return {
+          success: true,
+          requiresReview: false,
+          codigo: cc.codigo,
+          estado: 'COMPLETADO',
+          adjustments: adjustmentsCount,
+          message: `Conteo ${cc.codigo} finalizado exitosamente. ${adjustmentsCount} ajuste(s) aplicados al inventario real.`,
+        };
       },
-    });
-
-    return {
-      message: `Conteo finalizado. ${adjustments} ajustes aplicados al inventario real.`,
-      adjustments,
-    };
+    );
   }
 
   @Delete('cycle-counts/:id')
-  @ApiOperation({ summary: 'Eliminar conteo cíclico' })
-  async deleteCycleCount(@Param('id') id: string) {
-    await this.prisma.cycleCountLine.deleteMany({ where: { cycleCountId: id } });
-    await this.prisma.cycleCount.delete({ where: { id } });
-    return { message: 'Conteo cíclico eliminado correctamente', id };
+  @ApiOperation({ summary: 'Cancelar conteo cíclico programado (Inmutable si completado/en proceso)' })
+  async deleteCycleCount(@Param('id') id: string, @Body() body?: any) {
+    const cc = await this.prisma.cycleCount.findUnique({
+      where: { id },
+      include: { lineas: true },
+    });
+    if (!cc) throw new HttpException('Conteo no encontrado', HttpStatus.NOT_FOUND);
+
+    if (cc.estado === 'COMPLETADO' || cc.estado === 'CERRADO') {
+      throw new HttpException('Operación rechazada: Un conteo COMPLETADO o CERRADO es inmutable y no puede eliminarse ni cancelarse.', HttpStatus.FORBIDDEN);
+    }
+
+    if (cc.estado === 'EN_PROGRESO') {
+      throw new HttpException('Operación rechazada: Un conteo EN_PROGRESO no puede eliminarse físicamente. Debe completarse la revisión o conciliarse.', HttpStatus.CONFLICT);
+    }
+
+    if (cc.estado === 'CANCELADO') {
+      throw new HttpException('El conteo ya se encuentra CANCELADO.', HttpStatus.CONFLICT);
+    }
+
+    // Si está en PROGRAMADO, verificar si ya tiene capturas físicas
+    const hasCounts = cc.lineas.some(l => l.cantidadFisica !== null || l.estado === 'CONTADO');
+    if (hasCounts) {
+      throw new HttpException('Operación rechazada: El conteo ya cuenta con capturas físicas registradas y no puede eliminarse físicamente.', HttpStatus.CONFLICT);
+    }
+
+    // Cancelación lógica segura y auditada (CERO DELETE físico)
+    await this.prisma.cycleCount.update({
+      where: { id },
+      data: {
+        estado: 'CANCELADO',
+        notas: (cc.notas ? cc.notas + ' | ' : '') + `Cancelado el ${new Date().toISOString()} por usuario`,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        usuario: body?.usuario || 'Usuario Operativo',
+        accion: 'CANCELAR_CONTEO_CICLICO',
+        entidad: 'CycleCount',
+        entidadId: cc.id,
+        detalle: `Conteo ${cc.codigo} cancelado preventivamente antes de inicio de capturas. Registro histórico preservado.`,
+      },
+    });
+
+    return { success: true, message: `Conteo ${cc.codigo} cancelado exitosamente. Registro histórico preservado.`, id };
   }
 
 
@@ -7072,7 +9383,15 @@ export class OperationsController {
       this.prisma.salesOrder.count(),
       this.prisma.salesOrder.count({ where: { estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING'] } } }),
       this.prisma.alert.count({ where: { resuelta: false } }),
-      this.prisma.inventoryMovement.findMany({ orderBy: { fechaHora: 'desc' }, take: 10, include: { sku: { select: { descripcion: true } } } }),
+      this.prisma.inventoryMovement.findMany({
+        orderBy: { fechaHora: 'desc' },
+        take: 10,
+        include: {
+          sku: { select: { descripcion: true, codigo: true } },
+          fromLocation: { select: { codigo: true } },
+          toLocation: { select: { codigo: true } },
+        },
+      }),
     ]);
 
     const [totalUnidades, pendingApprovals, totalEndCustomers] = await Promise.all([

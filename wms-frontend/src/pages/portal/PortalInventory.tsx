@@ -4,8 +4,10 @@ import { API } from '../../config/api';
 import { formatCalendarDate } from '../../utils/dateUtils';
 import {
   Package, Search, RefreshCw, MapPin, CheckCircle2, AlertTriangle,
-  Clock, ShieldAlert, Building2, Layers, Filter, Eye
+  Clock, ShieldAlert, Building2, Layers, Filter, Eye, Info
 } from 'lucide-react';
+
+const CALIDAD_TOOLTIP = 'Resultado de inspección de calidad. No determina por sí solo la disponibilidad comercial; también aplican caducidad, ubicación y restricciones operativas.';
 
 export function PortalInventory() {
   const { token, user } = useAuth();
@@ -264,7 +266,17 @@ export function PortalInventory() {
                         <tr style={{ color: 'var(--text-tertiary)', fontSize: 11, textTransform: 'uppercase' as const, borderBottom: '1px solid var(--border)' }}>
                           <th style={{ textAlign: 'left', padding: '6px 8px' }}>Lote</th>
                           <th style={{ textAlign: 'left', padding: '6px 8px' }}>Almacén / Ubicación</th>
-                          <th style={{ textAlign: 'left', padding: '6px 8px' }}>Estado Calidad</th>
+                          <th style={{ textAlign: 'left', padding: '6px 8px' }}>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <span>Calidad</span>
+                              <span
+                                title={CALIDAD_TOOLTIP}
+                                style={{ cursor: 'help', display: 'inline-flex', alignItems: 'center', color: 'var(--text-tertiary)' }}
+                              >
+                                <Info size={11} />
+                              </span>
+                            </div>
+                          </th>
                           <th style={{ textAlign: 'left', padding: '6px 8px' }}>Vencimiento</th>
                           <th style={{ textAlign: 'right', padding: '6px 8px' }}>Disponible</th>
                           <th style={{ textAlign: 'right', padding: '6px 8px' }}>Reservado</th>
@@ -288,9 +300,31 @@ export function PortalInventory() {
                                 </span>
                               </td>
                               <td style={{ padding: '8px 8px' }}>
-                                <span className={`badge badge-${isExpired ? 'danger' : (isQuarantine ? 'warning' : 'success')}`}>
-                                  {isExpired ? 'CADUCADO' : lot.estadoCalidad}
-                                </span>
+                                {isExpired || isQuarantine ? (
+                                  <span
+                                    title={CALIDAD_TOOLTIP}
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      background: 'rgba(148, 163, 184, 0.12)',
+                                      color: 'var(--text-secondary, #64748B)',
+                                      border: '1px solid rgba(148, 163, 184, 0.28)',
+                                      display: 'inline-flex',
+                                      alignItems: 'center'
+                                    }}
+                                  >
+                                    {lot.estadoCalidad || 'LIBERADO'}
+                                  </span>
+                                ) : (
+                                  <span
+                                    title={CALIDAD_TOOLTIP}
+                                    className="badge badge-success"
+                                  >
+                                    {lot.estadoCalidad || 'LIBERADO'}
+                                  </span>
+                                )}
                               </td>
                               <td style={{ padding: '8px 8px', color: isExpired ? '#EF4444' : (lot.fechaVencimiento ? 'var(--text-primary)' : 'var(--text-tertiary)'), fontWeight: isExpired ? 700 : 400 }}>
                                 {lot.fechaVencimiento ? formatCalendarDate(lot.fechaVencimiento) : 'N/A'}{isExpired ? ' (Vencido)' : ''}

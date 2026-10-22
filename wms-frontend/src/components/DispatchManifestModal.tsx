@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
 import {
-  FileText, Truck, UserCheck, ShieldCheck, CheckCircle2,
-  AlertTriangle, X, Printer, Package, Store, MapPin, Hash,
-  Calendar, Clock, Edit3, Send, Layers
+  FileText, Truck, ShieldCheck, CheckCircle2,
+  AlertTriangle, X, Printer, Package, Store, MapPin,
+  Calendar, Edit3, Send, Layers, AlertCircle,
+  ShieldAlert, FileWarning, Clock, ArrowRight
 } from 'lucide-react';
 import { API } from '../config/api';
 import { formatCalendarDate } from '../utils/dateUtils';
@@ -13,6 +14,20 @@ interface DispatchManifestModalProps {
   currentUser: string;
   onClose: () => void;
   onSuccess?: () => void;
+}
+
+function isCanvasBlank(canvas: HTMLCanvasElement | null): boolean {
+  if (!canvas) return true;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return true;
+  try {
+    const pixelBuffer = new Uint32Array(
+      ctx.getImageData(0, 0, canvas.width, canvas.height).data.buffer
+    );
+    return !pixelBuffer.some(color => color !== 0);
+  } catch {
+    return false;
+  }
 }
 
 export function DispatchManifestModal({
@@ -79,6 +94,8 @@ export function DispatchManifestModal({
           selloSeguridad: data.order.selloSeguridad || `SELLO-${Math.floor(100000 + Math.random() * 900000)}`,
           notas: data.order.notas || '',
         });
+        if (data.order.firmaDespachador) setHasDespachadorFirma(true);
+        if (data.order.firmaChofer) setHasChoferFirma(true);
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'No se pudo obtener el manifiesto');
@@ -144,21 +161,77 @@ export function DispatchManifestModal({
   }
 
   async function handleConfirmDispatch() {
-    if (!transportForm.choferNombre && transportForm.tipoTransporte === 'DIRECTO') {
-      setErrorMsg('Debes especificar el nombre del chofer o transportista responsable.');
+    setErrorMsg('');
+
+    const tipo = transportForm.tipoTransporte;
+    const isDirecto = tipo === 'DIRECTO' || !tipo;
+    const isPaqueteria = tipo === 'PAQUETERIA';
+    const isVehiculoPropio = tipo === 'VEHICULO_PROPIO';
+    const isClienteRecoge = tipo === 'CLIENTE_RECOGE';
+
+    // 1. Validaciones por Tipo de Transporte (Reglas Generales)
+    if (isDirecto) {
+      if (!transportForm.vehiculoPlaca.trim()) {
+        setErrorMsg('Debes ingresar la placa del vehículo / tracto de transporte.');
+        return;
+      }
+      if (!transportForm.choferNombre.trim()) {
+        setErrorMsg('Debes especificar el nombre del chofer o transportista responsable.');
+        return;
+      }
+    } else if (isVehiculoPropio) {
+      if (!transportForm.vehiculoPlaca.trim()) {
+        setErrorMsg('Debes ingresar la placa de la unidad de Giving Out.');
+        return;
+      }
+      if (!transportForm.choferNombre.trim()) {
+        setErrorMsg('Debes especificar el nombre del operador interno asignado.');
+        return;
+      }
+    } else if (isPaqueteria) {
+      if (!transportForm.paqueteria.trim()) {
+        setErrorMsg('Debes especificar la empresa de paquetería (ej. Castores, DHL, FedEx).');
+        return;
+      }
+      if (!transportForm.numeroGuia.trim()) {
+        setErrorMsg('Debes ingresar el número de guía o rastreo de la paquetería.');
+        return;
+      }
+    } else if (isClienteRecoge) {
+      if (!transportForm.choferNombre.trim()) {
+        setErrorMsg('Debes ingresar el nombre de la persona autorizada que recoge la mercancía.');
+        return;
+      }
+      if (!transportForm.choferLicencia.trim()) {
+        setErrorMsg('Debes ingresar la identificación oficial (INE / Licencia) de quien recoge.');
+        return;
+      }
+    }
+
+    // 2. Validación obligatoria de Firmas Digitales
+    const despachadorFirma = despachadorCanvasRef.current?.toDataURL('image/png') || '';
+    const choferFirma = choferCanvasRef.current?.toDataURL('image/png') || '';
+
+    const despachadorTieneFirma = hasDespachadorFirma || !isCanvasBlank(despachadorCanvasRef.current);
+    if (!despachadorTieneFirma) {
+      setErrorMsg('Se requiere obligatoriamente la firma digital del despachador responsable de Giving Out.');
       return;
     }
-    if (!transportForm.vehiculoPlaca) {
-      setErrorMsg('Debes ingresar la placa del vehículo de transporte.');
+
+    const requiresReceiverSignature = isDirecto || isVehiculoPropio || isClienteRecoge;
+    const choferTieneFirma = hasChoferFirma || !isCanvasBlank(choferCanvasRef.current);
+    if (requiresReceiverSignature && !choferTieneFirma) {
+      const receptorLabel = isClienteRecoge ? 'de la persona que recoge' : 'del chofer o transportista receptor';
+      setErrorMsg(`Se requiere obligatoriamente la firma digital ${receptorLabel}.`);
       return;
     }
 
     setSubmitting(true);
-    setErrorMsg('');
 
     try {
-      const despachadorFirma = despachadorCanvasRef.current?.toDataURL('image/png') || '';
-      const choferFirma = choferCanvasRef.current?.toDataURL('image/png') || '';
+      const folioFinal = manifestData?.folio && !manifestData.folio.startsWith('PRE-')
+        ? manifestData.folio
+        : `MAN-${manifestData?.order?.codigo}`;
 
       const res = await fetch(`${API}/orders/${orderId}/dispatch`, {
         method: 'POST',
@@ -176,7 +249,7 @@ export function DispatchManifestModal({
           notas: transportForm.notas,
           firmaDespachador: despachadorFirma,
           firmaChofer: choferFirma,
-          folioManifiesto: manifestData?.folio || `MAN-${manifestData?.order?.codigo}`,
+          folioManifiesto: folioFinal,
         }),
       });
 
@@ -200,6 +273,45 @@ export function DispatchManifestModal({
 
   const order = manifestData?.order;
   const isAlreadyDispatched = order?.estado === 'DESPACHADO' || order?.estado === 'ENTREGADO';
+
+  // Dynamic validation for enterprise preparation status
+  const tipo = transportForm.tipoTransporte;
+  const isDirecto = tipo === 'DIRECTO' || !tipo;
+  const isPaqueteria = tipo === 'PAQUETERIA';
+  const isVehiculoPropio = tipo === 'VEHICULO_PROPIO';
+  const isClienteRecoge = tipo === 'CLIENTE_RECOGE';
+
+  const isTransportDataValid = Boolean(
+    (isDirecto && transportForm.vehiculoPlaca.trim() && transportForm.choferNombre.trim()) ||
+    (isVehiculoPropio && transportForm.vehiculoPlaca.trim() && transportForm.choferNombre.trim()) ||
+    (isPaqueteria && transportForm.paqueteria.trim() && transportForm.numeroGuia.trim()) ||
+    (isClienteRecoge && transportForm.choferNombre.trim() && transportForm.choferLicencia.trim())
+  );
+
+  const requiresReceiverSignature = isDirecto || isVehiculoPropio || isClienteRecoge;
+  const areSignaturesComplete = hasDespachadorFirma && (!requiresReceiverSignature || hasChoferFirma);
+  const isReadyToDispatch = isTransportDataValid && areSignaturesComplete;
+
+  const pendingItems: string[] = [];
+  if (!isAlreadyDispatched && !isReadyToDispatch) {
+    if (isDirecto) {
+      if (!transportForm.vehiculoPlaca.trim()) pendingItems.push('Placa del vehículo');
+      if (!transportForm.choferNombre.trim()) pendingItems.push('Nombre del chofer');
+    } else if (isVehiculoPropio) {
+      if (!transportForm.vehiculoPlaca.trim()) pendingItems.push('Placa de unidad');
+      if (!transportForm.choferNombre.trim()) pendingItems.push('Operador asignado');
+    } else if (isPaqueteria) {
+      if (!transportForm.paqueteria.trim()) pendingItems.push('Empresa paquetería');
+      if (!transportForm.numeroGuia.trim()) pendingItems.push('Número de guía');
+    } else if (isClienteRecoge) {
+      if (!transportForm.choferNombre.trim()) pendingItems.push('Nombre de quien recoge');
+      if (!transportForm.choferLicencia.trim()) pendingItems.push('Identificación oficial');
+    }
+    if (!hasDespachadorFirma) pendingItems.push('Firma digital despachador');
+    if (requiresReceiverSignature && !hasChoferFirma) {
+      pendingItems.push(isClienteRecoge ? 'Firma de quien recibe' : 'Firma de transportista receptor');
+    }
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose} style={{ zIndex: 1200 }}>
@@ -235,6 +347,32 @@ export function DispatchManifestModal({
             break-inside: avoid !important;
             page-break-inside: avoid !important;
           }
+          #printable-dispatch-manifest table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+          }
+          #printable-dispatch-manifest th, #printable-dispatch-manifest td {
+            border: 1px solid #cbd5e1 !important;
+          }
+          .draft-watermark-overlay {
+            display: block !important;
+            position: fixed !important;
+            top: 35% !important;
+            left: 5% !important;
+            right: 5% !important;
+            text-align: center !important;
+            font-size: 32px !important;
+            font-weight: 800 !important;
+            color: rgba(146, 64, 14, 0.14) !important;
+            transform: rotate(-20deg) !important;
+            pointer-events: none !important;
+            z-index: 99999 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 3px !important;
+            border: 3px solid rgba(146, 64, 14, 0.18) !important;
+            padding: 20px 12px !important;
+            font-family: inherit !important;
+          }
         }
       `}</style>
       <div
@@ -243,25 +381,75 @@ export function DispatchManifestModal({
         onClick={e => e.stopPropagation()}
         style={{ maxWidth: 880, maxHeight: '90vh', overflowY: 'auto' }}
       >
+        {/* Banner de Borrador para Impresión y Pantalla */}
+        {!isAlreadyDispatched && (
+          <>
+            <div className="draft-watermark-overlay" style={{ display: 'none' }}>
+              DOCUMENTO PRELIMINAR · SIN SALIDA CONFIRMADA
+            </div>
+            <div style={{
+              border: '1px solid rgba(245, 158, 11, 0.35)',
+              background: '#fffbeb',
+              color: '#92400e',
+              padding: '10px 14px',
+              borderRadius: 8,
+              marginBottom: 16,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+            }}>
+              <ShieldAlert size={22} color="#d97706" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 800, fontSize: 12, letterSpacing: 0.5, color: '#92400e' }}>
+                    DOCUMENTO PRELIMINAR DE PREPARACIÓN EN STAGING · NO CONSTITUYE ACUSE OFICIAL DE SALIDA FÍSICA
+                  </span>
+                  <span className="badge badge-amber" style={{ fontSize: 10, padding: '1px 6px', fontWeight: 700 }}>
+                    PRELIMINAR
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 500, marginTop: 3, color: '#b45309' }}>
+                  Este documento preliminar refleja {manifestData?.totalHus || manifestData?.totalCajas || 1} {Number(manifestData?.totalHus || manifestData?.totalCajas || 1) === 1 ? 'HU / caja' : 'HUs / cajas'} ({manifestData?.totalPiezas || manifestData?.totalUnidades || 0} piezas) consolidada(s) en Staging. El acuse oficial de embarque se emitirá tras confirmar transportista, placas y firmas de salida.
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
         {/* Modal Header */}
         <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ padding: 8, borderRadius: 8, background: 'rgba(99,102,241,0.15)', color: 'var(--primary)' }}>
+            <div style={{
+              padding: 8,
+              borderRadius: 8,
+              background: isAlreadyDispatched ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+              color: isAlreadyDispatched ? 'var(--emerald)' : 'var(--amber)',
+            }}>
               <FileText size={22} />
             </div>
             <div>
-              <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
-                Manifiesto de Embarque y Acuse de Salida
+              <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
+                {isAlreadyDispatched ? 'Manifiesto de Embarque y Acuse de Salida' : 'Manifiesto Preliminar de Embarque'}
               </h2>
-              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: '2px 0 0 0' }}>
-                Folio: <strong style={{ color: 'var(--primary)' }}>{manifestData?.folio || 'MAN-CARGANDO'}</strong> · Pedido: {order?.codigo}
+              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: '3px 0 0 0' }}>
+                {isAlreadyDispatched ? (
+                  <>Folio Oficial: <strong style={{ color: 'var(--emerald)' }}>{manifestData?.folio || order?.folioManifiesto || `MAN-${order?.codigo}`}</strong> · Pedido: {order?.codigo}</>
+                ) : (
+                  <>Preparación de salida · Folio Preliminar: <strong style={{ color: 'var(--amber)' }}>{manifestData?.folio || `PRE-${order?.codigo}`}</strong> · Pedido: {order?.codigo}</>
+                )}
               </p>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn btn-secondary btn-sm" onClick={handlePrint} title="Imprimir Manifiesto">
-              <Printer size={15} /> Imprimir / PDF
-            </button>
+            {isAlreadyDispatched ? (
+              <button className="btn btn-secondary btn-sm" onClick={handlePrint} title="Imprimir Manifiesto Oficial de Salida">
+                <Printer size={15} /> Imprimir Acuse Oficial / PDF
+              </button>
+            ) : (
+              <button className="btn btn-secondary btn-sm" onClick={handlePrint} title="Imprime un borrador preliminar de preparación con marca de agua">
+                <Printer size={15} /> Imprimir borrador
+              </button>
+            )}
             <button className="btn btn-ghost btn-sm" onClick={onClose}>
               <X size={18} />
             </button>
@@ -318,22 +506,75 @@ export function DispatchManifestModal({
               <div style={{
                 padding: '12px 16px',
                 borderRadius: 10,
-                background: isAlreadyDispatched ? 'rgba(16,185,129,0.1)' : 'rgba(99,102,241,0.08)',
-                border: `1px solid ${isAlreadyDispatched ? 'var(--emerald)' : 'var(--primary)'}`,
+                background: isAlreadyDispatched
+                  ? 'rgba(16,185,129,0.1)'
+                  : isReadyToDispatch
+                  ? 'rgba(16,185,129,0.08)'
+                  : 'rgba(245,158,11,0.08)',
+                border: `1px solid ${
+                  isAlreadyDispatched
+                    ? 'var(--emerald)'
+                    : isReadyToDispatch
+                    ? 'var(--emerald)'
+                    : 'rgba(245,158,11,0.35)'
+                }`,
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 marginBottom: 20,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <ShieldCheck size={20} color={isAlreadyDispatched ? 'var(--emerald)' : 'var(--primary)'} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {isAlreadyDispatched ? (
+                    <ShieldCheck size={22} color="var(--emerald)" />
+                  ) : isReadyToDispatch ? (
+                    <CheckCircle2 size={22} color="var(--emerald)" />
+                  ) : (
+                    <Clock size={22} color="var(--amber)" />
+                  )}
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: isAlreadyDispatched ? 'var(--emerald)' : 'var(--primary)' }}>
-                      {isAlreadyDispatched ? 'Despacho Oficial Confirmado — En Ruta' : 'Listo para Salida Física de Almacén'}
+                    <div style={{
+                      fontSize: 13,
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}>
+                      {isAlreadyDispatched ? (
+                        <span style={{ color: 'var(--emerald)' }}>Despacho Oficial Confirmado — En Ruta</span>
+                      ) : isReadyToDispatch ? (
+                        <>
+                          <span style={{ color: 'var(--emerald)' }}>Listo para confirmar salida física</span>
+                          <span
+                            className="badge badge-success"
+                            style={{ fontSize: 10, padding: '2px 7px', fontWeight: 700 }}
+                          >
+                            VALIDADO
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ color: 'var(--amber)' }}>Consolidado en Staging</span>
+                          <span
+                            className="badge badge-amber"
+                            style={{ fontSize: 10, padding: '2px 7px', fontWeight: 700 }}
+                          >
+                            PENDIENTE
+                          </span>
+                        </>
+                      )}
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                      Total: {manifestData?.totalBultos} unidades de producto en {order?.lineas?.length} líneas
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                      {isAlreadyDispatched
+                        ? `Salida física completada${order?.fechaDespacho ? ` el ${formatCalendarDate(order.fechaDespacho)}` : ''} · Despachador: ${order?.despachador || currentUser} · Total: ${manifestData?.totalHus || manifestData?.totalCajas || 1} ${Number(manifestData?.totalHus || manifestData?.totalCajas || 1) === 1 ? 'HU / caja' : 'HUs / cajas'} (${manifestData?.totalPiezas || manifestData?.totalUnidades || 0} piezas) en ${order?.lineas?.length || 0} líneas`
+                        : isReadyToDispatch
+                        ? `Datos de transporte y firmas capturados. Autorizado para salida física y confirmación de despacho · ${manifestData?.totalHus || manifestData?.totalCajas || 1} ${Number(manifestData?.totalHus || manifestData?.totalCajas || 1) === 1 ? 'HU / caja' : 'HUs / cajas'} (${manifestData?.totalPiezas || manifestData?.totalUnidades || 0} piezas).`
+                        : `Pendiente de datos de transporte y autorización de salida. Mercancía consolidada en Staging: ${manifestData?.totalHus || manifestData?.totalCajas || 1} ${Number(manifestData?.totalHus || manifestData?.totalCajas || 1) === 1 ? 'HU / caja' : 'HUs / cajas'} (${manifestData?.totalPiezas || manifestData?.totalUnidades || 0} piezas).`}
                     </div>
+                    {pendingItems.length > 0 && (
+                      <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4, fontWeight: 600 }}>
+                        Requisitos pendientes: {pendingItems.join(' · ')}
+                      </div>
+                    )}
                   </div>
                 </div>
                 {order?.selloSeguridad && (
@@ -397,7 +638,7 @@ export function DispatchManifestModal({
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
-                      Tipo de Transporte
+                      Tipo de Transporte {!isAlreadyDispatched && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>*</span>}
                     </label>
                     {isAlreadyDispatched ? (
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.tipoTransporte}</div>
@@ -415,26 +656,68 @@ export function DispatchManifestModal({
                     )}
                   </div>
 
-                  <div>
-                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
-                      Empresa Fletera / Transporte
-                    </label>
-                    {isAlreadyDispatched ? (
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.fletera}</div>
-                    ) : (
-                      <input
-                        type="text"
-                        className="form-input"
-                        placeholder="Ej. Transportes Castores, Tresguerras..."
-                        value={transportForm.fletera}
-                        onChange={e => setTransportForm(f => ({ ...f, fletera: e.target.value }))}
-                      />
-                    )}
-                  </div>
+                  {transportForm.tipoTransporte === 'PAQUETERIA' ? (
+                    <>
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                          Empresa de Paquetería {!isAlreadyDispatched && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>*</span>}
+                        </label>
+                        {isAlreadyDispatched ? (
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.paqueteria || 'N/A'}</div>
+                        ) : (
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder="Ej. DHL, FedEx, Castores, Tresguerras..."
+                            value={transportForm.paqueteria}
+                            onChange={e => setTransportForm(f => ({ ...f, paqueteria: e.target.value }))}
+                          />
+                        )}
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                          Número de Guía / Rastreo {!isAlreadyDispatched && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>*</span>}
+                        </label>
+                        {isAlreadyDispatched ? (
+                          <div style={{ fontWeight: 600, fontSize: 13, fontFamily: 'monospace' }}>{transportForm.numeroGuia || 'N/A'}</div>
+                        ) : (
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder="Código de rastreo o guía"
+                            value={transportForm.numeroGuia}
+                            onChange={e => setTransportForm(f => ({ ...f, numeroGuia: e.target.value }))}
+                          />
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                        {transportForm.tipoTransporte === 'CLIENTE_RECOGE' ? 'Empresa / Cliente que Retira' : 'Empresa Fletera / Transporte'}
+                      </label>
+                      {isAlreadyDispatched ? (
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.fletera}</div>
+                      ) : (
+                        <input
+                          type="text"
+                          className="form-input"
+                          placeholder="Ej. Transportes Especializados..."
+                          value={transportForm.fletera}
+                          onChange={e => setTransportForm(f => ({ ...f, fletera: e.target.value }))}
+                        />
+                      )}
+                    </div>
+                  )}
 
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
-                      Nombre del Chofer / Operador
+                      {transportForm.tipoTransporte === 'CLIENTE_RECOGE'
+                        ? 'Nombre de Quien Recoge'
+                        : transportForm.tipoTransporte === 'VEHICULO_PROPIO'
+                        ? 'Operador Asignado'
+                        : 'Nombre del Chofer / Operador'} {!isAlreadyDispatched && transportForm.tipoTransporte !== 'PAQUETERIA' && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>*</span>}
                     </label>
                     {isAlreadyDispatched ? (
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.choferNombre || 'N/A'}</div>
@@ -442,7 +725,7 @@ export function DispatchManifestModal({
                       <input
                         type="text"
                         className="form-input"
-                        placeholder="Nombre completo del chofer"
+                        placeholder="Nombre completo"
                         value={transportForm.choferNombre}
                         onChange={e => setTransportForm(f => ({ ...f, choferNombre: e.target.value }))}
                       />
@@ -451,7 +734,7 @@ export function DispatchManifestModal({
 
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
-                      Placa del Vehículo / Tracto
+                      Placa del Vehículo / Tracto {!isAlreadyDispatched && (transportForm.tipoTransporte === 'DIRECTO' || transportForm.tipoTransporte === 'VEHICULO_PROPIO') && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>*</span>}
                     </label>
                     {isAlreadyDispatched ? (
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.vehiculoPlaca || 'N/A'}</div>
@@ -468,7 +751,9 @@ export function DispatchManifestModal({
 
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
-                      Licencia / Identificación
+                      {transportForm.tipoTransporte === 'CLIENTE_RECOGE'
+                        ? 'Identificación Oficial (INE / Licencia)'
+                        : 'Licencia / Identificación (Opcional)'} {!isAlreadyDispatched && transportForm.tipoTransporte === 'CLIENTE_RECOGE' && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>*</span>}
                     </label>
                     {isAlreadyDispatched ? (
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.choferLicencia || 'N/A'}</div>
@@ -507,53 +792,73 @@ export function DispatchManifestModal({
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Layers size={15} color="var(--primary)" />
-                    Desglose de Mercancía, Lotes y Cajas (HUs) Despachadas
+                    {isAlreadyDispatched
+                      ? 'Desglose Oficial: Mercancía, Lotes y Cajas (HUs) Despachadas'
+                      : 'Desglose Operativo: Mercancía y HUs Preparadas para Despacho'}
                   </span>
                   <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    Total: <strong style={{ color: 'var(--primary)' }}>{manifestData?.totalCajas || 3}</strong> cajas · <strong style={{ color: 'var(--emerald)' }}>{manifestData?.totalBultos || 44}</strong> piezas
+                    Total: <strong style={{ color: 'var(--primary)' }}>{manifestData?.totalHus || manifestData?.totalCajas || 1}</strong> {Number(manifestData?.totalHus || manifestData?.totalCajas || 1) === 1 ? 'HU / caja' : 'HUs / cajas'} · <strong style={{ color: 'var(--emerald)' }}>{manifestData?.totalPiezas || manifestData?.totalUnidades || 0}</strong> piezas
                   </span>
                 </div>
 
-                <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
-                  <table className="data-table" style={{ fontSize: 13, width: '100%' }}>
+                <div style={{ borderRadius: 8, overflowX: 'auto', border: '1px solid var(--border)', background: 'var(--bg-primary)' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                     <thead>
-                      <tr>
-                        <th>SKU</th>
-                        <th>Descripción</th>
-                        <th>Lote Asignado</th>
-                        <th>Caja / HU</th>
-                        <th>Rack Origen</th>
-                        <th>Caducidad</th>
-                        <th style={{ textAlign: 'right' }}>Cant. Despachada</th>
+                      <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>SKU</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Descripción</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Caja / HU</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Rack Origen</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Staging / Salida</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                          {isAlreadyDispatched ? 'CANT. DESPACHADA' : 'CANT. PREPARADA'}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {manifestData?.lineasDesglose?.map((l: any, idx: number) => (
-                        <tr key={idx}>
-                          <td>
+                        <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td style={{ padding: '10px 12px' }}>
                             <code style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)' }}>{l.sku}</code>
                           </td>
-                          <td>{l.descripcion}</td>
-                          <td>
+                          <td style={{ padding: '10px 12px', maxWidth: 180, whiteSpace: 'normal', fontSize: 12 }}>
+                            {l.descripcion}
+                          </td>
+                          <td style={{ padding: '10px 12px' }}>
                             <span className="badge badge-default" style={{ fontSize: 11, fontWeight: 600 }}>
                               {l.lote}
                             </span>
+                            {l.caducidad && (
+                              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                                Vence: {formatCalendarDate(l.caducidad)}
+                              </div>
+                            )}
                           </td>
-                          <td>
+                          <td style={{ padding: '10px 12px' }}>
                             <code style={{ fontSize: 11, background: 'var(--bg-secondary)', padding: '2px 5px', borderRadius: 4, color: 'var(--text-primary)' }}>
                               {l.huCodigo || (Array.isArray(l.cajasEscaneadas) && l.cajasEscaneadas.length > 0 ? l.cajasEscaneadas.join(', ') : 'S/N')}
                             </code>
                           </td>
-                          <td>
+                          <td style={{ padding: '10px 12px' }}>
                             <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                              {l.ubicacion}
+                              {l.rackOrigen || l.ubicacion || 'RACK'}
                             </span>
                           </td>
-                          <td style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                            {l.caducidad ? formatCalendarDate(l.caducidad) : 'N/A'}
+                          <td style={{ padding: '10px 12px' }}>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'monospace', fontSize: 11 }}>
+                              <span style={{ color: 'var(--text-secondary)' }}>{l.rackOrigen || l.ubicacion || 'RACK'}</span>
+                              <ArrowRight size={13} color="var(--primary)" style={{ flexShrink: 0 }} />
+                              <span className="badge badge-cyan" style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px' }}>
+                                {l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01'}
+                              </span>
+                            </div>
                           </td>
-                          <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--emerald)' }}>
-                            {l.cantidadDespachada} {l.uom || 'uds'}
+                          <td
+                            style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: 'var(--emerald)', whiteSpace: 'nowrap' }}
+                            title={isAlreadyDispatched ? `Cantidad despachada: ${l.cantidadDespachada} ${l.uom || 'PZA'}` : `Cantidad preparada en Staging: ${l.cantidadPreparada ?? l.cantidadDespachada} ${l.uom || 'PZA'}`}
+                          >
+                            {isAlreadyDispatched ? l.cantidadDespachada : (l.cantidadPreparada ?? l.cantidadDespachada)} {l.uom || 'PZA'}
                           </td>
                         </tr>
                       ))}
@@ -580,7 +885,7 @@ export function DispatchManifestModal({
                   <div style={{ background: 'var(--bg-primary)', padding: 12, borderRadius: 8, border: '1px solid var(--border)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>
-                        Entrega: Despachador Giving Out
+                        Entrega: Despachador Giving Out {!isAlreadyDispatched && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>* Requerido</span>}
                       </span>
                       {!isAlreadyDispatched && (
                         <button
@@ -624,11 +929,13 @@ export function DispatchManifestModal({
                     </div>
                   </div>
 
-                  {/* Firma Chofer */}
+                  {/* Firma Chofer / Receptor */}
                   <div style={{ background: 'var(--bg-primary)', padding: 12, borderRadius: 8, border: '1px solid var(--border)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>
-                        Recibe: Chofer / Fletera
+                        {transportForm.tipoTransporte === 'CLIENTE_RECOGE'
+                          ? 'Recibe: Cliente / Receptor Autorizado'
+                          : 'Recibe: Chofer / Fletera'} {!isAlreadyDispatched && transportForm.tipoTransporte !== 'PAQUETERIA' && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>* Requerido</span>}
                       </span>
                       {!isAlreadyDispatched && (
                         <button
@@ -668,7 +975,7 @@ export function DispatchManifestModal({
                       />
                     )}
                     <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'center', marginTop: 4 }}>
-                      {transportForm.choferNombre || 'Firma de transportista receptor'}
+                      {transportForm.choferNombre || (transportForm.tipoTransporte === 'CLIENTE_RECOGE' ? 'Firma de persona autorizada' : 'Firma de transportista receptor')}
                     </div>
                   </div>
                 </div>
@@ -678,20 +985,35 @@ export function DispatchManifestModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)' }}>
+        <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)' }}>
           <button className="btn btn-ghost" onClick={onClose}>
             Cerrar
           </button>
           {!isAlreadyDispatched && (
-            <button
-              className="btn btn-primary"
-              disabled={submitting || loading}
-              onClick={handleConfirmDispatch}
-              style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
-            >
-              <Send size={16} />
-              {submitting ? 'Procesando Salida Física...' : 'Confirmar Salida Física y Despacho'}
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {!isReadyToDispatch && (
+                <span style={{ fontSize: 11, color: 'var(--amber)', display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600 }}>
+                  <Clock size={13} /> Requisitos pendientes para salida física
+                </span>
+              )}
+              <button
+                className="btn btn-primary"
+                disabled={submitting || loading || !isReadyToDispatch}
+                onClick={handleConfirmDispatch}
+                title={!isReadyToDispatch ? 'Completa los datos obligatorios de transporte y firmas para habilitar el despacho' : 'Confirmar Salida Física y Despacho'}
+                style={{
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  opacity: !isReadyToDispatch ? 0.45 : 1,
+                  cursor: !isReadyToDispatch ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <Send size={16} />
+                {submitting ? 'Procesando Salida Física...' : 'Confirmar Salida Física y Despacho'}
+              </button>
+            </div>
           )}
         </div>
       </div>
