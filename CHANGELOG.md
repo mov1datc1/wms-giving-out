@@ -4,6 +4,76 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.21] — 2026-10-24 (Certificación E2E de Cadena Crítica, Microfix FEFO y Reservas Order-Aware Multi-Lote)
+
+### 🚀 Certificación E2E Completa y Blindaje de Asignación Outbound Order-Aware
+
+Esta versión consolida la ejecución y certificación positiva de la cadena crítica: **Catálogo → Recepción Canónica (`REC-2026-0018`) → Conteo en Andén → Doble Etiquetado Giving Out → Putaway Secuencial con Escaneo Dual (`B02-R01-N1` a 40/40 y `B02-R01-N2` a 36/40) → Layout en Tiempo Real → Asignación FEFO Outbound (`PED-2026-0009`)**, manteniendo conciliación matemática perfecta (`diferenciaConciliacion = 0`) sin alterar capacidades nominales ni mover inventario histórico.
+
+### Added
+- **Persistencia y Recuperación de Reservas Multi-Lote Order-Aware (`operations.controller.ts`):**
+  - En `createSalesOrder`, la tupla de lotes reservados se serializa de forma segura en `SalesOrderLine.asignacionesJson` conservando `lotId` primario como fallback.
+  - En `suggestOrderAllocation`, el evaluador inspecciona `asignacionesJson` (o `line.lotId` para órdenes legadas), permitiendo que la propia orden reconozca y recupere tanto su lote principal como sus lotes secundarios aunque tengan `saldoLibre === 0`, aislando estrictamente las reservas de órdenes ajenas.
+  - En `prepareOrder` y `rejectOrder`, la liberación de reservas opera de forma granular sobre cada lote registrado en `asignacionesJson`.
+- **Certificación de Casos Límite y Atomicidad:** Suite de pruebas automatizadas validando con 100% PASS: caso positivo misma orden, caso negativo con bloqueo de reserva de orden ajena, caso de stock normal sin reservas y límite atómico de cantidad (una orden jamás puede tomar más unidades de las reservadas para sí).
+
+### Changed
+- **Precedencia Soberana de Rotación FEFO (`operations.controller.ts`):** `const isFefo = client.reglaInventario === 'FEFO'` establece formalmente que la regla contractual explícita del depositante es la única fuente de verdad para la asignación outbound, desacoplándola del giro comercial.
+- **Aislamiento de Master Pallet Post-Putaway:** Certificado que las tarimas de rampa (`PLT-REC-2026-0018-01`) operan exclusivamente como contenedores lógicos y pedagógicos de descarga en andén sin contaminar inventario físico ni el Layout almacenable de racks.
+
+### Validated
+- **Ejecución E2E Canónica Aprobada:**
+  - SKU creado: `ACE-MINI-250-4` (Caja x4, AlimNorte, ALIMENTO).
+  - Recepción creada: `REC-2026-0018` en Andén 02 (8 piezas, 2 cajas completas).
+  - Lote A (`LOT-ALIM-2026-A60`, caducidad 2026-12-24, ~60d): ubicado en `B02-R01-N1` (Picking N1) elevando la celda de 36/40 a 40/40 (`LLENO`).
+  - Lote B (`LOT-ALIM-2027-B365`, caducidad 2027-10-24, ~365d): ubicado en `B02-R01-N2` (Reserva N2) elevando la celda de 32/40 a 36/40 (`PARCIAL`).
+  - Outbound FEFO: `PED-2026-0009` (4 PZA, estado `SOLICITADO`) sugiere prioritariamente Lote A / HU A en N1.
+- **Invarianza y Conciliación Kárdex:** Balance global cerrado en `Físico: 5,917 = Vendible: 1,556 + Reservado: 104 + Expirado: 274 + Bloqueado: 311 + En Tránsito: 3,672` con `diferenciaConciliacion = 0`.
+
+## [1.9.20] — 2026-10-23 (Estabilización de Alertas, Seguridad Admin RBAC, Certificación de Reglas del Depositante, Putaway Inteligente y FEFO/FIFO)
+
+### 🚀 Estabilización Integral: Alertas Idempotentes, Blindaje de Autenticación RBAC, Precedencia Contractual de Depositantes, Scoring de Putaway y Simulación E2E de Layout
+
+Esta versión formaliza el checkpoint seguro de estabilización operativa (commit `1892351`) y la certificación exhaustiva de la cadena crítica: **Reglas del Depositante → Recepción → Putaway Inteligente → Layout Real → Asignación FEFO/FIFO**, estableciendo el escenario E2E canónico de 4 piezas en celdas reales de `ALM-B` sin alterar capacidades nominales ni inventar ubicaciones.
+
+### Added
+- **Certificación de Regla Contractual de Rotación (`operations.controller.ts`):** Microfix aprobado de precedencia pura en `suggestOrderAllocation` (`const isFefo = client.reglaInventario === 'FEFO'`), garantizando que la elección contractual persistida del depositante mande sobre cualquier sugerencia por giro comercial.
+- **Simulación y Validación de Asignación FEFO con Desempate FIFO:** Verificación con 100% PASS de la matriz de asignación:
+  - Lotes con distinta fecha de vencimiento: se surte primero el lote más próximo a caducar (FEFO puro).
+  - Lotes con idéntica fecha de caducidad: se desempata de forma determinista mediante antigüedad de ingreso en Kárdex (`createdAt: 'asc'`, FIFO).
+  - Depositantes con giro `COMIDA` pero regla explícita `FIFO`: se respeta estrictamente el orden de llegada ignorando la fecha de vencimiento.
+- **Auditoría de Capacidad Física y Ocupación en ALM-B:** Mapeo exhaustivo de las 12 celdas de Alimentos y Consumibles (B01 y B02, Racks 01 a 03, Niveles N1 y N2):
+  - Identificación de 10 celdas saturadas por pruebas de carga históricas (hasta 1,465% de sobrecapacidad en `B01-R01-N1`).
+  - Detección precisa de las 2 únicas celdas con capacidad residual libre: `B02-R01-N1` (Picking Nivel 1: 36/40 PZA, 4 piezas libres) y `B02-R01-N2` (Reserva Nivel 2: 32/40 PZA, 8 piezas libres).
+- **Diseño del Escenario Demo E2E de 4 Piezas:** Modelo de validación matemática en dos tiempos que satisface al 100% los algoritmos de Putaway:
+  - Caja 1 (4 pzas, lote próximo a vencer, +60 días): clasificada con Score 77 en `B02-R01-N1` (Picking), recibiendo bonificación de +25 puntos por cercanía de vencimiento en nivel de fácil acceso.
+  - Caja 2 (4 pzas, lote con caducidad lejana, +365 días): clasificada con Score 73 en `B02-R01-N2` (Reserva), recibiendo bonificación de +20 puntos por almacenamiento óptimo en altura para larga vida útil.
+
+### Changed
+- **Motor de Alertas Idempotente y Reconciliado (`inventory.controller.ts`):** Restaurada la ventana móvil real de `más de 14 días reales sin movimiento` calculada desde el último timestamp en `InventoryMovement`, eliminando el truncamiento artificial a medianoche UTC.
+- **Precedencia de Reglas de Depositante:** El `giro` comercial del cliente (`COMIDA`, `FARMACEUTICO`, etc.) se restringe exclusivamente a sugerir valores por defecto en los formularios de alta/edición de frontend; una vez guardado en base de datos, `Client.reglaInventario` es la única fuente de verdad inmutable.
+
+### Fixed
+- **Vulnerabilidad Crítica de Elevación a SuperAdmin (`AuthContext.tsx`):** Erradicado el bypass que autenticaba automáticamente como SuperAdmin real ante la presencia de `demo-token`, tokens expirados o rechazados por el backend. El sistema ahora limpia exhaustivamente `wms_token`, tokens legados y el estado del usuario, redirigiendo obligatoriamente al login.
+- **Regresión Visual en Panel de Administración (`AdminPanel.tsx`, `admin.controller.ts`, `admin.guard.ts`):** Restaurada la consulta y visualización de los 8 usuarios del sistema y los 7 roles corporativos tras el ajuste de seguridad RBAC.
+- **Blindaje de Endpoints Administrativos:** Validación estricta de código HTTP 403 Forbidden para usuarios sin rol Super Admin y 401 Unauthorized ante llamadas sin token válido.
+- **Idempotencia de Escaneo de Alertas:** Certificada la invariancia ante ejecuciones consecutivas del motor de Alertas (35 alertas activas conservadas, 0 duplicadas, 0 auto-resueltas y 0 mutaciones en tablas operativas).
+
+### Validated
+- **Invarianza Absoluta de Datos Operativos:** Cero mutaciones en `LotInventory`, `HandlingUnit`, `Location`, `SalesOrder`, `CycleCount`, `InventoryReservation` y `InventoryMovement` (Kárdex).
+- **Integridad de AuditLog:** Registrados exactamente 2 eventos `SCAN_ALERTS` correspondientes a los escaneos oficiales realizados.
+- **Expediente Inbound Testigo:** Preservada la recepción `REC-2026-0017` y sus 3 Handling Units en `A01-R02-N1` como control positivo inmutable.
+- **Compilaciones Limpias:** Backend NestJS (`nest build`) compilado con 0 errores y frontend Vite TypeScript validado.
+
+### Pending / Hoja de Ruta para la Sesión de Mañana
+1. **Creación de Recepción Limpia para Demostración (`REC-2026-0018`):** Ingreso formal de 2 cajas de 4 piezas de AlimNorte (Lote vencimiento corto vs Lote vencimiento largo) configurando empaque compatible.
+2. **Ejecución del Flujo E2E en Vivo:**
+   - Recepción en andén REC-01.
+   - Putaway Inteligente con doble escaneo sugiriendo `B02-R01-N1` (Picking) y `B02-R01-N2` (Reserva).
+   - Verificación de actualización en tiempo real en Layout / Ubicaciones.
+   - Surtido Outbound (Picking) confirmando que la asignación FEFO selecciona la caja de `B02-R01-N1`.
+3. **Auditoría de Conteo Cíclico:** Revisión arquitectónica de `CC-2026-001`.
+
 ## [1.9.19] — 2026-10-21 (Release Candidate 4 — Consolidación de Inventario, Transferencia HU-Aware, Kárdex Auditado, Despacho E2E y Dashboard Ejecutivo)
 
 ### 🚀 Release Candidate: Consolidación de Inventario, Transferencia Blindada HU-Aware, Kárdex Auditado, Despacho E2E y Dashboard Ejecutivo Canónico

@@ -6924,6 +6924,7 @@ export class OperationsController {
       // Distribuir la reserva entre los lotes
       let remainingToReserve = requestedQty;
       let primaryLotId: string | null = null;
+      const lineReservations: { lotId: string; cantidad: number }[] = [];
 
       for (const itemState of availableLotsWithState) {
         if (remainingToReserve <= 0) break;
@@ -6932,6 +6933,7 @@ export class OperationsController {
 
         const take = Math.min(remainingToReserve, lotFree);
         reservationsToApply.push({ lotId: itemState.lot.id, cantidad: take });
+        lineReservations.push({ lotId: itemState.lot.id, cantidad: take });
         if (!primaryLotId) primaryLotId = itemState.lot.id;
         remainingToReserve -= take;
       }
@@ -6941,6 +6943,7 @@ export class OperationsController {
         cantidadSolicitada: requestedQty,
         cantidadAsignada: 0,
         lotId: primaryLotId,
+        asignacionesJson: lineReservations.length > 0 ? JSON.stringify(lineReservations) : null,
       });
     }
 
@@ -7034,7 +7037,7 @@ export class OperationsController {
     if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
     const client = order.cliente;
-    const isFefo = client.reglaInventario === 'FEFO' || client.giro === 'COMIDA' || client.giro === 'FARMACEUTICO';
+    const isFefo = client.reglaInventario === 'FEFO';
     const reglaAplicada = isFefo ? 'FEFO' : 'FIFO';
 
     const lineasResult: any[] = [];
@@ -7079,12 +7082,32 @@ export class OperationsController {
           : [{ createdAt: 'asc' }],
       });
 
+      // Mapear reservas iniciales de la línea (soporta multi-lote vía asignacionesJson y retrocompatibilidad vía lotId)
+      const ownReservationsMap = new Map<string, number>();
+      if (line.asignacionesJson) {
+        try {
+          const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+          if (Array.isArray(parsed)) {
+            for (const r of parsed) {
+              if (r && r.lotId && Number(r.cantidad) > 0) {
+                ownReservationsMap.set(r.lotId, Number(r.cantidad));
+              }
+            }
+          }
+        } catch {}
+      }
+      if (ownReservationsMap.size === 0 && line.lotId) {
+        ownReservationsMap.set(line.lotId, line.cantidadSolicitada);
+      }
+
       // Filtrar únicamente lotes comercialmente elegibles (precedencia central: excluye vencidos, merma y tránsito)
       const now = new Date();
       const candidateLots = candidateLotsRaw.filter(lot => {
         const role = classifyLocationOperationalRole(lot.ubicacion);
         const opState = evaluateInventoryItemOperationalState(lot, role, now);
-        return opState.esElegibleAllocation;
+        // Excepción order-aware: solo si este lote fue reservado explícitamente para esta orden (principal o secundario)
+        const isInitialLot = ownReservationsMap.has(lot.id);
+        return opState.esElegibleAllocation || (isInitialLot && opState.estadoPrincipal === 'DISPONIBLE_COMERCIAL' && !opState.esVencido);
       });
 
       let remainingToAllocate = requestedQty;
@@ -7092,9 +7115,51 @@ export class OperationsController {
       const todosLotesDisponibles: any[] = [];
 
       for (const lot of candidateLots) {
-        const isInitialLotForThisLine = line.lotId === lot.id;
-        const reservedByOthers = Math.max(0, lot.cantidadReservada - (isInitialLotForThisLine ? line.cantidadSolicitada : 0));
-        const libreParaEstaOrden = Math.max(0, lot.cantidadDisponible - reservedByOthers);
+        const isInitialLotForThisLine = ownReservationsMap.has(lot.id);
+        const maxOwnLineQuota = ownReservationsMap.get(lot.id) || 0;
+
+        // Aislamiento atómico de reservas: calcular de forma order-aware las reservas de OTRAS órdenes
+        let reservedByOthers = lot.cantidadReservada || 0;
+        let ownReservedOnThisLot = 0;
+
+        if (isInitialLotForThisLine) {
+          const otherActiveLines = await this.prisma.salesOrderLine.findMany({
+            where: {
+              lotId: lot.id,
+              orderId: { not: order.id },
+              orden: {
+                estado: { in: ['SOLICITADO', 'APROBADO', 'EN_PREPARACION', 'EN_PICKING'] },
+              },
+            },
+            select: { cantidadSolicitada: true, asignacionesJson: true },
+          });
+
+          let otherOrdersReservedQty = 0;
+          for (const oLine of otherActiveLines) {
+            let oFound = false;
+            if (oLine.asignacionesJson) {
+              try {
+                const parsedO = typeof oLine.asignacionesJson === 'string' ? JSON.parse(oLine.asignacionesJson) : oLine.asignacionesJson;
+                if (Array.isArray(parsedO)) {
+                  const m = parsedO.find((x: any) => x.lotId === lot.id);
+                  if (m) {
+                    otherOrdersReservedQty += (Number(m.cantidad) || 0);
+                    oFound = true;
+                  }
+                }
+              } catch {}
+            }
+            if (!oFound) {
+              otherOrdersReservedQty += (oLine.cantidadSolicitada || 0);
+            }
+          }
+
+          reservedByOthers = Math.min(lot.cantidadReservada || 0, otherOrdersReservedQty);
+          ownReservedOnThisLot = Math.min(maxOwnLineQuota, Math.max(0, (lot.cantidadReservada || 0) - reservedByOthers));
+        }
+
+        const globalSaldoLibre = Math.max(0, (lot.cantidadDisponible || 0) - (lot.cantidadReservada || 0));
+        const libreParaEstaOrden = globalSaldoLibre + ownReservedOnThisLot;
 
         const lotInfo: any = {
           lotId: lot.id,
@@ -7252,8 +7317,22 @@ export class OperationsController {
           throw new HttpException(`La línea para "${line.sku.descripcion}" debe tener al menos una unidad asignada`, HttpStatus.BAD_REQUEST);
         }
 
-        // Si la línea ya tenía un lote original reservado al crear el pedido, liberar su reserva
-        if (line.lotId) {
+        // Si la línea ya tenía un lote o desglose multi-lote reservado al crear el pedido, liberar su reserva
+        if (line.asignacionesJson) {
+          try {
+            const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+            if (Array.isArray(parsed)) {
+              for (const r of parsed) {
+                if (r && r.lotId && Number(r.cantidad) > 0) {
+                  await tx.lotInventory.update({
+                    where: { id: r.lotId },
+                    data: { cantidadReservada: { decrement: Number(r.cantidad) } },
+                  }).catch(() => null);
+                }
+              }
+            }
+          } catch {}
+        } else if (line.lotId) {
           await tx.lotInventory.update({
             where: { id: line.lotId },
             data: { cantidadReservada: { decrement: line.cantidadSolicitada } },
@@ -7403,8 +7482,24 @@ export class OperationsController {
     if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
     if (!body.motivo) throw new HttpException('El motivo de rechazo o cancelación es obligatorio', HttpStatus.BAD_REQUEST);
 
-    // Liberar inventario reservado en los lotes
+    // Liberar inventario reservado en los lotes (multi-lote o lote único con retrocompatibilidad)
     for (const line of order.lineas) {
+      if (line.asignacionesJson) {
+        try {
+          const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+          if (Array.isArray(parsed)) {
+            for (const r of parsed) {
+              if (r && r.lotId && Number(r.cantidad) > 0) {
+                await this.prisma.lotInventory.update({
+                  where: { id: r.lotId },
+                  data: { cantidadReservada: { decrement: Number(r.cantidad) } },
+                }).catch(() => null);
+              }
+            }
+            continue;
+          }
+        } catch {}
+      }
       if (line.lotId && line.cantidadSolicitada > 0) {
         await this.prisma.lotInventory.update({
           where: { id: line.lotId },
