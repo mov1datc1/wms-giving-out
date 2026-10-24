@@ -1,10 +1,12 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
+import { AdminAuthGuard } from './admin.guard';
 import * as bcrypt from 'bcrypt';
 
 @ApiTags('Auth')
 @Controller('api/admin')
+@UseGuards(AdminAuthGuard)
 export class AdminController {
   constructor(private prisma: PrismaService) {}
 
@@ -42,12 +44,46 @@ export class AdminController {
   @Post('users')
   @ApiOperation({ summary: 'Crear usuario' })
   async createUser(@Body() data: { email: string; nombre: string; password: string; rolId?: string; almacenId?: string; clienteId?: string }) {
+    if (!data.email || !data.nombre || !data.password) {
+      throw new HttpException('Nombre, email y contraseña son obligatorios', HttpStatus.BAD_REQUEST);
+    }
+    if (!data.rolId) {
+      throw new HttpException('El rol es obligatorio para crear un usuario', HttpStatus.BAD_REQUEST);
+    }
+
     const existing = await this.prisma.user.findUnique({ where: { email: data.email } });
     if (existing) throw new HttpException('Email ya registrado', HttpStatus.CONFLICT);
 
+    const role = await this.prisma.role.findUnique({ where: { id: data.rolId } });
+    if (!role) throw new HttpException('Rol no encontrado o inválido', HttpStatus.BAD_REQUEST);
+
+    const isDepositante = role.nombre.toLowerCase().includes('depositante');
+    let finalClienteId: string | null = null;
+
+    if (isDepositante) {
+      if (!data.clienteId || !data.clienteId.trim()) {
+        throw new HttpException('El depositante vinculado es obligatorio para usuarios con rol Depositante', HttpStatus.BAD_REQUEST);
+      }
+      const client = await this.prisma.client.findUnique({ where: { id: data.clienteId } });
+      if (!client || !client.activo) {
+        throw new HttpException('El depositante seleccionado no existe o está inactivo', HttpStatus.BAD_REQUEST);
+      }
+      finalClienteId = client.id;
+    } else {
+      // Regla estricta: Usuarios internos (no depositantes) no pueden quedar vinculados a ningún cliente/tenant
+      finalClienteId = null;
+    }
+
     const passwordHash = await bcrypt.hash(data.password, 10);
     return this.prisma.user.create({
-      data: { email: data.email, nombre: data.nombre, passwordHash, rolId: data.rolId, almacenId: data.almacenId, clienteId: data.clienteId },
+      data: {
+        email: data.email,
+        nombre: data.nombre,
+        passwordHash,
+        rolId: role.id,
+        almacenId: data.almacenId || null,
+        clienteId: finalClienteId,
+      },
       include: { rol: { select: { nombre: true } } },
     });
   }
@@ -55,14 +91,43 @@ export class AdminController {
   @Put('users/:id')
   @ApiOperation({ summary: 'Actualizar usuario' })
   async updateUser(@Param('id') id: string, @Body() data: any) {
+    const existing = await this.prisma.user.findUnique({
+      where: { id },
+      include: { rol: true },
+    });
+    if (!existing) throw new HttpException('Usuario no encontrado', HttpStatus.NOT_FOUND);
+
     const updateData: any = {};
     if (data.nombre) updateData.nombre = data.nombre;
     if (data.email) updateData.email = data.email;
-    if (data.rolId !== undefined) updateData.rolId = data.rolId;
     if (data.almacenId !== undefined) updateData.almacenId = data.almacenId;
-    if (data.clienteId !== undefined) updateData.clienteId = data.clienteId;
     if (data.activo !== undefined) updateData.activo = data.activo;
     if (data.password) updateData.passwordHash = await bcrypt.hash(data.password, 10);
+
+    const targetRolId = data.rolId !== undefined ? data.rolId : existing.rolId;
+    if (!targetRolId) {
+      throw new HttpException('El rol del usuario es obligatorio', HttpStatus.BAD_REQUEST);
+    }
+
+    const role = await this.prisma.role.findUnique({ where: { id: targetRolId } });
+    if (!role) throw new HttpException('Rol no encontrado o inválido', HttpStatus.BAD_REQUEST);
+    updateData.rolId = role.id;
+
+    const isDepositante = role.nombre.toLowerCase().includes('depositante');
+    if (isDepositante) {
+      const candidateClienteId = data.clienteId !== undefined ? data.clienteId : existing.clienteId;
+      if (!candidateClienteId || !candidateClienteId.trim()) {
+        throw new HttpException('El depositante vinculado es obligatorio para usuarios con rol Depositante', HttpStatus.BAD_REQUEST);
+      }
+      const client = await this.prisma.client.findUnique({ where: { id: candidateClienteId } });
+      if (!client || !client.activo) {
+        throw new HttpException('El depositante seleccionado no existe o está inactivo', HttpStatus.BAD_REQUEST);
+      }
+      updateData.clienteId = client.id;
+    } else {
+      // Usuarios internos siempre quedan con clienteId = null
+      updateData.clienteId = null;
+    }
 
     return this.prisma.user.update({
       where: { id },

@@ -9,7 +9,7 @@ import {
 
 const TIPO_CONFIG: Record<string, { icon: any; color: string; bg: string; label: string }> = {
   STOCK_BAJO: { icon: Package, color: 'var(--danger)', bg: 'var(--danger-soft)', label: 'Stock Bajo' },
-  VENCIMIENTO_PROXIMO: { icon: CalendarClock, color: 'var(--orange)', bg: 'var(--warning-soft)', label: 'Vencimiento Próximo' },
+  VENCIMIENTO_PROXIMO: { icon: CalendarClock, color: 'var(--orange)', bg: 'var(--warning-soft)', label: 'Vencimiento / Vencido' },
   PEDIDO_ATRASADO: { icon: Clock, color: 'var(--purple)', bg: 'rgba(99,102,241,0.1)', label: 'Pedido Atrasado' },
   SIN_MOVIMIENTO: { icon: TrendingDown, color: 'var(--info)', bg: 'var(--info-soft)', label: 'Sin Movimiento' },
   DISCREPANCIA: { icon: AlertTriangle, color: 'var(--danger)', bg: 'var(--danger-soft)', label: 'Discrepancia' },
@@ -54,6 +54,7 @@ function suggestPriority(prioridad: string): string {
 export function Alerts() {
   const { token, user } = useAuth();
   const [alerts, setAlerts] = useState<any[]>([]);
+  const [lastScan, setLastScan] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [search, setSearch] = useState('');
@@ -79,8 +80,15 @@ export function Alerts() {
     setLoading(true);
     try {
       const url = showResolved ? `${API}/alerts?todas=true` : `${API}/alerts`;
-      const res = await fetch(url, { headers });
-      if (res.ok) setAlerts(await res.json());
+      const [alertsRes, statusRes] = await Promise.all([
+        fetch(url, { headers }),
+        fetch(`${API}/alerts/status`, { headers }).catch(() => null),
+      ]);
+      if (alertsRes.ok) setAlerts(await alertsRes.json());
+      if (statusRes && statusRes.ok) {
+        const statusData = await statusRes.json();
+        setLastScan(statusData.lastScan || null);
+      }
     } catch (err) { console.error(err); }
     setLoading(false);
   }
@@ -93,6 +101,7 @@ export function Alerts() {
       if (res.ok) {
         const result = await res.json();
         setMsg(result.message);
+        if (result.scannedAt) setLastScan(result.scannedAt);
         loadData();
       }
     } catch (err) { console.error(err); }
@@ -164,12 +173,20 @@ export function Alerts() {
   const activeCount = alerts.filter(a => !a.resuelta).length;
   const criticalCount = alerts.filter(a => !a.resuelta && a.prioridad === 'CRITICA').length;
 
+  let subtitleText = 'Último escaneo: Nunca';
+  if (lastScan) {
+    const formatted = new Date(lastScan).toLocaleString('es-MX', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    subtitleText = `${activeCount} alertas activas · ${criticalCount} críticas · Último escaneo: ${formatted}`;
+  }
+
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <h1 className="page-title">Centro de Alertas</h1>
-          <p className="page-subtitle">{activeCount} alertas activas · {criticalCount} críticas</p>
+          <p className="page-subtitle">{subtitleText}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={generateAlerts} disabled={generating}>
@@ -180,6 +197,27 @@ export function Alerts() {
       </div>
 
       {msg && <div className="form-message form-success-msg" style={{ marginBottom: 16 }}>{msg}</div>}
+
+      {!lastScan && (
+        <div className="card animate-fade-in" style={{
+          marginBottom: 16,
+          padding: '16px 20px',
+          background: 'rgba(59, 130, 246, 0.08)',
+          border: '1px solid rgba(59, 130, 246, 0.3)',
+          borderRadius: 10,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 14,
+        }}>
+          <ShieldAlert size={24} color="var(--info)" style={{ flexShrink: 0 }} />
+          <div style={{ flex: 1, fontSize: 13, lineHeight: 1.4 }}>
+            <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Evaluación Operativa Pendiente:</span>{' '}
+            <span style={{ color: 'var(--text-secondary)' }}>
+              Aún no se ha realizado una evaluación operativa. Ejecute “Escanear Inventario” para analizar las reglas del WMS.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Summary cards by type */}
       <div className="stats-grid" style={{ marginBottom: 20 }}>
@@ -386,11 +424,44 @@ export function Alerts() {
             );
           })}
           {filtered.length === 0 && (
-            <div className="card"><div style={{ padding: 60, textAlign: 'center', color: 'var(--text-tertiary)' }}>
-              <Bell size={32} style={{ opacity: 0.3, marginBottom: 12 }} />
-              <div>Sin alertas {filterTipo ? `de tipo "${TIPO_CONFIG[filterTipo]?.label}"` : ''}</div>
-              <div style={{ fontSize: 13, marginTop: 4 }}>Haz clic en "Escanear Inventario" para detectar problemas automáticamente.</div>
-            </div></div>
+            <div className="card">
+              <div style={{ padding: 60, textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                {!lastScan ? (
+                  <>
+                    <Bell size={36} style={{ opacity: 0.35, marginBottom: 12 }} />
+                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 6 }}>
+                      Nunca evaluado
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 480, margin: '0 auto' }}>
+                      Aún no se ha realizado una evaluación operativa. Ejecute “Escanear Inventario” para analizar las reglas del WMS.
+                    </div>
+                  </>
+                ) : filterTipo ? (
+                  <>
+                    <Bell size={36} style={{ opacity: 0.35, marginBottom: 12 }} />
+                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
+                      Sin alertas activas de tipo “{TIPO_CONFIG[filterTipo]?.label || filterTipo}”
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                      No se encontraron incidencias activas en esta categoría.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle size={36} color="var(--emerald)" style={{ marginBottom: 12 }} />
+                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 6 }}>
+                      No se detectaron incidencias bajo las reglas operativas actuales.
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                      Último escaneo registrado:{' '}
+                      {new Date(lastScan).toLocaleString('es-MX', {
+                        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}

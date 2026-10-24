@@ -4,14 +4,14 @@ import { API } from '../config/api';
 import {
   Shield, Users, Key, Settings, Search, Plus, Edit3, Mail,
   CheckCircle, AlertTriangle, Save, RefreshCw, Wifi, Building2,
-  Lock, UserCheck, X, Eye, EyeOff
+  Lock, UserCheck, X, Eye, EyeOff, ShieldAlert, Info
 } from 'lucide-react';
 import { formatCalendarDate } from '../utils/dateUtils';
 
 const tabs = ['Usuarios', 'Roles', 'Configuración', 'Correo SMTP'];
 
 export function AdminPanel() {
-  const { token, user: currentUser } = useAuth();
+  const { token, user: currentUser, hasPermission } = useAuth();
   const [activeTab, setActiveTab] = useState(0);
   const [search, setSearch] = useState('');
 
@@ -20,6 +20,8 @@ export function AdminPanel() {
   const [rolesList, setRolesList] = useState<any[]>([]);
   const [clientsList, setClientsList] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [rolesError, setRolesError] = useState<string | null>(null);
 
   // User modal create / edit
   const [userModalOpen, setUserModalOpen] = useState(false);
@@ -43,35 +45,83 @@ export function AdminPanel() {
     pass: '',
     fromName: 'Giving Out WMS',
   });
+  const [isPassConfigured, setIsPassConfigured] = useState(false);
   const [smtpLoading, setSmtpLoading] = useState(false);
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpTesting, setSmtpTesting] = useState(false);
   const [smtpMsg, setSmtpMsg] = useState({ type: '', text: '' });
   const [showPass, setShowPass] = useState(false);
 
-  const headers: any = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const getAuthHeaders = (): Record<string, string> => {
+    const activeToken = token || localStorage.getItem('wms_token') || localStorage.getItem('token');
+    return {
+      'Content-Type': 'application/json',
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+    };
+  };
+
+  // Listener para cerrar modal con tecla Escape
+  useEffect(() => {
+    if (!userModalOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setUserModalOpen(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [userModalOpen]);
 
   useEffect(() => {
     loadUsersAndRoles();
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     if (activeTab === 3) loadSmtpConfig();
   }, [activeTab]);
 
+  // Protección en render si el usuario no tiene permisos
+  if (currentUser && !currentUser.isSuperAdmin && !hasPermission('admin')) {
+    return (
+      <div className="card" style={{ padding: 48, textAlign: 'center', margin: '40px auto', maxWidth: 480 }}>
+        <ShieldAlert size={48} color="#EF4444" style={{ marginBottom: 16, display: 'inline-block' }} />
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: '#0F172A', marginBottom: 8 }}>Acceso Denegado</h2>
+        <p style={{ color: '#64748B', fontSize: 14 }}>No tienes autorización para acceder al Panel de Administración.</p>
+      </div>
+    );
+  }
+
   async function loadUsersAndRoles() {
     setLoadingUsers(true);
+    setUsersError(null);
+    setRolesError(null);
     try {
+      const authHeaders = getAuthHeaders();
       const [usersRes, rolesRes, clientsRes] = await Promise.all([
-        fetch(`${API}/admin/users`, { headers }),
-        fetch(`${API}/admin/roles`, { headers }),
-        fetch(`${API}/clients`, { headers }),
+        fetch(`${API}/admin/users`, { headers: authHeaders }),
+        fetch(`${API}/admin/roles`, { headers: authHeaders }),
+        fetch(`${API}/clients`, { headers: authHeaders }),
       ]);
-      if (usersRes.ok) setUsersList(await usersRes.json());
-      if (rolesRes.ok) setRolesList(await rolesRes.json());
-      if (clientsRes.ok) setClientsList(await clientsRes.json());
-    } catch (err) {
-      console.error('Error al cargar usuarios:', err);
+      if (usersRes.ok) {
+        setUsersList(await usersRes.json());
+      } else {
+        const errJson = await usersRes.json().catch(() => ({}));
+        setUsersError(errJson.message || `No fue posible cargar los usuarios (HTTP ${usersRes.status})`);
+      }
+      if (rolesRes.ok) {
+        setRolesList(await rolesRes.json());
+      } else {
+        const errJson = await rolesRes.json().catch(() => ({}));
+        setRolesError(errJson.message || `No fue posible cargar los roles (HTTP ${rolesRes.status})`);
+      }
+      if (clientsRes.ok) {
+        setClientsList(await clientsRes.json());
+      }
+    } catch (err: any) {
+      console.error('Error al cargar datos administrativos:', err);
+      const msg = err.message || 'Error de conexión con el servidor';
+      setUsersError(msg);
+      setRolesError(msg);
     } finally {
       setLoadingUsers(false);
     }
@@ -83,7 +133,7 @@ export function AdminPanel() {
       nombre: '',
       email: '',
       password: '',
-      rolId: rolesList[0]?.id || '',
+      rolId: '', // Selección explícita requerida, sin asumir Super Admin
       clienteId: '',
       activo: true,
     });
@@ -115,15 +165,26 @@ export function AdminPanel() {
       setUserFormError('La contraseña es requerida para nuevos usuarios');
       return;
     }
+    if (!userForm.rolId) {
+      setUserFormError('Debe seleccionar un rol operativo');
+      return;
+    }
+
+    const selectedRole = rolesList.find(r => r.id === userForm.rolId);
+    const isDepositante = selectedRole?.nombre?.toLowerCase().includes('depositante');
+    if (isDepositante && !userForm.clienteId) {
+      setUserFormError('El depositante vinculado es obligatorio para cuentas con rol Depositante');
+      return;
+    }
 
     setUserFormSaving(true);
     setUserFormError('');
     try {
       const payload: any = {
-        nombre: userForm.nombre,
-        email: userForm.email,
-        rolId: userForm.rolId || undefined,
-        clienteId: userForm.clienteId || null,
+        nombre: userForm.nombre.trim(),
+        email: userForm.email.trim(),
+        rolId: userForm.rolId,
+        clienteId: isDepositante ? userForm.clienteId : null,
         activo: userForm.activo,
       };
       if (userForm.password) payload.password = userForm.password;
@@ -132,13 +193,13 @@ export function AdminPanel() {
       if (editingUser) {
         res = await fetch(`${API}/admin/users/${editingUser.id}`, {
           method: 'PUT',
-          headers,
+          headers: getAuthHeaders(),
           body: JSON.stringify(payload),
         });
       } else {
         res = await fetch(`${API}/admin/users`, {
           method: 'POST',
-          headers,
+          headers: getAuthHeaders(),
           body: JSON.stringify(payload),
         });
       }
@@ -161,7 +222,7 @@ export function AdminPanel() {
     try {
       await fetch(`${API}/admin/users/${u.id}`, {
         method: 'PUT',
-        headers,
+        headers: getAuthHeaders(),
         body: JSON.stringify({ activo: !u.activo }),
       });
       loadUsersAndRoles();
@@ -173,18 +234,25 @@ export function AdminPanel() {
   async function loadSmtpConfig() {
     setSmtpLoading(true);
     try {
-      const res = await fetch(`${API}/settings?category=email`, { headers });
+      const res = await fetch(`${API}/settings?category=email`, { headers: getAuthHeaders() });
       if (res.ok) {
         const settings = await res.json();
         const cfg: Record<string, string> = {};
-        settings.forEach((s: any) => { cfg[s.key] = s.value; });
+        let passConfigured = false;
+        settings.forEach((s: any) => {
+          cfg[s.key] = s.value;
+          if (s.key === 'email.smtp_pass' && (s.isConfigured || s.value === '__CONFIGURED__')) {
+            passConfigured = true;
+          }
+        });
         setSmtp({
           host: cfg['email.smtp_host'] || 'mail.movidatci.com',
           port: cfg['email.smtp_port'] || '465',
           user: cfg['email.smtp_user'] || 'wms@movidatci.com',
-          pass: cfg['email.smtp_pass'] || '',
+          pass: '', // Jamás precargar credenciales reales en memoria
           fromName: cfg['email.from_name'] || 'Giving Out WMS',
         });
+        setIsPassConfigured(passConfigured);
       }
     } catch (err) { console.error(err); }
     setSmtpLoading(false);
@@ -194,20 +262,30 @@ export function AdminPanel() {
     setSmtpSaving(true);
     setSmtpMsg({ type: '', text: '' });
     try {
+      const settingsToSave: any[] = [
+        { key: 'email.smtp_host', value: smtp.host, category: 'email', label: 'Servidor SMTP' },
+        { key: 'email.smtp_port', value: smtp.port, category: 'email', label: 'Puerto SMTP' },
+        { key: 'email.smtp_user', value: smtp.user, category: 'email', label: 'Usuario SMTP' },
+        { key: 'email.from_name', value: smtp.fromName, category: 'email', label: 'Nombre remitente' },
+      ];
+      // Solo enviar contraseña si el usuario escribió una nueva
+      if (smtp.pass && smtp.pass.trim() !== '') {
+        settingsToSave.push({ key: 'email.smtp_pass', value: smtp.pass, category: 'email', label: 'Contraseña SMTP' });
+      }
+
       const res = await fetch(`${API}/settings`, {
-        method: 'PUT', headers,
-        body: JSON.stringify({
-          settings: [
-            { key: 'email.smtp_host', value: smtp.host, category: 'email', label: 'Servidor SMTP' },
-            { key: 'email.smtp_port', value: smtp.port, category: 'email', label: 'Puerto SMTP' },
-            { key: 'email.smtp_user', value: smtp.user, category: 'email', label: 'Usuario SMTP' },
-            { key: 'email.smtp_pass', value: smtp.pass, category: 'email', label: 'Contraseña SMTP' },
-            { key: 'email.from_name', value: smtp.fromName, category: 'email', label: 'Nombre remitente' },
-          ],
-        }),
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ settings: settingsToSave }),
       });
       if (res.ok) {
         setSmtpMsg({ type: 'success', text: 'Configuración SMTP guardada correctamente' });
+        if (smtp.pass) {
+          setIsPassConfigured(true);
+          setSmtp(s => ({ ...s, pass: '' })); // Limpiar contraseña en memoria tras guardar
+        }
+      } else {
+        throw new Error('Error al guardar la configuración');
       }
     } catch (err: any) { setSmtpMsg({ type: 'error', text: err.message }); }
     setSmtpSaving(false);
@@ -217,12 +295,25 @@ export function AdminPanel() {
     setSmtpTesting(true);
     setSmtpMsg({ type: '', text: '' });
     try {
-      await saveSmtpConfig();
-      const res = await fetch(`${API}/settings/test-email`, { method: 'POST', headers });
+      // Probar Conexión NO persiste automáticamente en BD.
+      // Envía valores efímeros para test en memoria.
+      const testPayload: any = {
+        host: smtp.host,
+        port: smtp.port,
+        user: smtp.user,
+      };
+      if (smtp.pass && smtp.pass.trim() !== '') {
+        testPayload.pass = smtp.pass;
+      }
+      const res = await fetch(`${API}/settings/test-email`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(testPayload),
+      });
       const result = await res.json();
       setSmtpMsg({
         type: result.success ? 'success' : 'error',
-        text: result.success ? 'Conexión SMTP exitosa — el correo está listo para enviar notificaciones' : `Error: ${result.message}`
+        text: result.success ? 'Conexión SMTP exitosa — el servidor responde correctamente (transport.verify OK)' : `Error: ${result.message}`
       });
     } catch (err: any) { setSmtpMsg({ type: 'error', text: err.message }); }
     setSmtpTesting(false);
@@ -272,7 +363,9 @@ export function AdminPanel() {
         <div className="card">
           <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)' }}>
             <div>
-              <span style={{ fontWeight: 700, fontSize: 14 }}>Usuarios del Sistema y Portales ({filteredUsers.length})</span>
+              <span style={{ fontWeight: 700, fontSize: 14 }}>
+                Usuarios del Sistema y Portales {usersError ? '(Error)' : `(${filteredUsers.length})`}
+              </span>
               <p style={{ margin: 0, fontSize: 12, color: 'var(--text-secondary)' }}>
                 Gestión unificada de personal de Giving Out y cuentas de depositantes
               </p>
@@ -295,6 +388,24 @@ export function AdminPanel() {
             {loadingUsers ? (
               <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
                 <RefreshCw className="animate-spin" size={20} /> Cargando catálogo de usuarios...
+              </div>
+            ) : usersError ? (
+              <div style={{ padding: '36px 20px', textAlign: 'center', background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8, margin: 16 }}>
+                <AlertTriangle size={32} color="#DC2626" style={{ margin: '0 auto 12px' }} />
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#991B1B', margin: '0 0 8px' }}>
+                  No fue posible cargar los usuarios
+                </h3>
+                <p style={{ fontSize: 13, color: '#B91C1C', margin: '0 0 16px', maxWidth: 500, marginLeft: 'auto', marginRight: 'auto' }}>
+                  {usersError}
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={loadUsersAndRoles}
+                  style={{ margin: '0 auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  <RefreshCw size={14} /> Reintentar
+                </button>
               </div>
             ) : (
               <table className="data-table">
@@ -361,7 +472,7 @@ export function AdminPanel() {
                       </tr>
                     );
                   })}
-                  {filteredUsers.length === 0 && (
+                  {filteredUsers.length === 0 && !usersError && (
                     <tr>
                       <td colSpan={7} style={{ textAlign: 'center', padding: 30, color: 'var(--text-tertiary)' }}>
                         No se encontraron usuarios coincidentes.
@@ -376,40 +487,77 @@ export function AdminPanel() {
       )}
 
       {activeTab === 1 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          {rolesList.map(role => (
-            <div key={role.id} className="card" style={{ padding: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--bg-secondary)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Shield size={16} />
+        rolesError ? (
+          <div className="card" style={{ padding: '36px 20px', textAlign: 'center', background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8 }}>
+            <AlertTriangle size={32} color="#DC2626" style={{ margin: '0 auto 12px' }} />
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#991B1B', margin: '0 0 8px' }}>
+              No fue posible cargar los roles
+            </h3>
+            <p style={{ fontSize: 13, color: '#B91C1C', margin: '0 0 16px', maxWidth: 500, marginLeft: 'auto', marginRight: 'auto' }}>
+              {rolesError}
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={loadUsersAndRoles}
+              style={{ margin: '0 auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <RefreshCw size={14} /> Reintentar
+            </button>
+          </div>
+        ) : loadingUsers ? (
+          <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
+            <RefreshCw className="animate-spin" size={20} /> Cargando catálogo de roles...
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            {rolesList.map(role => (
+              <div key={role.id} className="card" style={{ padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--bg-secondary)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Shield size={16} />
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{role.nombre}</span>
                   </div>
-                  <span style={{ fontWeight: 700, fontSize: 14 }}>{role.nombre}</span>
+                  <span className="badge badge-default">Nivel {role.nivel}</span>
                 </div>
-                <span className="badge badge-default">Nivel {role.nivel}</span>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  {role.descripcion || 'Permisos según matriz RBAC configurada'}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {usersList.filter(u => u.rolId === role.id || u.rolObj?.id === role.id).length} usuario(s) asignado(s)
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-                {role.descripcion || 'Permisos según matriz RBAC configurada'}
+            ))}
+            {rolesList.length === 0 && (
+              <div className="card" style={{ padding: 30, textAlign: 'center', color: 'var(--text-tertiary)', gridColumn: '1 / -1' }}>
+                No hay roles registrados en el sistema.
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                {usersList.filter(u => u.rolId === role.id || u.rolObj?.id === role.id).length} usuario(s) asignado(s)
-              </div>
-            </div>
-          ))}
-        </div>
+            )}
+          </div>
+        )
       )}
 
       {activeTab === 2 && (
         <div className="card">
-          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Configuración de Plataforma</div>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span>Información de Plataforma (Solo Lectura)</span>
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '2px 8px', borderRadius: 4 }}>
+              Entorno: Operativo 3PL
+            </span>
+          </div>
+          <div style={{ padding: '12px 20px', background: '#F8FAFC', borderBottom: '1px solid var(--border)', fontSize: 12, color: '#64748B' }}>
+            Parámetros operativos y del entorno en tiempo de ejecución. La gestión de variables de entorno y tokens de sesión se administra a nivel de infraestructura.
+          </div>
           <div style={{ overflowX: 'auto' }}>
             <table className="data-table">
               <thead><tr><th>Clave</th><th>Valor</th><th>Descripción</th></tr></thead>
               <tbody>
-                <tr><td><code>app.name</code></td><td>Giving Out WMS</td><td>Nombre del sistema 3PL</td></tr>
-                <tr><td><code>auth.session_hours</code></td><td>24</td><td>Duración de tokens JWT</td></tr>
-                <tr><td><code>fefo.threshold_days</code></td><td>365</td><td>Umbral de rotación en días para niveles accesibles</td></tr>
-                <tr><td><code>labels.default_format</code></td><td>100x50mm</td><td>Medida estándar de etiquetas térmicas</td></tr>
+                <tr><td><code>app.name</code></td><td>Giving Out WMS</td><td>Identificador del sistema 3PL</td></tr>
+                <tr><td><code>auth.session_hours</code></td><td>24</td><td>Duración configurada en token JWT</td></tr>
+                <tr><td><code>labels.default_format</code></td><td>100x50mm</td><td>Formato térmico predeterminado del módulo de etiquetado</td></tr>
+                <tr><td><code>inventory.alerts_scan_policy</code></td><td>Manual / Por Demanda</td><td>Política activa del Centro de Alertas WMS</td></tr>
               </tbody>
             </table>
           </div>
@@ -441,14 +589,28 @@ export function AdminPanel() {
                   <input className="form-input" type="email" value={smtp.user} onChange={e => setSmtp(s => ({ ...s, user: e.target.value }))} placeholder="wms@movidatci.com" />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Contraseña</label>
+                  <label className="form-label">
+                    Contraseña SMTP {isPassConfigured && <span style={{ fontSize: 11, fontWeight: 400, color: '#16A34A' }}>✓ Configurada</span>}
+                  </label>
                   <div style={{ position: 'relative' }}>
-                    <input className="form-input" type={showPass ? 'text' : 'password'} value={smtp.pass}
-                      onChange={e => setSmtp(s => ({ ...s, pass: e.target.value }))} placeholder="••••••••" style={{ paddingRight: 60 }} />
-                    <button type="button" onClick={() => setShowPass(!showPass)}
-                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', fontSize: 11, color: 'var(--accent-primary)', cursor: 'pointer', fontWeight: 600 }}>
-                      {showPass ? 'Ocultar' : 'Mostrar'}
-                    </button>
+                    <input
+                      className="form-input"
+                      type={showPass ? 'text' : 'password'}
+                      value={smtp.pass}
+                      onChange={e => setSmtp(s => ({ ...s, pass: e.target.value }))}
+                      placeholder={isPassConfigured ? '•••••••• (Contraseña configurada — dejar vacío para conservar)' : 'Ingresa contraseña SMTP'}
+                      style={{ paddingRight: 60 }}
+                      autoComplete="new-password"
+                    />
+                    {smtp.pass ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPass(!showPass)}
+                        style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', fontSize: 11, color: 'var(--accent-primary)', cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        {showPass ? 'Ocultar' : 'Mostrar'}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -497,12 +659,12 @@ export function AdminPanel() {
                 <UserCheck size={18} color="var(--primary)" />
                 {editingUser ? `Editar Usuario — ${editingUser.nombre}` : 'Nuevo Usuario del Sistema'}
               </h2>
-              <button className="btn btn-ghost btn-sm" onClick={() => setUserModalOpen(false)}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setUserModalOpen(false)}>
                 <X size={16} />
               </button>
             </div>
 
-            <form onSubmit={handleSaveUser}>
+            <form onSubmit={handleSaveUser} autoComplete="off">
               <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
                 {userFormError && (
                   <div style={{ padding: '8px 12px', background: '#FEE2E2', border: '1px solid #FCA5A5', color: '#991B1B', borderRadius: 6, fontSize: 12 }}>
@@ -511,32 +673,34 @@ export function AdminPanel() {
                 )}
 
                 <div className="form-group">
-                  <label className="form-label">Nombre Completo</label>
+                  <label className="form-label">Nombre Completo *</label>
                   <input
                     type="text"
                     className="form-input"
                     placeholder="Ej. Pedro Ramírez"
                     value={userForm.nombre}
                     onChange={e => setUserForm(f => ({ ...f, nombre: e.target.value }))}
+                    autoComplete="off"
                     required
                   />
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Correo Electrónico (Login)</label>
+                  <label className="form-label">Correo Electrónico (Login) *</label>
                   <input
                     type="email"
                     className="form-input"
                     placeholder="ejemplo@empresa.com"
                     value={userForm.email}
                     onChange={e => setUserForm(f => ({ ...f, email: e.target.value }))}
+                    autoComplete="off"
                     required
                   />
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">
-                    Contraseña {editingUser && <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-tertiary)' }}>(dejar en blanco para no cambiar)</span>}
+                    Contraseña {editingUser ? <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-tertiary)' }}>(dejar en blanco para no cambiar)</span> : '*'}
                   </label>
                   <input
                     type="password"
@@ -544,16 +708,27 @@ export function AdminPanel() {
                     placeholder={editingUser ? '••••••••' : 'Contraseña segura'}
                     value={userForm.password}
                     onChange={e => setUserForm(f => ({ ...f, password: e.target.value }))}
+                    autoComplete="new-password"
                     required={!editingUser}
                   />
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Rol Operativo</label>
+                  <label className="form-label">Rol Operativo *</label>
                   <select
                     className="form-select form-select-full"
                     value={userForm.rolId}
-                    onChange={e => setUserForm(f => ({ ...f, rolId: e.target.value }))}
+                    onChange={e => {
+                      const newRolId = e.target.value;
+                      const rolObj = rolesList.find(r => r.id === newRolId);
+                      const isDep = rolObj?.nombre?.toLowerCase().includes('depositante');
+                      setUserForm(f => ({
+                        ...f,
+                        rolId: newRolId,
+                        clienteId: isDep ? f.clienteId : '',
+                      }));
+                    }}
+                    required
                   >
                     <option value="">Seleccionar rol...</option>
                     {rolesList.map(r => (
@@ -564,23 +739,38 @@ export function AdminPanel() {
                   </select>
                 </div>
 
-                <div className="form-group">
-                  <label className="form-label">
-                    Depositante Vinculado <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-tertiary)' }}>(Obligatorio para cuentas del Portal Depositante)</span>
-                  </label>
-                  <select
-                    className="form-select form-select-full"
-                    value={userForm.clienteId}
-                    onChange={e => setUserForm(f => ({ ...f, clienteId: e.target.value }))}
-                  >
-                    <option value="">Ninguno — Usuario Interno de Giving Out 3PL</option>
-                    {clientsList.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.nombreComercial} ({c.codigo})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {(() => {
+                  const selectedRole = rolesList.find(r => r.id === userForm.rolId);
+                  const isDepositante = selectedRole?.nombre?.toLowerCase().includes('depositante');
+                  return (
+                    <div className="form-group">
+                      <label className="form-label">
+                        Depositante Vinculado {isDepositante ? (
+                          <span style={{ color: '#DC2626', fontWeight: 600 }}>* (Obligatorio para rol Depositante)</span>
+                        ) : (
+                          <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-tertiary)' }}>(No aplica para usuarios internos)</span>
+                        )}
+                      </label>
+                      <select
+                        className="form-select form-select-full"
+                        value={isDepositante ? userForm.clienteId : ''}
+                        onChange={e => setUserForm(f => ({ ...f, clienteId: e.target.value }))}
+                        disabled={!isDepositante}
+                        required={isDepositante}
+                        style={{ background: !isDepositante ? 'var(--bg-secondary)' : undefined }}
+                      >
+                        <option value="">
+                          {isDepositante ? 'Seleccionar depositante...' : 'Ninguno — Usuario Interno de Giving Out 3PL'}
+                        </option>
+                        {clientsList.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.nombreComercial} ({c.codigo})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })()}
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
                   <input

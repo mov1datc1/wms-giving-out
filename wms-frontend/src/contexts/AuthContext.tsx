@@ -35,81 +35,110 @@ export function useAuth() { return useContext(AuthContext); }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserData | null>(null);
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('wms_token'));
+  const [token, setToken] = useState<string | null>(() => {
+    const saved = localStorage.getItem('wms_token') || localStorage.getItem('token');
+    if (!saved || saved === 'demo-token') {
+      localStorage.removeItem('wms_token');
+      localStorage.removeItem('token');
+      return null;
+    }
+    return saved;
+  });
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => { token ? verifyToken(token) : setLoading(false); }, []);
+  function clearSession() {
+    localStorage.removeItem('wms_token');
+    localStorage.removeItem('token');
+    setToken(null);
+    setUser(null);
+  }
+
+  useEffect(() => {
+    if (token) {
+      verifyToken(token);
+    } else {
+      clearSession();
+      setLoading(false);
+    }
+  }, []);
 
   async function verifyToken(t: string) {
-    const demoUser: UserData = {
-      id: 'demo-001', email: 'admin@givingout.mx', nombre: 'Jonathan Palacios',
-      rolId: 'R-01', rolNombre: 'Super Admin',
-      almacenId: 'WH-001', clienteId: null, isSuperAdmin: true,
-      permisos: ['dashboard','depositantes','clientes-finales','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
-    };
-    if (t === 'demo-token') {
-      setUser(demoUser);
+    if (!t || t === 'demo-token') {
+      clearSession();
       setLoading(false);
       return;
     }
     try {
-      const res = await fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${t}` } });
+      const res = await fetch(`${API}/auth/me`, {
+        headers: { Authorization: `Bearer ${t}` },
+      });
       if (res.ok) {
-        setUser(await res.json());
+        const userData = await res.json();
+        setUser(userData);
       } else {
-        setUser(demoUser);
+        // Token inválido, expirado o rechazado por backend (HTTP 401/403)
+        clearSession();
       }
     } catch {
-      setUser(demoUser);
+      // Error de red o servidor no disponible: limpiar sesión por seguridad
+      clearSession();
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   async function login(email: string, password: string) {
-    try {
-      const res = await fetch(`${API}/auth/login`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.message || 'Error de autenticación'); }
-      const data = await res.json();
-      localStorage.setItem('wms_token', data.token); setToken(data.token); setUser(data.user);
-    } catch (err: any) {
-      // Demo mode fallback — works without backend
-      if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError')) {
-        const demoUser: UserData = {
-          id: 'demo-001', email, nombre: 'Jonathan Palacios',
-          rolId: 'R-01', rolNombre: 'Super Admin',
-          almacenId: 'WH-001', clienteId: null, isSuperAdmin: true,
-          permisos: ['dashboard','depositantes','clientes-finales','recepcion','inventario','ubicaciones','picking','despacho','etiquetado','trazabilidad','conteo-ciclico','maestros','alertas','admin'],
-        };
-        localStorage.setItem('wms_token', 'demo-token'); setToken('demo-token'); setUser(demoUser);
-        return;
-      }
-      throw err;
+    const res = await fetch(`${API}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Error de autenticación');
     }
+    const data = await res.json();
+    localStorage.setItem('wms_token', data.token);
+    localStorage.setItem('token', data.token);
+    setToken(data.token);
+    setUser(data.user);
   }
 
   async function loginOtp(email: string, code: string) {
     const res = await fetch(`${API}/auth/otp/verify`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, code }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), code: code.trim() }),
     });
-    if (!res.ok) { const err = await res.json(); throw new Error(err.message || 'Código OTP inválido'); }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Código OTP inválido');
+    }
     const data = await res.json();
-    localStorage.setItem('wms_token', data.token); setToken(data.token); setUser(data.user);
+    localStorage.setItem('wms_token', data.token);
+    localStorage.setItem('token', data.token);
+    setToken(data.token);
+    setUser(data.user);
   }
 
   async function requestOtp(email: string) {
     const res = await fetch(`${API}/auth/otp/request`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
     });
     return res.json();
   }
 
-  function logout() { localStorage.removeItem('wms_token'); setToken(null); setUser(null); }
-  function hasPermission(modulo: string) { if (!user) return false; if (user.isSuperAdmin) return true; return user.permisos.includes(modulo); }
+  function logout() {
+    clearSession();
+  }
+
+  function hasPermission(modulo: string) {
+    if (!user) return false;
+    if (user.isSuperAdmin) return true;
+    return user.permisos?.includes(modulo) ?? false;
+  }
 
   return (
     <AuthContext.Provider value={{ user, token, loading, login, loginOtp, requestOtp, logout, hasPermission }}>

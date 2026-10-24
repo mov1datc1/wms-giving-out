@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Tag, Printer, Copy, Search, RefreshCw, Layers, Building2, Package, CheckCircle, Filter, X } from 'lucide-react';
+import { Tag, Printer, Copy, Search, RefreshCw, Layers, Building2, Package, CheckCircle, Filter, X, History, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 
@@ -13,6 +13,11 @@ interface LabelData {
   ubicacion: string;
   cliente: string;
   fecha: string;
+  tipoHu?: string;
+  estadoHu?: string;
+  isHistorico?: boolean;
+  documentoSalida?: string;
+  destinoSalida?: string;
 }
 
 const defaultClients = [
@@ -24,17 +29,17 @@ const defaultClients = [
 ];
 
 const fullDemoLabels: LabelData[] = [
-  { huId: 'HU-2026-0101', sku: 'CAM-BLA-S', desc: 'Camiseta Básica Blanca (S)', lote: 'LOT-FF-2026-A', cantidad: 30, uom: 'PZA', ubicacion: 'A01-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0102', sku: 'CAM-BLA-L', desc: 'Camiseta Básica Blanca (L)', lote: 'LOT-FF-2026-A', cantidad: 100, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0103', sku: 'CAM-BLA-M', desc: 'Camiseta Básica Blanca (M)', lote: 'LOT-FF-2026-A', cantidad: 100, uom: 'PZA', ubicacion: 'A02-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0104', sku: 'CAM-NEG-M', desc: 'Camiseta Básica Negra (M)', lote: 'LOT-FF-2026-B', cantidad: 60, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0105', sku: 'CHA-CUE-L', desc: 'Chamarra de Cuero Sintético (L)', lote: 'LOT-FF-2026-B', cantidad: 25, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0106', sku: 'PAN-JEA-32', desc: 'Pantalón Jeans Clásico (32)', lote: 'LOT-FF-2026-C', cantidad: 50, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0107', sku: 'PAN-JEA-30', desc: 'Pantalón Jeans Clásico (30)', lote: 'LOT-FF-2026-C', cantidad: 60, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0108', sku: 'SUD-GRI-XL', desc: 'Sudadera con Capucha (XL)', lote: 'LOT-FF-2026-D', cantidad: 70, uom: 'PZA', ubicacion: 'A03-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0109', sku: 'VES-FLO-M', desc: 'Vestido Floral Verano (M)', lote: 'LOT-FF-2026-D', cantidad: 40, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0110', sku: 'ACE-OLI-1L', desc: 'Aceite de Oliva Extra Virgen 1L', lote: 'LOT-3M-2026', cantidad: 150, uom: 'CJA', ubicacion: 'B01-R01-N1', cliente: 'ALIMENTOS_3M', fecha: '2026-08-26' },
-  { huId: 'HU-2026-0111', sku: 'ATU-AGU-140G', desc: 'Atún en Agua 140g Enlatado', lote: 'LOT-3M-2027', cantidad: 300, uom: 'CJA', ubicacion: 'B02-R01-N1', cliente: 'ALIMENTOS_3M', fecha: '2026-08-26' },
+  { huId: 'HU-2026-0101', sku: 'CAM-BLA-S', desc: 'Camiseta Básica Blanca (S)', lote: 'LOT-FF-2026-A', cantidad: 30, uom: 'PZA', ubicacion: 'A01-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0102', sku: 'CAM-BLA-L', desc: 'Camiseta Básica Blanca (L)', lote: 'LOT-FF-2026-A', cantidad: 100, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0103', sku: 'CAM-BLA-M', desc: 'Camiseta Básica Blanca (M)', lote: 'LOT-FF-2026-A', cantidad: 100, uom: 'PZA', ubicacion: 'A02-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0104', sku: 'CAM-NEG-M', desc: 'Camiseta Básica Negra (M)', lote: 'LOT-FF-2026-B', cantidad: 60, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0105', sku: 'CHA-CUE-L', desc: 'Chamarra de Cuero Sintético (L)', lote: 'LOT-FF-2026-B', cantidad: 25, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0106', sku: 'PAN-JEA-32', desc: 'Pantalón Jeans Clásico (32)', lote: 'LOT-FF-2026-C', cantidad: 50, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0107', sku: 'PAN-JEA-30', desc: 'Pantalón Jeans Clásico (30)', lote: 'LOT-FF-2026-C', cantidad: 60, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0108', sku: 'SUD-GRI-XL', desc: 'Sudadera con Capucha (XL)', lote: 'LOT-FF-2026-D', cantidad: 70, uom: 'PZA', ubicacion: 'A03-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0109', sku: 'VES-FLO-M', desc: 'Vestido Floral Verano (M)', lote: 'LOT-FF-2026-D', cantidad: 40, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0110', sku: 'ACE-OLI-1L', desc: 'Aceite de Oliva Extra Virgen 1L', lote: 'LOT-3M-2026', cantidad: 150, uom: 'CJA', ubicacion: 'B01-R01-N1', cliente: 'ALIMENTOS_3M', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
+  { huId: 'HU-2026-0111', sku: 'ATU-AGU-140G', desc: 'Atún en Agua 140g Enlatado', lote: 'LOT-3M-2027', cantidad: 300, uom: 'CJA', ubicacion: 'B02-R01-N1', cliente: 'ALIMENTOS_3M', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
 ];
 
 /** Genera un código de barras vectorial Code128 en SVG ultra nítido */
@@ -113,7 +118,9 @@ function generateQRCodeSVG(size = 70) {
 
 export function LabelPreview() {
   const { token } = useAuth();
-  const [labels, setLabels] = useState<LabelData[]>(fullDemoLabels);
+  const [scopeTab, setScopeTab] = useState<'FISICO' | 'HISTORICO'>('FISICO');
+  const [fisicasLabels, setFisicasLabels] = useState<LabelData[]>(fullDemoLabels);
+  const [historicasLabels, setHistoricasLabels] = useState<LabelData[]>([]);
   const [clients, setClients] = useState<any[]>(defaultClients);
   const [selectedCliente, setSelectedCliente] = useState<string>('ALL');
   const [selectedSku, setSelectedSku] = useState<string>('ALL');
@@ -128,9 +135,10 @@ export function LabelPreview() {
   async function loadData() {
     setLoading(true);
     try {
-      const [lotsRes, husRes, clientsRes] = await Promise.all([
+      const [lotsRes, fisicasRes, historicasRes, clientsRes] = await Promise.all([
         fetch(`${API}/inventory/lots`, { headers }),
-        fetch(`${API}/inventory/handling-units`, { headers }),
+        fetch(`${API}/inventory/handling-units?scope=FISICO`, { headers }),
+        fetch(`${API}/inventory/handling-units?scope=HISTORICO`, { headers }),
         fetch(`${API}/clients`, { headers }),
       ]);
 
@@ -141,29 +149,45 @@ export function LabelPreview() {
         }
       }
 
-      let loadedList: LabelData[] = [];
+      const mapHuToLabel = (h: any, isHist = false): LabelData => ({
+        huId: h.codigo || `HU-${h.id?.substring(0, 8)}`,
+        sku: h.lote?.sku?.codigo || h.skuCodigo || 'SKU-N/A',
+        desc: h.lote?.sku?.descripcion || h.skuDescripcion || 'Sin descripción',
+        lote: h.lote?.lote || h.loteTexto || 'N/LOTE',
+        cantidad: h.cantidad || h.lote?.cantidadDisponible || 0,
+        uom: h.lote?.sku?.uomBase || h.uom || 'PZA',
+        ubicacion: h.ubicacionActual || h.lote?.ubicacion?.codigo || (isHist ? 'DESPACHADO' : 'RECEPCIÓN'),
+        cliente: h.cliente?.nombreComercial || h.lote?.cliente?.nombreComercial || 'Fashion Forward',
+        fecha: new Date(h.createdAt || Date.now()).toISOString().split('T')[0],
+        tipoHu: h.tipoHu || 'CAJA',
+        estadoHu: h.estadoHu || (isHist ? 'DESPACHADO' : 'ACTIVO'),
+        isHistorico: isHist,
+        documentoSalida: h.lineasSalida?.[0]?.orden?.codigo || (h.estadoHu === 'DESPACHADO' ? 'Despachado' : undefined),
+        destinoSalida: h.lineasSalida?.[0]?.orden?.endCustomer?.nombre,
+      });
 
-      if (husRes.ok) {
-        const husData = await husRes.json();
-        if (Array.isArray(husData) && husData.length > 0) {
-          loadedList = husData.map((h: any, i: number) => ({
-            huId: h.codigo || `HU-2026-${String(i + 101).padStart(4, '0')}`,
-            sku: h.lote?.sku?.codigo || h.skuCode || 'SKU-N/A',
-            desc: h.lote?.sku?.descripcion || h.skuDesc || 'Sin descripción',
-            lote: h.lote?.lote || h.numeroLote || 'N/LOTE',
-            cantidad: h.cantidad || h.lote?.cantidadDisponible || 0,
-            uom: h.lote?.sku?.uomBase || 'PZA',
-            ubicacion: h.ubicacion?.codigo || h.lote?.ubicacion?.codigo || 'RECEPCIÓN',
-            cliente: h.cliente?.nombreComercial || h.lote?.cliente?.nombreComercial || 'Fashion Forward',
-            fecha: new Date(h.createdAt || Date.now()).toISOString().split('T')[0],
-          }));
+      let loadedFisicas: LabelData[] = [];
+      let loadedHistoricas: LabelData[] = [];
+
+      if (fisicasRes.ok) {
+        const fData = await fisicasRes.json();
+        if (Array.isArray(fData)) {
+          loadedFisicas = fData.map((h: any) => mapHuToLabel(h, false));
         }
       }
 
-      if (loadedList.length === 0 && lotsRes.ok) {
+      if (historicasRes.ok) {
+        const hData = await historicasRes.json();
+        if (Array.isArray(hData)) {
+          loadedHistoricas = hData.map((h: any) => mapHuToLabel(h, true));
+        }
+      }
+
+      // Fallback a demo labels si el endpoint no devuelve existencias
+      if (loadedFisicas.length === 0 && lotsRes.ok) {
         const lotsData = await lotsRes.json();
         if (Array.isArray(lotsData) && lotsData.length > 0) {
-          loadedList = lotsData
+          loadedFisicas = lotsData
             .filter((l: any) => (l.cantidadDisponible || 0) > 0)
             .map((l: any, i: number) => ({
               huId: `HU-2026-${String(i + 101).padStart(4, '0')}`,
@@ -175,33 +199,41 @@ export function LabelPreview() {
               ubicacion: l.ubicacion?.codigo || 'RECEPCIÓN',
               cliente: l.cliente?.nombreComercial || 'Fashion Forward',
               fecha: new Date(l.createdAt || Date.now()).toISOString().split('T')[0],
+              tipoHu: 'CAJA',
+              estadoHu: 'ACTIVO',
+              isHistorico: false,
             }));
         }
       }
 
-      setLabels(loadedList.length > 0 ? loadedList : fullDemoLabels);
+      setFisicasLabels(loadedFisicas.length > 0 ? loadedFisicas : fullDemoLabels);
+      setHistoricasLabels(loadedHistoricas);
     } catch (err) {
-      console.error(err);
-      setLabels(fullDemoLabels);
+      console.error('Error al cargar HUs en LabelPreview:', err);
+      setFisicasLabels(fullDemoLabels);
+      setHistoricasLabels([]);
     }
     setLoading(false);
   }
 
+  // Lista activa según la pestaña seleccionada
+  const currentLabels = scopeTab === 'FISICO' ? fisicasLabels : historicasLabels;
+
   const allClientesList = useMemo(() => {
     const set = new Set<string>();
     for (const c of clients) set.add(c.nombre);
-    for (const l of labels) set.add(l.cliente);
+    for (const l of currentLabels) set.add(l.cliente);
     return Array.from(set).map(nombre => {
-      const count = labels.filter(l => l.cliente === nombre && l.cantidad > 0).length;
+      const count = currentLabels.filter(l => l.cliente === nombre && (l.isHistorico || l.cantidad > 0)).length;
       return { nombre, count };
     });
-  }, [clients, labels]);
+  }, [clients, currentLabels]);
 
   const activeSkus = useMemo(() => {
     const map = new Map<string, { sku: string; desc: string; count: number }>();
-    const baseList = selectedCliente === 'ALL' ? labels : labels.filter(l => l.cliente === selectedCliente);
+    const baseList = selectedCliente === 'ALL' ? currentLabels : currentLabels.filter(l => l.cliente === selectedCliente);
     for (const l of baseList) {
-      if (l.cantidad > 0) {
+      if (l.isHistorico || l.cantidad > 0) {
         const existing = map.get(l.sku);
         if (existing) {
           existing.count += 1;
@@ -211,24 +243,27 @@ export function LabelPreview() {
       }
     }
     return Array.from(map.values());
-  }, [labels, selectedCliente]);
+  }, [currentLabels, selectedCliente]);
 
   const filteredLabels = useMemo(() => {
-    return labels.filter(l => {
-      if (l.cantidad <= 0) return false;
+    return currentLabels.filter(l => {
+      if (!l.isHistorico && l.cantidad <= 0) return false;
       if (selectedCliente !== 'ALL' && l.cliente !== selectedCliente) return false;
       if (selectedSku !== 'ALL' && l.sku !== selectedSku) return false;
       if (search) {
         const s = search.toLowerCase();
-        return l.huId.toLowerCase().includes(s) ||
+        return (
+          l.huId.toLowerCase().includes(s) ||
           l.sku.toLowerCase().includes(s) ||
           l.desc.toLowerCase().includes(s) ||
           l.lote.toLowerCase().includes(s) ||
-          l.ubicacion.toLowerCase().includes(s);
+          l.ubicacion.toLowerCase().includes(s) ||
+          (l.documentoSalida && l.documentoSalida.toLowerCase().includes(s))
+        );
       }
       return true;
     });
-  }, [labels, selectedCliente, selectedSku, search]);
+  }, [currentLabels, selectedCliente, selectedSku, search]);
 
   const activeLabel = filteredLabels[selectedLabelIdx] || filteredLabels[0] || null;
 
@@ -259,30 +294,43 @@ export function LabelPreview() {
             <div class="sub-brand">Warehouse Management System</div>
           </div>
           <div class="date-box">
-            <div class="date-label">FECHA INGRESO</div>
+            <div class="date-label">${activeLabel.isHistorico ? 'SALIDA / DESPACHO' : 'FECHA INGRESO'}</div>
             <div class="date-val">${activeLabel.fecha}</div>
           </div>
         </div>
+
+        ${activeLabel.isHistorico ? `
+          <div style="font-size: 8px; font-weight: 800; text-align: center; border-bottom: 1px dashed #000; padding-bottom: 2px; margin-bottom: 4px;">
+            *** REIMPRESIÓN HISTÓRICA — FUERA DE ALMACÉN ***
+          </div>
+        ` : ''}
 
         <div class="label-body">
           <div class="qr-box">
             ${qrSvgHtml}
           </div>
           <div style="flex: 1;">
-            <div class="hu-id">${activeLabel.huId} ${copies > 1 ? `<span style="font-size:10px; color:#555;">(Copia ${copyIdx + 1})</span>` : ''}</div>
-            <div class="info-line">SKU: <strong>${activeLabel.sku}</strong></div>
+            <div class="hu-id">${activeLabel.huId}</div>
+            <div class="info-line">SKU: <strong>${activeLabel.sku}</strong> [${activeLabel.tipoHu || 'CAJA'}]</div>
             <div class="info-line" style="font-weight: 600;">${activeLabel.desc}</div>
             <div class="info-line" style="margin-top: 3px; display: flex; justify-content: space-between; border-top: 1px solid #ccc; padding-top: 2px;">
               <span>Lote: <strong>${activeLabel.lote}</strong></span>
-              <span>Cant: <strong>${activeLabel.cantidad} ${activeLabel.uom}</strong></span>
+              <span>Cant: <strong>${activeLabel.cantidad} ${activeLabel.uom}${activeLabel.isHistorico ? ' (HIST)' : activeLabel.estadoHu === 'CUARENTENA' ? ' (CUAR)' : activeLabel.estadoHu === 'BLOQUEADO' ? ' (BLOQ)' : ''}</strong></span>
             </div>
           </div>
         </div>
 
         <div class="label-footer">
-          <span>Ubicación: <strong>${activeLabel.ubicacion}</strong></span>
+          <span>${activeLabel.isHistorico ? 'Última Ubic: ' : 'Ubicación: '}<strong>${activeLabel.isHistorico && activeLabel.estadoHu === 'DESPACHADO' ? `${activeLabel.ubicacion} (Salida)` : activeLabel.ubicacion}</strong></span>
           <span>Depositante: <strong>${activeLabel.cliente}</strong></span>
         </div>
+
+        ${activeLabel.isHistorico && activeLabel.documentoSalida ? `
+          <div style="font-size: 8px; display: flex; justify-content: space-between; border-top: 1px dashed #000; padding-top: 2px; margin-top: 2px;">
+            <span>Orden: <strong>${activeLabel.documentoSalida}</strong></span>
+            <span>Estado Físico: <strong>Fuera de almacén</strong></span>
+          </div>
+        ` : ''}
 
         <div style="text-align: center; margin-top: 4px;">
           <div class="barcode-wrapper">${barcodeSvgHtml}</div>
@@ -390,35 +438,144 @@ export function LabelPreview() {
     printWindow.document.close();
   }
 
-  function handleDuplicate() {
+  function handleReprint(copies = 2) {
     if (!activeLabel) return;
-    const dupHuId = `${activeLabel.huId}-DUP`;
-    const newLabel: LabelData = {
-      ...activeLabel,
-      huId: dupHuId,
-    };
-    setLabels(prev => [newLabel, ...prev]);
-    setSelectedLabelIdx(0);
-    handlePrint(2);
+    // Reimpresión idéntica: conserva el mismo huId, mismo QR y mismo código de barras sin alterar identificadores ni crear HUs temporales
+    handlePrint(copies);
   }
+
+  const getEstadoBadge = (estado?: string, isHist?: boolean) => {
+    if (isHist || estado === 'DESPACHADO') {
+      return (
+        <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: '#EDE9FE', color: '#6D28D9', border: '1px solid #DDD6FE' }}>
+          DESPACHADO
+        </span>
+      );
+    }
+    if (estado === 'INACTIVO') {
+      return (
+        <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: '#F1F5F9', color: '#475569', border: '1px solid #CBD5E1' }}>
+          INACTIVO
+        </span>
+      );
+    }
+    if (estado === 'CUARENTENA') {
+      return (
+        <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D' }}>
+          CUARENTENA
+        </span>
+      );
+    }
+    if (estado === 'BLOQUEADO') {
+      return (
+        <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>
+          BLOQUEADO
+        </span>
+      );
+    }
+    return (
+      <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: '#D1FAE5', color: '#065F46', border: '1px solid #A7F3D0' }}>
+        ACTIVO
+      </span>
+    );
+  };
+
+  const getTipoHuBadge = (tipo?: string) => {
+    const isPallet = (tipo || '').toUpperCase() === 'PALLET';
+    return (
+      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: isPallet ? '#E0E7FF' : '#F3F4F6', color: isPallet ? '#3730A3' : '#374151', border: '1px solid #D1D5DB' }}>
+        {isPallet ? 'PALLET' : 'CAJA'}
+      </span>
+    );
+  };
 
   return (
     <div className="page-container animate-fade-in">
       <div className="page-header">
         <div>
           <h1 className="page-title">Etiquetado a Demanda por Depositante</h1>
-          <p className="page-subtitle">Despliega cualquier depositante del sistema para consultar su catálogo e imprimir etiquetas Zebra</p>
+          <p className="page-subtitle">Emisión y reimpresión controlada de unidades logísticas (HUs) con formatos térmicos Zebra</p>
         </div>
         <button className="btn btn-secondary" onClick={loadData}>
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Actualizar Inventario
         </button>
       </div>
+
       {popupWarning && (
         <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '12px 16px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#92400E', fontSize: 13 }}>
           <span><strong>Ventanas emergentes bloqueadas:</strong> Por favor habilita los popups en la barra de tu navegador para que se abra la ventana de impresión térmica.</span>
           <button type="button" onClick={() => setPopupWarning(false)} style={{ background: 'transparent', border: 'none', color: '#92400E', cursor: 'pointer', fontWeight: 700, marginLeft: 12, display: 'inline-flex', alignItems: 'center' }}><X size={14} /></button>
         </div>
       )}
+
+      {/* Pestañas de Ámbito: Operativo (Físico en Almacén) vs Histórico */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+        <button
+          type="button"
+          onClick={() => {
+            setScopeTab('FISICO');
+            setSelectedCliente('ALL');
+            setSelectedSku('ALL');
+            setSelectedLabelIdx(0);
+          }}
+          className={`btn ${scopeTab === 'FISICO' ? 'btn-primary' : 'btn-secondary'}`}
+          style={{
+            padding: '10px 18px',
+            fontWeight: 700,
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            borderRadius: 8,
+          }}
+        >
+          <Layers size={16} />
+          <span>HUs en Almacén</span>
+          <span style={{
+            background: scopeTab === 'FISICO' ? 'rgba(255,255,255,0.25)' : 'var(--bg-tertiary)',
+            color: scopeTab === 'FISICO' ? '#ffffff' : 'var(--text-secondary)',
+            padding: '2px 8px',
+            borderRadius: 12,
+            fontSize: 11,
+            fontWeight: 800,
+          }}>
+            {fisicasLabels.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setScopeTab('HISTORICO');
+            setSelectedCliente('ALL');
+            setSelectedSku('ALL');
+            setSelectedLabelIdx(0);
+          }}
+          className={`btn ${scopeTab === 'HISTORICO' ? 'btn-primary' : 'btn-secondary'}`}
+          style={{
+            padding: '10px 18px',
+            fontWeight: 700,
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            borderRadius: 8,
+          }}
+        >
+          <History size={16} />
+          <span>Histórico / Reimpresión</span>
+          <span style={{
+            background: scopeTab === 'HISTORICO' ? 'rgba(255,255,255,0.25)' : 'var(--bg-tertiary)',
+            color: scopeTab === 'HISTORICO' ? '#ffffff' : 'var(--text-secondary)',
+            padding: '2px 8px',
+            borderRadius: 12,
+            fontSize: 11,
+            fontWeight: 800,
+          }}>
+            {historicasLabels.length}
+          </span>
+        </button>
+      </div>
 
       {/* STEP 1: Desplegable Completo de Depositantes */}
       <div className="card" style={{ marginBottom: 16, padding: '16px 20px' }}>
@@ -436,17 +593,19 @@ export function LabelPreview() {
           }}
           style={{ fontSize: 14, fontWeight: 700, padding: '10px 14px', borderRadius: 8 }}
         >
-          <option value="ALL">Todos los Depositantes ({labels.filter(l => l.cantidad > 0).length} tarimas en inventario)</option>
+          <option value="ALL">
+            Todos los Depositantes ({currentLabels.length} {scopeTab === 'FISICO' ? 'HUs en almacén' : 'HUs históricas'})
+          </option>
           {allClientesList.map(c => (
             <option key={c.nombre} value={c.nombre}>
-              {c.nombre} — {c.count > 0 ? `${c.count} tarimas disponibles` : 'Sin inventario disponible en este momento'}
+              {c.nombre} — {c.count > 0 ? `${c.count} ${scopeTab === 'FISICO' ? 'unidades logísticas en almacén' : 'HUs históricas'}` : 'Sin unidades registradas'}
             </option>
           ))}
         </select>
       </div>
 
       {/* STEP 2 & MAIN GRID */}
-      <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 20 }}>
         {/* Left Panel - SKU Filter + HU List */}
         <div className="card" style={{ padding: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -462,7 +621,7 @@ export function LabelPreview() {
           >
             {activeSkus.length > 0 ? (
               <>
-                <option value="ALL">Todos los productos con stock ({activeSkus.reduce((s, k) => s + k.count, 0)} HUs)</option>
+                <option value="ALL">Todos los productos ({activeSkus.reduce((s, k) => s + k.count, 0)} HUs)</option>
                 {activeSkus.map(s => (
                   <option key={s.sku} value={s.sku}>
                     {s.sku} — {s.desc} ({s.count} HUs)
@@ -470,23 +629,23 @@ export function LabelPreview() {
                 ))}
               </>
             ) : (
-              <option value="ALL">Este depositante no tiene productos con inventario</option>
+              <option value="ALL">Este depositante no tiene unidades logísticas en este ámbito</option>
             )}
           </select>
 
           <div className="search-box" style={{ marginBottom: 14 }}>
             <Search size={15} />
-            <input 
-              placeholder="Buscar HU, lote, ubicación..." 
-              value={search} 
-              onChange={e => { setSearch(e.target.value); setSelectedLabelIdx(0); }} 
+            <input
+              placeholder="Buscar HU, SKU, lote, ubicación..."
+              value={search}
+              onChange={e => { setSearch(e.target.value); setSelectedLabelIdx(0); }}
               style={{ fontSize: 12 }}
             />
           </div>
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
-            <span>Tarimas (HUs) a imprimir</span>
-            <span style={{ color: 'var(--primary)' }}>{filteredLabels.length} listas</span>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{scopeTab === 'FISICO' ? 'HUs Físicas en Almacén' : 'HUs Históricas / Despachadas'}</span>
+            <span style={{ color: 'var(--primary)', fontWeight: 800 }}>{filteredLabels.length} {filteredLabels.length === 1 ? 'unidad' : 'unidades'}</span>
           </div>
 
           {/* HU List */}
@@ -507,15 +666,48 @@ export function LabelPreview() {
                     transition: 'all 0.15s ease',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                    <span style={{ fontWeight: 800, fontSize: 13, color: 'var(--primary)' }}>{l.huId}</span>
-                    <span className="badge badge-default" style={{ fontSize: 10, fontWeight: 700 }}>{l.ubicacion}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, gap: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontWeight: 800, fontSize: 13, color: 'var(--primary)' }}>{l.huId}</span>
+                      {getTipoHuBadge(l.tipoHu)}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {getEstadoBadge(l.estadoHu, l.isHistorico)}
+                      <span className="badge badge-default" style={{ fontSize: 10, fontWeight: 700 }}>
+                        {l.isHistorico && l.estadoHu === 'DESPACHADO' ? 'STG-01' : l.ubicacion}
+                      </span>
+                    </div>
                   </div>
+
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{l.sku} — {l.desc}</div>
+
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>Lote: <strong>{l.lote}</strong></span>
-                    <span style={{ color: 'var(--emerald)', fontWeight: 700 }}>{l.cantidad} {l.uom} disponibles</span>
+                    {l.isHistorico ? (
+                      <span style={{ color: 'var(--text-tertiary)', fontWeight: 700 }}>
+                        {l.cantidad} {l.uom} históricas
+                      </span>
+                    ) : l.estadoHu === 'CUARENTENA' ? (
+                      <span style={{ color: '#D97706', fontWeight: 700 }}>
+                        {l.cantidad} {l.uom} físicas · En Cuarentena
+                      </span>
+                    ) : l.estadoHu === 'BLOQUEADO' ? (
+                      <span style={{ color: '#DC2626', fontWeight: 700 }}>
+                        {l.cantidad} {l.uom} físicas · Bloqueado
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--emerald)', fontWeight: 700 }}>
+                        {l.cantidad} {l.uom} físicas
+                      </span>
+                    )}
                   </div>
+
+                  {l.isHistorico && (
+                    <div style={{ fontSize: 10, color: '#6D28D9', marginTop: 4, display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #DDD6FE', paddingTop: 3 }}>
+                      <span>Salida: <strong>{l.documentoSalida || 'Despachado'}</strong></span>
+                      <span>Fuera de almacén</span>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -526,10 +718,12 @@ export function LabelPreview() {
                   <>
                     <Package size={28} style={{ opacity: 0.4, margin: '0 auto 8px' }} />
                     <div style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>Depositante {selectedCliente} seleccionado</div>
-                    <div style={{ fontSize: 11, marginTop: 4 }}>No hay mercancía almacenada ni tarimas pendientes de etiquetar en este momento.</div>
+                    <div style={{ fontSize: 11, marginTop: 4 }}>
+                      No hay unidades logísticas en {scopeTab === 'FISICO' ? 'almacén' : 'el histórico'} para este depositante.
+                    </div>
                   </>
                 ) : (
-                  <div>No hay tarimas que coincidan con la búsqueda.</div>
+                  <div>No hay unidades logísticas que coincidan con la búsqueda.</div>
                 )}
               </div>
             )}
@@ -547,14 +741,81 @@ export function LabelPreview() {
             </div>
 
             <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-secondary" onClick={handleDuplicate} disabled={!activeLabel}>
-                <Copy size={16} /> Duplicar
-              </button>
-              <button className="btn btn-primary" onClick={() => handlePrint(1)} disabled={!activeLabel}>
-                <Printer size={16} /> Imprimir
-              </button>
+              {scopeTab === 'FISICO' ? (
+                <>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => handleReprint(2)}
+                    disabled={!activeLabel}
+                    title="Reimprime 2 copias idénticas con el mismo código HU original por etiqueta dañada"
+                  >
+                    <RefreshCw size={16} /> Reimprimir
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => handlePrint(1)}
+                    disabled={!activeLabel}
+                    title="Imprime 1 copia de la etiqueta con el código HU original"
+                  >
+                    <Printer size={16} /> Imprimir
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handlePrint(1)}
+                  disabled={!activeLabel}
+                  style={{ background: '#6D28D9', borderColor: '#5B21B6' }}
+                  title="Reimpresión documental histórica para trazabilidad física o salida"
+                >
+                  <History size={16} /> Reimpresión Histórica
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Banner de Estado Operativo / Histórico */}
+          {activeLabel && (activeLabel.isHistorico || activeLabel.estadoHu === 'DESPACHADO') && (
+            <div style={{ background: '#F5F3FF', border: '1px solid #DDD6FE', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#5B21B6', fontSize: 13, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <History size={18} style={{ color: '#7C3AED', flexShrink: 0, marginTop: 2 }} />
+              <div>
+                <div style={{ fontWeight: 800, color: '#4C1D95', marginBottom: 2 }}>
+                  REIMPRESIÓN HISTÓRICA — UNIDAD LOGÍSTICA FUERA DE ALMACÉN
+                </div>
+                <div>
+                  Esta HU fue despachada en la orden <strong>{activeLabel.documentoSalida || 'PED-2026-0008'}</strong>{activeLabel.destinoSalida ? ` con destino a ${activeLabel.destinoSalida}` : ''}. Última ubicación registrada: <strong>{activeLabel.ubicacion}</strong>. La reimpresión es exclusivamente para reposición de etiqueta dañada o trazabilidad de salida. <strong>NO genera inventario, NO reactiva stock comercial y NO genera movimientos de kárdex.</strong>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeLabel && activeLabel.estadoHu === 'CUARENTENA' && (
+            <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#92400E', fontSize: 13, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <AlertTriangle size={18} style={{ color: '#D97706', flexShrink: 0, marginTop: 2 }} />
+              <div>
+                <div style={{ fontWeight: 800, color: '#92400E', marginBottom: 2 }}>
+                  UNIDAD EN CUARENTENA / CONTROL DE CALIDAD
+                </div>
+                <div>
+                  Físicamente presente en almacén ({activeLabel.cantidad} {activeLabel.uom}), pero retenida por calidad. <strong>No disponible comercialmente para surtido ni venta.</strong>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeLabel && activeLabel.estadoHu === 'BLOQUEADO' && (
+            <div style={{ background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#991B1B', fontSize: 13, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <ShieldAlert size={18} style={{ color: '#DC2626', flexShrink: 0, marginTop: 2 }} />
+              <div>
+                <div style={{ fontWeight: 800, color: '#991B1B', marginBottom: 2 }}>
+                  UNIDAD BLOQUEADA
+                </div>
+                <div>
+                  Físicamente presente en almacén ({activeLabel.cantidad} {activeLabel.uom}), pero bloqueada operativamente. <strong>No disponible comercialmente.</strong>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="card" style={{ padding: 36, display: 'flex', justifyContent: 'center', background: 'var(--bg-secondary)', minHeight: 400 }}>
             {activeLabel ? (
@@ -581,10 +842,29 @@ export function LabelPreview() {
                     <div style={{ fontSize: 10, color: '#444', fontWeight: 600 }}>Warehouse Management System</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 10, color: '#444' }}>FECHA DE INGRESO</div>
+                    <div style={{ fontSize: 10, color: '#444' }}>
+                      {activeLabel.isHistorico ? 'SALIDA / DESPACHO' : 'FECHA DE INGRESO'}
+                    </div>
                     <div style={{ fontSize: 12, fontWeight: 700 }}>{activeLabel.fecha}</div>
                   </div>
                 </div>
+
+                {/* Sub-header banner if historical or QA hold */}
+                {activeLabel.isHistorico && (
+                  <div style={{ background: '#000000', color: '#ffffff', textAlign: 'center', fontSize: 10, fontWeight: 800, padding: '2px 0', marginBottom: 8, letterSpacing: 0.5 }}>
+                    *** REIMPRESIÓN HISTÓRICA — FUERA DE ALMACÉN ***
+                  </div>
+                )}
+                {activeLabel.estadoHu === 'CUARENTENA' && (
+                  <div style={{ background: '#FFFBEB', color: '#92400E', border: '1px solid #D97706', textAlign: 'center', fontSize: 10, fontWeight: 800, padding: '2px 0', marginBottom: 8, letterSpacing: 0.5 }}>
+                    *** CONTROL DE CALIDAD — CUARENTENA ***
+                  </div>
+                )}
+                {activeLabel.estadoHu === 'BLOQUEADO' && (
+                  <div style={{ background: '#FEF2F2', color: '#991B1B', border: '1px solid #DC2626', textAlign: 'center', fontSize: 10, fontWeight: 800, padding: '2px 0', marginBottom: 8, letterSpacing: 0.5 }}>
+                    *** BLOQUEADO COMERCIALMENTE ***
+                  </div>
+                )}
 
                 {/* Body / Content */}
                 <div style={{ display: 'flex', gap: 14, marginBottom: 10 }}>
@@ -593,23 +873,44 @@ export function LabelPreview() {
                     dangerouslySetInnerHTML={{ __html: generateQRCodeSVG(75) }}
                   />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: 1, color: '#000' }}>{activeLabel.huId}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: 1, color: '#000' }}>{activeLabel.huId}</div>
+                      <span style={{ fontSize: 9, fontWeight: 800, border: '1px solid #000', padding: '1px 4px', borderRadius: 3 }}>
+                        {activeLabel.tipoHu || 'CAJA'}
+                      </span>
+                    </div>
                     <div style={{ fontSize: 12, marginTop: 4 }}>
                       <span style={{ color: '#555' }}>SKU:</span> <strong>{activeLabel.sku}</strong>
                     </div>
                     <div style={{ fontSize: 11, marginTop: 2, color: '#222', fontWeight: 600 }}>{activeLabel.desc}</div>
                     <div style={{ fontSize: 12, marginTop: 6, display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #ddd', paddingTop: 4 }}>
                       <span>Lote: <strong>{activeLabel.lote}</strong></span>
-                      <span>Cant: <strong>{activeLabel.cantidad} {activeLabel.uom}</strong></span>
+                      <span>
+                        Cant: <strong>{activeLabel.cantidad} {activeLabel.uom}</strong>
+                        {activeLabel.isHistorico && <span style={{ fontSize: 10, color: '#666', marginLeft: 4 }}>(HISTÓRICO)</span>}
+                        {activeLabel.estadoHu === 'CUARENTENA' && <span style={{ fontSize: 10, color: '#D97706', marginLeft: 4 }}>(CUARENTENA)</span>}
+                        {activeLabel.estadoHu === 'BLOQUEADO' && <span style={{ fontSize: 10, color: '#DC2626', marginLeft: 4 }}>(BLOQUEADO)</span>}
+                        {activeLabel.estadoHu === 'ACTIVO' && <span style={{ fontSize: 10, color: '#065F46', marginLeft: 4 }}>(FÍSICO)</span>}
+                      </span>
                     </div>
                   </div>
                 </div>
 
                 {/* Footer details */}
                 <div style={{ borderTop: '1.5px solid #000', paddingTop: 6, marginBottom: 8, display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-                  <span>Ubicación: <strong>{activeLabel.ubicacion}</strong></span>
+                  <span>
+                    {activeLabel.isHistorico ? 'Última Ubic: ' : 'Ubicación: '}
+                    <strong>{activeLabel.isHistorico && activeLabel.estadoHu === 'DESPACHADO' ? `${activeLabel.ubicacion} (Salida)` : activeLabel.ubicacion}</strong>
+                  </span>
                   <span>Depositante: <strong>{activeLabel.cliente}</strong></span>
                 </div>
+
+                {activeLabel.isHistorico && activeLabel.documentoSalida && (
+                  <div style={{ fontSize: 10, color: '#444', marginBottom: 6, display: 'flex', justifyContent: 'space-between', borderBottom: '1px dashed #ccc', paddingBottom: 4 }}>
+                    <span>Orden Salida: <strong>{activeLabel.documentoSalida}</strong></span>
+                    <span>Estado Físico: <strong>Fuera de almacén</strong></span>
+                  </div>
+                )}
 
                 {/* Barcode Vectorial SVG */}
                 <div style={{ marginTop: 10, textAlign: 'center' }}>
@@ -622,7 +923,7 @@ export function LabelPreview() {
               </div>
             ) : (
               <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', alignSelf: 'center' }}>
-                <div>Selecciona un depositante con inventario para visualizar sus etiquetas.</div>
+                <div>Selecciona una unidad logística para visualizar su etiqueta Zebra.</div>
               </div>
             )}
           </div>

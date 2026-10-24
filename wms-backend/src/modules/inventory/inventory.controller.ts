@@ -99,15 +99,24 @@ export class InventoryController {
   }
 
   @Get('handling-units')
-  @ApiOperation({ summary: 'Listar Handling Units activas' })
+  @ApiOperation({ summary: 'Listar Handling Units con soporte de alcance físico vs histórico' })
   async getHandlingUnits(
     @Query('clienteId') clienteId?: string,
     @Query('estado') estado?: string,
+    @Query('scope') scope?: string,
     @Query('search') search?: string,
   ) {
     const where: any = {};
     if (clienteId) where.clienteId = clienteId;
-    if (estado) {
+
+    // Alcance explícito por categoría operativa:
+    // FISICO: Unidades logísticas presentes en el almacén (disponibles o retenidas)
+    // HISTORICO: Unidades logísticas que ya salieron o están dadas de baja
+    if (scope === 'FISICO') {
+      where.estadoHu = { in: ['ACTIVO', 'CUARENTENA', 'BLOQUEADO'] };
+    } else if (scope === 'HISTORICO') {
+      where.estadoHu = { in: ['DESPACHADO', 'INACTIVO'] };
+    } else if (estado) {
       if (estado === 'TODOS' || estado === 'ALL') {
         // No filter, show all HUs
       } else if (estado.includes(',')) {
@@ -138,6 +147,17 @@ export class InventoryController {
           },
         },
         cliente: { select: { nombreComercial: true, manejoInventario: true, uomPrincipal: true, reglaInventario: true } },
+        lineasSalida: {
+          select: {
+            orden: {
+              select: {
+                codigo: true,
+                estado: true,
+                endCustomer: { select: { nombre: true } },
+              },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });

@@ -638,8 +638,8 @@ export function Picking() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
           {[
-            { key: 'active' as const, icon: <ScanLine size={15} />, label: 'En Recolección Activa', count: activeOrders.length },
             { key: 'queue' as const, icon: <Layers size={15} />, label: 'Cola de Picking', count: queueOrders.length },
+            { key: 'active' as const, icon: <ScanLine size={15} />, label: 'En Recolección Activa', count: activeOrders.length },
             { key: 'done' as const, icon: <CheckCircle2 size={15} />, label: 'Consolidados para Despacho', count: doneOrders.length },
           ].map(t => (
             <button

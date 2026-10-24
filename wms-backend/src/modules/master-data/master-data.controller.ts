@@ -3,6 +3,12 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 import { EmailService } from '../../email.service';
 import * as jwt from 'jsonwebtoken';
+import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
+import {
+  evaluateInventoryItemOperationalState,
+  isExpired,
+  toCalendarDayString,
+} from '../../common/inventory-operational-state.util';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 
@@ -813,6 +819,25 @@ export class MasterDataController {
     });
   }
 
+  @Get('alerts/status')
+  @ApiOperation({ summary: 'Obtener estado y fecha de último escaneo de alertas' })
+  async getAlertsStatus() {
+    const setting = await this.prisma.systemSetting.findUnique({
+      where: { key: 'ALERTS_LAST_SCAN' },
+    });
+    const lastAlert = await this.prisma.alert.findFirst({
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    const activeCount = await this.prisma.alert.count({ where: { resuelta: false } });
+    const criticalCount = await this.prisma.alert.count({ where: { resuelta: false, prioridad: 'CRITICA' } });
+    return {
+      lastScan: setting?.value || lastAlert?.createdAt?.toISOString() || null,
+      activeCount,
+      criticalCount,
+    };
+  }
+
   @Post('alerts')
   @ApiOperation({ summary: 'Crear alerta manual' })
   async createAlert(@Body() data: any) {
@@ -831,101 +856,338 @@ export class MasterDataController {
   @Post('alerts/generate')
   @ApiOperation({ summary: 'Generar alertas inteligentes escaneando inventario' })
   async generateAlerts() {
-    const alerts: any[] = [];
+    const candidateAlerts: any[] = [];
     const now = new Date();
 
-    // 1. STOCK BAJO: lotes con menos de 10 unidades disponibles
-    const lowStock = await this.prisma.lotInventory.findMany({
-      where: { cantidadDisponible: { gt: 0, lt: 10 }, estadoCalidad: 'LIBERADO' },
-      include: { sku: { select: { codigo: true, descripcion: true } }, cliente: { select: { id: true, nombreComercial: true } } },
+    // 1. UBICACIÓN SATURADA: Posiciones comerciales de rack que exceden capacidad nominal
+    const locations = await this.prisma.location.findMany({
+      where: { activo: true },
+      include: {
+        zona: true,
+        lotes: {
+          where: {
+            OR: [
+              { cantidadDisponible: { gt: 0 } },
+              { cantidadBloqueada: { gt: 0 } },
+            ],
+          },
+        },
+      },
+      orderBy: { codigo: 'asc' },
     });
-    for (const lot of lowStock) {
-      const exists = await this.prisma.alert.findFirst({
-        where: { tipo: 'STOCK_BAJO', entidadId: lot.id, resuelta: false },
-      });
-      if (!exists) {
-        alerts.push({
-          tipo: 'STOCK_BAJO', prioridad: lot.cantidadDisponible < 5 ? 'CRITICA' : 'ALTA',
-          titulo: `Stock bajo: ${lot.sku?.codigo} — ${lot.cantidadDisponible} uds`,
-          detalle: `${lot.sku?.descripcion} del cliente ${lot.cliente?.nombreComercial} tiene solo ${lot.cantidadDisponible} unidades disponibles.`,
-          entidad: 'LotInventory', entidadId: lot.id, clienteId: lot.clienteId,
+
+    for (const loc of locations) {
+      const classification = this.classifyLocation(loc);
+      if (!classification.esAlmacenable) continue;
+
+      const capUnits = (loc as any).capacidadUnits || 100;
+      const sumDisp = loc.lotes.reduce((sum, l) => sum + (l.cantidadDisponible || 0), 0);
+      const sumBloq = loc.lotes.reduce((sum, l) => sum + (l.cantidadBloqueada || 0), 0);
+      const ocupUnidades = sumDisp + sumBloq;
+      const pctUnidades = capUnits > 0 ? Math.round((ocupUnidades / capUnits) * 100) : 0;
+
+      if (pctUnidades > 100) {
+        candidateAlerts.push({
+          tipo: 'UBICACION_SATURADA',
+          prioridad: pctUnidades >= 200 ? 'CRITICA' : 'ALTA',
+          titulo: `Ubicación saturada: ${loc.codigo} (${pctUnidades}% de capacidad)`,
+          detalle: `Ubicación ${loc.codigo} (Zona: ${loc.zona?.nombre || loc.zona?.codigo || 'N/A'}) supera su capacidad nominal: ${ocupUnidades}/${capUnits} piezas (${pctUnidades}%). Requiere desahogo operativo.`,
+          entidad: 'Location',
+          entidadId: loc.id,
+          clienteId: null,
         });
       }
     }
 
-    // 2. VENCIMIENTO PRÓXIMO: productos que vencen en < 30 días
-    const thirtyDays = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-    const expiring = await this.prisma.lotInventory.findMany({
-      where: { fechaVencimiento: { lte: thirtyDays, gte: now }, cantidadDisponible: { gt: 0 } },
-      include: { sku: { select: { codigo: true, descripcion: true } }, cliente: { select: { id: true, nombreComercial: true } } },
+    // 2. VENCIMIENTOS Y VENCIMIENTO PRÓXIMO: Precedencia canónica (274 PZA vencidas) + horizonte de 30 días
+    const lotsWithExp = await this.prisma.lotInventory.findMany({
+      where: { fechaVencimiento: { not: null } },
+      include: {
+        sku: { select: { id: true, codigo: true, descripcion: true } },
+        cliente: { select: { id: true, nombreComercial: true } },
+        ubicacion: { include: { zona: true } },
+      },
     });
-    for (const lot of expiring) {
-      const exists = await this.prisma.alert.findFirst({
-        where: { tipo: 'VENCIMIENTO_PROXIMO', entidadId: lot.id, resuelta: false },
-      });
-      if (!exists) {
-        const daysLeft = Math.ceil((lot.fechaVencimiento!.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-        alerts.push({
-          tipo: 'VENCIMIENTO_PROXIMO', prioridad: daysLeft < 7 ? 'CRITICA' : daysLeft < 15 ? 'ALTA' : 'MEDIA',
-          titulo: `Vence en ${daysLeft} días: ${lot.sku?.codigo}`,
-          detalle: `${lot.sku?.descripcion} — Lote ${lot.lote || 'N/A'} vence el ${lot.fechaVencimiento!.toLocaleDateString('es-MX')}. ${lot.cantidadDisponible} uds en stock.`,
-          entidad: 'LotInventory', entidadId: lot.id, clienteId: lot.clienteId,
+
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    for (const lot of lotsWithExp) {
+      const locClass = classifyLocationOperationalRole(lot.ubicacion);
+      const evalState = evaluateInventoryItemOperationalState(lot, locClass, now);
+
+      if (evalState.cantidadExpirada > 0) {
+        candidateAlerts.push({
+          tipo: 'VENCIMIENTO_PROXIMO',
+          prioridad: 'CRITICA',
+          titulo: `Lote vencido: ${lot.sku?.codigo} — Lote ${lot.lote || 'S/L'} (${evalState.cantidadExpirada} uds)`,
+          detalle: `${lot.sku?.descripcion} (Lote: ${lot.lote || 'N/A'}) venció el ${toCalendarDayString(lot.fechaVencimiento)}. Saldo físico: ${evalState.cantidadExpirada} uds en ${lot.ubicacion?.codigo || 'N/A'}. Requiere segregación.`,
+          entidad: 'LotInventory',
+          entidadId: lot.id,
+          clienteId: lot.clienteId,
+        });
+      } else if (
+        evalState.esVendible &&
+        lot.fechaVencimiento &&
+        lot.fechaVencimiento > now &&
+        lot.fechaVencimiento <= thirtyDaysFromNow &&
+        lot.cantidadDisponible > 0
+      ) {
+        const daysLeft = Math.ceil((lot.fechaVencimiento.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        const prioridad = daysLeft < 7 ? 'CRITICA' : daysLeft < 14 ? 'ALTA' : 'MEDIA';
+        candidateAlerts.push({
+          tipo: 'VENCIMIENTO_PROXIMO',
+          prioridad,
+          titulo: `Vence en ${daysLeft} días: ${lot.sku?.codigo} — Lote ${lot.lote || 'S/L'}`,
+          detalle: `${lot.sku?.descripcion} (Lote: ${lot.lote || 'N/A'}) vence el ${toCalendarDayString(lot.fechaVencimiento)} (${daysLeft} días restantes). ${lot.cantidadDisponible} uds vendibles en stock.`,
+          entidad: 'LotInventory',
+          entidadId: lot.id,
+          clienteId: lot.clienteId,
         });
       }
     }
 
-    // 3. PEDIDOS ATRASADOS: más de 3 días en estado PENDIENTE o CONFIRMADO
-    const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
-    const lateOrders = await this.prisma.salesOrder.findMany({
-      where: { estado: { in: ['PENDIENTE', 'CONFIRMADO'] }, createdAt: { lt: threeDaysAgo } },
+    // 3. PEDIDOS ATRASADOS: fechaCompromiso/fechaCita SLA vencida en pedidos abiertos
+    const openOrders = await this.prisma.salesOrder.findMany({
+      where: {
+        estado: { in: ['APROBADO', 'EN_PICKING', 'CONSOLIDADO', 'PENDIENTE', 'CONFIRMADO', 'DESPACHADO', 'EN_TRANSITO'] },
+      },
       include: { cliente: { select: { id: true, nombreComercial: true } } },
     });
-    for (const order of lateOrders) {
-      const exists = await this.prisma.alert.findFirst({
-        where: { tipo: 'PEDIDO_ATRASADO', entidadId: order.id, resuelta: false },
-      });
-      if (!exists) {
-        const daysLate = Math.ceil((now.getTime() - order.createdAt.getTime()) / (1000 * 60 * 60 * 24));
-        alerts.push({
-          tipo: 'PEDIDO_ATRASADO', prioridad: daysLate > 7 ? 'CRITICA' : 'ALTA',
-          titulo: `Pedido atrasado ${daysLate}d: ${order.codigo}`,
-          detalle: `Pedido ${order.codigo} de ${order.cliente?.nombreComercial} lleva ${daysLate} días sin despachar. Estado: ${order.estado}.`,
-          entidad: 'SalesOrder', entidadId: order.id, clienteId: order.clienteId,
-        });
-      }
-    }
 
-    // 4. SIN MOVIMIENTO: SKUs sin movimiento en > 14 días
-    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-    const activeLots = await this.prisma.lotInventory.findMany({
-      where: { cantidadDisponible: { gt: 0 } },
-      include: { sku: { select: { id: true, codigo: true, descripcion: true } }, cliente: { select: { id: true, nombreComercial: true } } },
-    });
-    for (const lot of activeLots) {
-      const recentMove = await this.prisma.inventoryMovement.findFirst({
-        where: { skuId: lot.skuId, fechaHora: { gte: fourteenDaysAgo } },
-      });
-      if (!recentMove) {
-        const exists = await this.prisma.alert.findFirst({
-          where: { tipo: 'SIN_MOVIMIENTO', entidadId: lot.skuId, resuelta: false },
-        });
-        if (!exists) {
-          alerts.push({
-            tipo: 'SIN_MOVIMIENTO', prioridad: 'MEDIA',
-            titulo: `Sin movimiento: ${lot.sku?.codigo}`,
-            detalle: `${lot.sku?.descripcion} de ${lot.cliente?.nombreComercial} lleva más de 14 días sin movimiento. ${lot.cantidadDisponible} uds en stock.`,
-            entidad: 'SkuMaster', entidadId: lot.skuId, clienteId: lot.clienteId,
-          });
+    for (const order of openOrders) {
+      const dateRef = (order as any).fechaCita || order.fechaCompromiso;
+      let daysLate = 0;
+      let dateLabel = '';
+
+      if (dateRef) {
+        const refTime = new Date(dateRef).getTime();
+        if (now.getTime() > refTime) {
+          daysLate = Math.ceil((now.getTime() - refTime) / (1000 * 60 * 60 * 24));
+          dateLabel = (order as any).fechaCita ? 'fecha de cita' : 'fecha de compromiso';
+        }
+      } else {
+        const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+        if (order.createdAt < threeDaysAgo) {
+          daysLate = Math.ceil((now.getTime() - order.createdAt.getTime()) / (1000 * 60 * 60 * 24));
+          dateLabel = 'antigüedad de creación (>3d)';
         }
       }
+
+      if (daysLate > 0) {
+        candidateAlerts.push({
+          tipo: 'PEDIDO_ATRASADO',
+          prioridad: daysLate > 7 ? 'CRITICA' : 'ALTA',
+          titulo: `Pedido atrasado (${daysLate}d): ${order.codigo}`,
+          detalle: `Pedido ${order.codigo} de ${order.cliente?.nombreComercial || 'N/A'} (Estado: ${order.estado}) supera su ${dateLabel} por ${daysLate} días. Requiere priorización en despacho.`,
+          entidad: 'SalesOrder',
+          entidadId: order.id,
+          clienteId: order.clienteId,
+        });
+      }
     }
 
-    // Bulk create
-    if (alerts.length > 0) {
-      await this.prisma.alert.createMany({ data: alerts });
+    // 4. SIN MOVIMIENTO: SKUs sin movimiento en >14 días (exactamente 1 alerta por SKU)
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const activeLots = await this.prisma.lotInventory.findMany({
+      where: {
+        OR: [
+          { cantidadDisponible: { gt: 0 } },
+          { cantidadBloqueada: { gt: 0 } },
+        ],
+      },
+      include: {
+        sku: { select: { id: true, codigo: true, descripcion: true } },
+        cliente: { select: { id: true, nombreComercial: true } },
+      },
+    });
+
+    const activeSkuMap = new Map<string, { sku: any; cliente: any; stockTotal: number }>();
+    for (const lot of activeLots) {
+      if (!lot.skuId || !lot.sku) continue;
+      const existing = activeSkuMap.get(lot.skuId);
+      const lotStock = (lot.cantidadDisponible || 0) + (lot.cantidadBloqueada || 0);
+      if (existing) {
+        existing.stockTotal += lotStock;
+      } else {
+        activeSkuMap.set(lot.skuId, {
+          sku: lot.sku,
+          cliente: lot.cliente,
+          stockTotal: lotStock,
+        });
+      }
     }
 
-    return { message: `${alerts.length} nuevas alertas generadas`, count: alerts.length };
+    for (const [skuId, info] of activeSkuMap.entries()) {
+      const recentMove = await this.prisma.inventoryMovement.findFirst({
+        where: { skuId, fechaHora: { gte: fourteenDaysAgo } },
+      });
+      if (!recentMove) {
+        candidateAlerts.push({
+          tipo: 'SIN_MOVIMIENTO',
+          prioridad: 'MEDIA',
+          titulo: `Sin movimiento: ${info.sku.codigo} (>14 días)`,
+          detalle: `${info.sku.descripcion} de ${info.cliente?.nombreComercial || 'N/A'} no registra movimientos en los últimos 14 días. Stock físico actual: ${info.stockTotal} uds.`,
+          entidad: 'SkuMaster',
+          entidadId: skuId,
+          clienteId: info.cliente?.id || null,
+        });
+      }
+    }
+
+    // 5. DISCREPANCIA: Solo conteos cíclicos abiertos con partidas no conciliadas
+    const openCounts = await this.prisma.cycleCount.findMany({
+      where: {
+        estado: { notIn: ['COMPLETADO', 'CERRADO', 'CANCELADO'] },
+      },
+      include: {
+        lineas: {
+          where: {
+            OR: [
+              { discrepancia: { gt: 0 } },
+              { discrepancia: { lt: 0 } },
+              { estado: 'DISCREPANCIA' },
+            ],
+          },
+        },
+      },
+    });
+
+    for (const cc of openCounts) {
+      if (cc.lineas.length > 0) {
+        candidateAlerts.push({
+          tipo: 'DISCREPANCIA',
+          prioridad: 'ALTA',
+          titulo: `Discrepancia en conteo: ${cc.codigo} (${cc.lineas.length} partidas)`,
+          detalle: `El conteo cíclico ${cc.codigo} (Estado: ${cc.estado}) presenta ${cc.lineas.length} línea(s) con discrepancia física pendiente de conciliación.`,
+          entidad: 'CycleCount',
+          entidadId: cc.id,
+          clienteId: null,
+        });
+      }
+    }
+
+    // 6. STOCK BAJO: Solo partidas en racks comerciales con stock vendible < 10
+    const lowStockLots = await this.prisma.lotInventory.findMany({
+      where: { cantidadDisponible: { gt: 0, lt: 10 } },
+      include: {
+        sku: { select: { id: true, codigo: true, descripcion: true } },
+        cliente: { select: { id: true, nombreComercial: true } },
+        ubicacion: { include: { zona: true } },
+      },
+    });
+
+    for (const lot of lowStockLots) {
+      const locClass = classifyLocationOperationalRole(lot.ubicacion);
+      const evalState = evaluateInventoryItemOperationalState(lot, locClass, now);
+
+      if (evalState.esVendible && evalState.cantidadDisponibleVendible > 0 && evalState.cantidadDisponibleVendible < 10) {
+        candidateAlerts.push({
+          tipo: 'STOCK_BAJO',
+          prioridad: evalState.cantidadDisponibleVendible < 5 ? 'CRITICA' : 'ALTA',
+          titulo: `Stock bajo: ${lot.sku?.codigo} — ${evalState.cantidadDisponibleVendible} uds vendibles`,
+          detalle: `${lot.sku?.descripcion} (Lote: ${lot.lote || 'N/A'}) de ${lot.cliente?.nombreComercial || 'N/A'} cuenta con solo ${evalState.cantidadDisponibleVendible} unidades disponibles vendibles en rack comercial.`,
+          entidad: 'LotInventory',
+          entidadId: lot.id,
+          clienteId: lot.clienteId,
+        });
+      }
+    }
+
+    // RECONCILIACIÓN DEL ESTADO OPERATIVO Y CICLO DE VIDA DE ALERTAS
+    // Clave canónica: ${tipo}:${entidad}:${entidadId}
+    const allAlertsInDb = await this.prisma.alert.findMany({
+      select: { id: true, tipo: true, entidad: true, entidadId: true, resuelta: true, titulo: true, prioridad: true, detalle: true },
+    });
+
+    const activeAlertsInDb = allAlertsInDb.filter(a => !a.resuelta);
+    const activeAlertsMap = new Map<string, typeof activeAlertsInDb[0]>();
+    for (const a of activeAlertsInDb) {
+      const key = `${a.tipo}:${a.entidad}:${a.entidadId}`;
+      activeAlertsMap.set(key, a);
+    }
+
+    // Conjunto canónico actual en memoria (deduplicado dentro del lote)
+    const currentIncidenceMap = new Map<string, any>();
+    for (const alert of candidateAlerts) {
+      const key = `${alert.tipo}:${alert.entidad}:${alert.entidadId}`;
+      if (!currentIncidenceMap.has(key)) {
+        currentIncidenceMap.set(key, alert);
+      }
+    }
+
+    const toCreate: any[] = [];
+    let conservedCount = 0;
+    const toAutoResolveIds: string[] = [];
+
+    // A, B y C: Evaluar incidencias actuales contra BD activa
+    for (const [key, incidence] of currentIncidenceMap.entries()) {
+      if (activeAlertsMap.has(key)) {
+        // B: Ya tiene alerta activa -> CONSERVAR
+        conservedCount++;
+      } else {
+        // C: No tiene alerta activa -> CREAR NUEVA
+        toCreate.push(incidence);
+      }
+    }
+
+    // D: Alertas activas en BD que ya no aparecen en las incidencias actuales -> AUTO-RESOLVER
+    for (const [key, activeAlert] of activeAlertsMap.entries()) {
+      if (!currentIncidenceMap.has(key)) {
+        toAutoResolveIds.push(activeAlert.id);
+      }
+    }
+
+    // 3. TRANSACCIONALIDAD: Reconciliación atómica en BD
+    // Modifica ÚNICAMENTE Alert, SystemSetting y AuditLog
+    await this.prisma.$transaction(async (tx) => {
+      // Auto-resolver alertas que desaparecieron operativamente
+      if (toAutoResolveIds.length > 0) {
+        await tx.alert.updateMany({
+          where: { id: { in: toAutoResolveIds } },
+          data: {
+            resuelta: true,
+            resueltaEn: now,
+            resueltaPor: 'sistema:reconciliacion_automatica',
+          },
+        });
+      }
+
+      // Crear nuevas alertas
+      if (toCreate.length > 0) {
+        await tx.alert.createMany({ data: toCreate });
+      }
+
+      // Persistir timestamp en SystemSetting
+      await tx.systemSetting.upsert({
+        where: { key: 'ALERTS_LAST_SCAN' },
+        update: { value: now.toISOString() },
+        create: {
+          key: 'ALERTS_LAST_SCAN',
+          value: now.toISOString(),
+          category: 'alerts',
+          label: 'Último escaneo operativo de alertas',
+        },
+      });
+
+      // Registrar auditoría del escaneo
+      await tx.auditLog.create({
+        data: {
+          usuario: 'sistema',
+          accion: 'SCAN_ALERTS',
+          entidad: 'Alert',
+          detalle: `Reconciliación: ${toCreate.length} creadas, ${conservedCount} conservadas, ${toAutoResolveIds.length} auto-resueltas (total evaluadas: ${currentIncidenceMap.size})`,
+        },
+      });
+    });
+
+    return {
+      message: `${toCreate.length} nuevas alertas generadas, ${conservedCount} conservadas, ${toAutoResolveIds.length} auto-resueltas`,
+      created: toCreate.length,
+      conserved: conservedCount,
+      autoResolved: toAutoResolveIds.length,
+      scannedAt: now.toISOString(),
+      totalEvaluadas: currentIncidenceMap.size,
+    };
   }
 
   // ============ TASKS ============
@@ -989,7 +1251,17 @@ export class MasterDataController {
   async getSettings(@Query('category') category?: string) {
     const where: any = {};
     if (category) where.category = category;
-    return this.prisma.systemSetting.findMany({ where, orderBy: { key: 'asc' } });
+    const settings = await this.prisma.systemSetting.findMany({ where, orderBy: { key: 'asc' } });
+    return settings.map(s => {
+      if (s.key === 'email.smtp_pass') {
+        return {
+          ...s,
+          value: s.value ? '__CONFIGURED__' : '',
+          isConfigured: !!s.value,
+        };
+      }
+      return s;
+    });
   }
 
   @Put('settings')
@@ -997,6 +1269,11 @@ export class MasterDataController {
   async saveSettings(@Body() data: { settings: { key: string; value: string; category?: string; label?: string }[] }) {
     const results: any[] = [];
     for (const s of data.settings) {
+      if (s.key === 'email.smtp_pass') {
+        if (!s.value || s.value === '__CONFIGURED__' || s.value.trim() === '') {
+          continue; // Conservar contraseña existente
+        }
+      }
       const result = await this.prisma.systemSetting.upsert({
         where: { key: s.key },
         update: { value: s.value },
@@ -1009,7 +1286,7 @@ export class MasterDataController {
 
   @Post('settings/test-email')
   @ApiOperation({ summary: 'Probar conexión SMTP' })
-  async testEmail() {
-    return this.emailService.testConnection();
+  async testEmail(@Body() data?: { host?: string; port?: string | number; user?: string; pass?: string }) {
+    return this.emailService.testConnection(data);
   }
 }

@@ -103,9 +103,26 @@ export class EmailService {
     }
   }
 
-  async testConnection() {
+  async testConnection(override?: { host?: string; port?: string | number; user?: string; pass?: string }) {
     try {
-      const transport = await this.createTransport();
+      const baseCfg = await this.getConfig();
+      const host = override?.host || baseCfg.host;
+      const port = override?.port ? parseInt(String(override.port)) : baseCfg.port;
+      const secure = port === 465;
+      const user = override?.user || baseCfg.user;
+      // Si pass no se envió, está vacío o es '__CONFIGURED__', usar la contraseña persistida baseCfg.pass
+      const pass = (override?.pass && override.pass !== '__CONFIGURED__' && override.pass.trim() !== '')
+        ? override.pass
+        : baseCfg.pass;
+
+      const transport = nodemailer.createTransport({
+        host,
+        port,
+        secure,
+        auth: { user, pass },
+        tls: { rejectUnauthorized: false },
+      });
+
       await transport.verify();
       return { success: true, message: 'Conexión SMTP exitosa' };
     } catch (error: any) {

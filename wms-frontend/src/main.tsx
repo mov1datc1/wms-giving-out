@@ -53,6 +53,17 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/** Ruta protegida para módulo de administración (requiere permiso 'admin' o Super Admin) */
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { user, hasPermission, loading } = useAuth();
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!user.isSuperAdmin && !hasPermission('admin')) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
 /** Auto-redirect depositor users to portal */
 function SmartRedirect() {
   const { user } = useAuth();
@@ -92,7 +103,11 @@ createRoot(document.getElementById('root')!).render(
             <Route path="/despacho" element={<Dispatch />} />
             <Route path="/ubicaciones" element={<Locations />} />
             <Route path="/maestros" element={<MasterData />} />
-            <Route path="/admin" element={<AdminPanel />} />
+            <Route path="/admin" element={
+              <AdminRoute>
+                <AdminPanel />
+              </AdminRoute>
+            } />
             <Route path="/etiquetado" element={<LabelPreview />} />
             <Route path="/depositantes" element={<Clients />} />
             <Route path="/clientes-finales" element={<EndCustomers />} />
