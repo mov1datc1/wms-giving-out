@@ -4,6 +4,31 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.22] — 2026-11-04 (Preparación Arquitectural de Layout Físico en Piso — Fases 1 y 2)
+
+### 🏗️ Desacoplamiento Estructural y Generalización de Posiciones de Piso
+
+Esta versión sienta las bases arquitecturales para adaptar Giving Out WMS al layout físico real del cliente sin modificar schema.prisma, sin migraciones, sin alterar datos productivos y preservando el 100% de la lógica inteligente existente (Putaway, FEFO/FIFO, reglas por depositante y aislamiento de áreas no comerciales).
+
+### Backend
+- **Generalización de Clasificación de Ubicaciones (`location-classifier.util.ts` & `master-data.controller.ts`):**
+  - Soporte para que posiciones de piso (`TARIMA_PISO`, `PISO`) en zonas válidas de almacenamiento o picking sean clasificadas como `ALMACENABLE_COMERCIAL` con badge `'ALMACENABLE EN PISO'`.
+  - Blindaje estricto para que ubicaciones no comerciales (`PNC`, `RECIBO`, `STAGING`, `DEVOLUCION`, `CUARENTENA`, `TRABAJO`, `ESTRUCTURAL`) conserven su protección e inhabilitación absoluta como candidatas comerciales.
+- **Desacoplamiento de Putaway Inteligente (`putaway-engine.service.ts`):**
+  - Eliminación de la dependencia que exigía rack multinivel (`nivel: N1..N3`) para considerar una ubicación como físicamente almacenable.
+  - Implementación de fallback transitorio retrocompatible en `fallbackTemporalNivelFuncionDemo` (accesibilidad suelo para piso) garantizando punto de extensión futuro para persistir `funcionOperativa` (`PICKING`, `RESERVA`, `MIXTO`) sin alterar FEFO/FIFO ni scoring.
+  - Ordenamiento natural alfanumérico (`numeric: true`) en el desempate de candidatos, preparado para códigos correlativos continuos (`G0001`, `G0002`, `G0010`, `G0100`).
+
+### Frontend
+- **Generalización Terminológica (`Picking.tsx`, `PutawayModal.tsx`):**
+  - Reemplazo de etiquetas rígidas ("Rack") por términos universales ("Ubicación", "Posición física", "Ubicación física").
+- **Desacoplamiento Canónico en `LocationSelect.tsx`:**
+  - Eliminación de heurísticas locales hardcodeadas (`pasillo.startsWith('A')`, `pasillo.startsWith('B')`).
+  - Resolución dinámica de zonificación apoyada exclusivamente en la relación contractual de `Client` (`client.zonaAsignadaId`) y atributos de `Zone`.
+  - Validación de accesibilidad extendida a posiciones de piso.
+- **Vista Esqueleto 2D en `Locations.tsx`:**
+  - Incorporación del selector de vista `"Mapa del Almacén (Racks)"` vs `"Plano Físico 2D (Esqueleto)"` (`PhysicalWarehouseMapSkeleton`), manteniendo como default la vista histórica y dejando preparado el esqueleto visual preliminar para cuando se confirme el layout físico.
+
 ## [1.9.21] — 2026-10-24 (Certificación E2E de Cadena Crítica, Microfix FEFO y Reservas Order-Aware Multi-Lote)
 
 ### 🚀 Certificación E2E Completa y Blindaje de Asignación Outbound Order-Aware
@@ -29,6 +54,19 @@ Esta versión consolida la ejecución y certificación positiva de la cadena cr�
   - Lote B (`LOT-ALIM-2027-B365`, caducidad 2027-10-24, ~365d): ubicado en `B02-R01-N2` (Reserva N2) elevando la celda de 32/40 a 36/40 (`PARCIAL`).
   - Outbound FEFO: `PED-2026-0009` (4 PZA, estado `SOLICITADO`) sugiere prioritariamente Lote A / HU A en N1.
 - **Invarianza y Conciliación Kárdex:** Balance global cerrado en `Físico: 5,917 = Vendible: 1,556 + Reservado: 104 + Expirado: 274 + Bloqueado: 311 + En Tránsito: 3,672` con `diferenciaConciliacion = 0`.
+- **Certificación Visual Completa en Entorno `dev`:** Validación 100% positiva de la cadena operativa en la réplica desplegada de desarrollo.
+- **Promoción a Producción (`main`):** Promoción limpia mediante fast-forward del commit `78ceaf452ba70fde1acdd7ec3756e12de184f56a` (`78ceaf4`), garantizando que `main`, `origin/main`, `dev` y `origin/dev` apunten de forma idéntica e inmutable a la misma versión certificada.
+- **Certificación Visual Posterior en Producción:** Verificación en vivo en el entorno productivo desplegado cubriendo:
+  1. *Login:* Acceso validado con credenciales de supervisión (`admin@givingout.com`).
+  2. *Dashboard:* KPIs ejecutivos en sintonía matemática exacta con los invariantes del sistema.
+  3. *Depositantes / AlimNorte:* Configuración contractual soberana con regla `FEFO`, lote y caducidad obligatorios.
+  4. *Recepción `REC-2026-0018`:* 8 recibidas, 8 conformes, 0 merma, 0 faltantes; Etapas 1 a 5 con check verde; Etapa 6 en estado `Por Cerrar` (*"Mercancía alojada · Listo para cierre oficial"*), confirmando que el Putaway está concluido físicamente y el estado de base de datos es `COMPLETO`.
+  5. *Ubicaciones / Layout:* `B02-R01-N1` a 40/40 (`LLENO`) y `B02-R01-N2` a 36/40 (`PARCIAL`, 4 PZA libres).
+  6. *Despacho / `PED-2026-0009`:* Pedido de AlimNorte en estado `SOLICITADO` (4 PZA solicitadas, 0/4 surtidas).
+  7. *Panel de Preparación (Outbound FEFO):* Validación en pantalla de la sugerencia automática FEFO con selección ganadora del Lote A (`LOT-ALIM-2026-A60`, caducidad 24/12/2026, 4 PZA en `B02-R01-N1`, Balance 4/4 Cuadrado) y descarte del Lote B; apertura y cierre 100% READ-ONLY sin mutación operativa.
+  8. *Etiquetado / HUs:* Preservación íntegra de las 131 HUs activas y 5 históricas en almacén, con `BOX-REC-2026-0018-0001` y `0002` asociadas a sus racks.
+- **Observación UX No Bloqueante (Master Pallet):** La Master Pallet `PLT-REC-2026-0018-01` en rampa opera exclusivamente como contenedor lógico (`lotId = null`, 0 impacto físico o contable); en una futura versión se refinará el texto en etiquetado para indicar "1 Tarima Master · 2 cajas contenidas" en lugar de "2 TARIMA físicas".
+- **Estado Final de la Etapa:** **APROBADO PARA REUNIÓN / DEMOSTRACIÓN EJECUTIVA**. Guía y manual de demostración preparados con estrictas directrices de no mutación.
 
 ## [1.9.20] — 2026-10-23 (Estabilización de Alertas, Seguridad Admin RBAC, Certificación de Reglas del Depositante, Putaway Inteligente y FEFO/FIFO)
 

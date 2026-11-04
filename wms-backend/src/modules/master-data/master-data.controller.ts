@@ -749,9 +749,10 @@ export class MasterDataController {
     const code = (loc.codigo || '').toUpperCase();
     const tipo = (loc.tipoUbicacion || '').toUpperCase();
     const zonaTipo = (loc.zona?.tipoZona || '').toUpperCase();
+    const zonaCode = (loc.zona?.codigo || '').toUpperCase();
 
     // 1. Recibo y Andenes en tránsito
-    if (code.startsWith('REC-') || code.includes('RAMPA') || code.includes('ANDEN') || tipo === 'RECIBO' || zonaTipo === 'RECIBO') {
+    if (code.startsWith('REC-') || code.includes('RAMPA') || code.includes('ANDEN') || tipo === 'RECIBO' || zonaTipo === 'RECIBO' || zonaCode === 'RECIBO') {
       return {
         categoriaUbicacion: 'RECIBO_TRANSITO',
         esAlmacenable: false,
@@ -759,17 +760,32 @@ export class MasterDataController {
       };
     }
 
-    // 2. Virtual / No Conforme (Mermas DEV-01, Excesos NC-EXCESO-01, Cuarentenas)
-    if (code === 'DEV-01' || code === 'NC-EXCESO-01' || code.includes('DEV') || code.includes('CUARENTENA') || tipo === 'CUARENTENA' || zonaTipo === 'CUARENTENA' || zonaTipo === 'DEVOLUCION') {
+    // 2. Virtual / No Conforme (Mermas DEV-01, Excesos NC-EXCESO-01, Cuarentenas, PNC)
+    if (
+      code === 'DEV-01' ||
+      code === 'NC-EXCESO-01' ||
+      code.includes('DEV') ||
+      code.includes('CUARENTENA') ||
+      code.includes('PNC') ||
+      tipo === 'CUARENTENA' ||
+      tipo === 'DEVOLUCION' ||
+      tipo === 'PNC' ||
+      zonaTipo === 'CUARENTENA' ||
+      zonaTipo === 'DEVOLUCION' ||
+      zonaTipo === 'PNC' ||
+      zonaCode === 'DEVOLUCION' ||
+      zonaCode === 'CUARENTENA' ||
+      zonaCode === 'PNC'
+    ) {
       return {
         categoriaUbicacion: 'VIRTUAL_NO_CONFORME',
         esAlmacenable: false,
-        categoriaDescripcion: 'Almacén Virtual / No Conforme',
+        categoriaDescripcion: 'Almacén Virtual / No Conforme (PNC)',
       };
     }
 
     // 3. Staging / Pulmón de salida
-    if (code.includes('STAG') || tipo === 'STAGING' || zonaTipo === 'STAGING') {
+    if (code.includes('STAG') || code.startsWith('STG-') || tipo === 'STAGING' || zonaTipo === 'STAGING' || zonaCode === 'STAGING') {
       return {
         categoriaUbicacion: 'STAGING',
         esAlmacenable: false,
@@ -777,8 +793,45 @@ export class MasterDataController {
       };
     }
 
-    // 4. Especiales de piso no vinculadas a rack
-    if (tipo === 'PISO' && (!loc.rack || loc.rack === 'PISO' || loc.pasillo === 'PISO')) {
+    // 4. Áreas de trabajo y elementos estructurales no inventariables (mesas, baños)
+    if (
+      tipo === 'TRABAJO' ||
+      tipo === 'ESTRUCTURAL' ||
+      tipo === 'MESA_TRABAJO' ||
+      code.startsWith('MESA') ||
+      code.startsWith('BAÑO') ||
+      code.startsWith('BANIO')
+    ) {
+      return {
+        categoriaUbicacion: 'ESPECIAL_OTRAS',
+        esAlmacenable: false,
+        categoriaDescripcion: 'Área Especial / No Inventariable',
+      };
+    }
+
+    // 5. Posiciones físicas de estiba en piso:
+    const esZonaAlmacenable =
+      zonaTipo === 'ALMACENAMIENTO' ||
+      zonaTipo === 'PICKING' ||
+      zonaCode.startsWith('ALM-') ||
+      zonaCode === 'INTERIOR';
+
+    if (tipo === 'TARIMA_PISO' && esZonaAlmacenable) {
+      return {
+        categoriaUbicacion: 'FISICA_ALMACENABLE',
+        esAlmacenable: true,
+        categoriaDescripcion: 'Posición de Tarima en Piso',
+      };
+    }
+
+    if (tipo === 'PISO') {
+      if (esZonaAlmacenable) {
+        return {
+          categoriaUbicacion: 'FISICA_ALMACENABLE',
+          esAlmacenable: true,
+          categoriaDescripcion: 'Posición de Tarima en Piso',
+        };
+      }
       return {
         categoriaUbicacion: 'ESPECIAL_OTRAS',
         esAlmacenable: false,
@@ -786,7 +839,7 @@ export class MasterDataController {
       };
     }
 
-    // 5. Celdas físicas de almacenamiento (Rack / Estantería con Pasillo-Rack-Nivel)
+    // 6. Celdas físicas de almacenamiento (Rack / Estantería con Pasillo-Rack-Nivel)
     return {
       categoriaUbicacion: 'FISICA_ALMACENABLE',
       esAlmacenable: true,

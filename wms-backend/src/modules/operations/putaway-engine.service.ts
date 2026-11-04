@@ -149,21 +149,27 @@ export class PutawayEngineService {
       };
     }
 
-    // 2. Virtual / No Conforme (Mermas DEV-01, Excesos NC-EXCESO-01, Cuarentenas)
+    // 2. Virtual / No Conforme (Mermas DEV-01, Excesos NC-EXCESO-01, Cuarentenas, PNC)
     if (
       code === 'DEV-01' ||
       code === 'NC-EXCESO-01' ||
       code.includes('DEV') ||
       code.includes('CUARENTENA') ||
+      code.includes('PNC') ||
       tipo === 'CUARENTENA' ||
+      tipo === 'DEVOLUCION' ||
+      tipo === 'PNC' ||
       zonaTipo === 'CUARENTENA' ||
       zonaTipo === 'DEVOLUCION' ||
-      zonaCode === 'DEVOLUCION'
+      zonaTipo === 'PNC' ||
+      zonaCode === 'DEVOLUCION' ||
+      zonaCode === 'CUARENTENA' ||
+      zonaCode === 'PNC'
     ) {
       return {
         categoriaUbicacion: 'VIRTUAL_NO_CONFORME',
         esAlmacenable: false,
-        categoriaDescripcion: 'Almacén Virtual / No Conforme',
+        categoriaDescripcion: 'Almacén Virtual / No Conforme (PNC)',
       };
     }
 
@@ -182,8 +188,47 @@ export class PutawayEngineService {
       };
     }
 
-    // 4. Especiales de piso no vinculadas a rack de almacenamiento
-    if (tipo === 'PISO' && (!loc.rack || loc.rack === 'PISO' || loc.pasillo === 'PISO')) {
+    // 4. Áreas de trabajo y elementos estructurales no inventariables (mesas, baños)
+    if (
+      tipo === 'TRABAJO' ||
+      tipo === 'ESTRUCTURAL' ||
+      tipo === 'MESA_TRABAJO' ||
+      code.startsWith('MESA') ||
+      code.startsWith('BAÑO') ||
+      code.startsWith('BANIO')
+    ) {
+      return {
+        categoriaUbicacion: 'ESPECIAL_OTRAS',
+        esAlmacenable: false,
+        categoriaDescripcion: 'Área Especial / No Inventariable',
+      };
+    }
+
+    // 5. Posiciones físicas de estiba en piso:
+    // Si la celda es de piso (PISO o TARIMA_PISO), evaluar su contexto estructural de zona.
+    // Si pertenece a una zona de almacenamiento comercial o picking, es FISICA_ALMACENABLE.
+    const esZonaAlmacenable =
+      zonaTipo === 'ALMACENAMIENTO' ||
+      zonaTipo === 'PICKING' ||
+      zonaCode.startsWith('ALM-') ||
+      zonaCode === 'INTERIOR';
+
+    if (tipo === 'TARIMA_PISO' && esZonaAlmacenable) {
+      return {
+        categoriaUbicacion: 'FISICA_ALMACENABLE',
+        esAlmacenable: true,
+        categoriaDescripcion: 'Posición de Tarima en Piso',
+      };
+    }
+
+    if (tipo === 'PISO') {
+      if (esZonaAlmacenable) {
+        return {
+          categoriaUbicacion: 'FISICA_ALMACENABLE',
+          esAlmacenable: true,
+          categoriaDescripcion: 'Posición de Tarima en Piso',
+        };
+      }
       return {
         categoriaUbicacion: 'ESPECIAL_OTRAS',
         esAlmacenable: false,
@@ -191,7 +236,7 @@ export class PutawayEngineService {
       };
     }
 
-    // 5. Celdas físicas de almacenamiento (Rack / Estantería)
+    // 6. Celdas físicas de almacenamiento (Rack / Estantería)
     return {
       categoriaUbicacion: 'FISICA_ALMACENABLE',
       esAlmacenable: true,
@@ -407,26 +452,48 @@ export class PutawayEngineService {
 
   /**
    * Determina la función operativa del nivel (PICKING, RESERVA o MIXTO).
-   * 1. Prioridad: Atributo formal configurable (loc.funcionNivel o loc.tipoNivel).
-   * 2. Fallback temporal aislado para demo hasta recibir el layout oficial de Alejandra.
+   * 1. Prioridad: Atributo formal configurable (loc.funcionOperativa, loc.funcionNivel o loc.tipoNivel).
+   * 2. Contexto de zona: Si la zona es exclusivamente de PICKING, adopta 'PICKING'.
+   * 3. Fallback retrocompatible con ubicaciones históricas N1/N2/N3 y nuevas posiciones de piso.
+   *
+   * [PUNTO DE EXTENSIÓN ARQUITECTÓNICO]:
+   * Al confirmar Alejandra la asignación definitiva de cada posición de piso (ej. si alguna tarima
+   * específica funge como reserva vs picking suelto), se persistirá el atributo formal funcionOperativa
+   * en la entidad Location sin requerir heurísticas ni tocar el motor.
    */
   resolveFuncionNivel(loc: any): 'PICKING' | 'RESERVA' | 'MIXTO' {
-    if (loc.funcionNivel && ['PICKING', 'RESERVA', 'MIXTO'].includes(loc.funcionNivel)) {
-      return loc.funcionNivel;
+    const funcionConfigurada = loc.funcionOperativa || loc.funcionNivel || loc.tipoNivel;
+    if (funcionConfigurada && ['PICKING', 'RESERVA', 'MIXTO'].includes(funcionConfigurada)) {
+      return funcionConfigurada;
     }
-    if (loc.tipoNivel && ['PICKING', 'RESERVA', 'MIXTO'].includes(loc.tipoNivel)) {
-      return loc.tipoNivel;
+    const zonaTipo = (loc.zona?.tipoZona || '').toUpperCase();
+    if (zonaTipo === 'PICKING') {
+      return 'PICKING';
     }
     return this.fallbackTemporalNivelFuncionDemo(loc);
   }
 
   /**
-   * @deprecated FALLBACK TEMPORAL DE COMPATIBILIDAD (DEMO PREVIA AL LAYOUT OFICIAL)
-   * Aislado exclusivamente para compatibilidad demo hasta recibir el Layout físico oficial de Alejandra.
-   * Al poblar la columna funcionNivel en Location, este método queda obsoleto sin tocar el motor.
+   * Fallback retrocompatible para determinar la función del nivel sin forzar migraciones DDL:
+   * - Ubicaciones históricas N1 o '1' -> 'PICKING' (suelo de rack para surtido rápido)
+   * - Ubicaciones históricas N2, N3 -> 'RESERVA' (niveles altos de rack)
+   * - Posiciones de tarima en piso comercial (donde el pallet reposa en el suelo con acceso directo) -> 'PICKING'
+   * - Demás posiciones por defecto -> 'RESERVA'
    */
   private fallbackTemporalNivelFuncionDemo(loc: any): 'PICKING' | 'RESERVA' {
-    return loc.nivel === 'N1' ? 'PICKING' : 'RESERVA';
+    const nivelUpper = String(loc.nivel || '').toUpperCase().trim();
+    if (nivelUpper === 'N1' || nivelUpper === '1') {
+      return 'PICKING';
+    }
+    if (nivelUpper === 'N2' || nivelUpper === 'N3' || nivelUpper === '2' || nivelUpper === '3') {
+      return 'RESERVA';
+    }
+    // Posiciones físicas de piso almacenable (tarima en piso con accesibilidad directa al nivel del suelo)
+    const tipoUpper = String(loc.tipoUbicacion || '').toUpperCase().trim();
+    if (tipoUpper === 'TARIMA_PISO' || (tipoUpper === 'PISO' && loc.esAlmacenable !== false)) {
+      return 'PICKING';
+    }
+    return 'RESERVA';
   }
 
   /**
@@ -931,13 +998,15 @@ export class PutawayEngineService {
     }
 
     // Ordenar de mayor a menor score real, luego penalizar advertencias, y por pasillo/rack/nivel como desempate natural
+    // y desempate alfanumérico natural por código (G0001, G0002, G0010, A01-R01-N1)
     scoredList.sort((a: any, b: any) => {
       if (b.rawScore !== a.rawScore) return b.rawScore - a.rawScore;
       if (a.advertencias.length !== b.advertencias.length) return a.advertencias.length - b.advertencias.length;
       if (b.score !== a.score) return b.score - a.score;
       if (a.pasillo !== b.pasillo) return a.pasillo.localeCompare(b.pasillo);
       if (a.rack !== b.rack) return a.rack.localeCompare(b.rack);
-      return a.nivel.localeCompare(b.nivel);
+      if (a.nivel !== b.nivel) return a.nivel.localeCompare(b.nivel);
+      return a.codigo.localeCompare(b.codigo, undefined, { numeric: true, sensitivity: 'base' });
     });
 
     return scoredList;

@@ -340,7 +340,7 @@ export function PutawayModal({
     if (!query) {
       setRackScanSuccess(false);
       playAudioTone('error');
-      setErrorMsg('Lectura requerida: Debes escanear el código de barras de la posición rack antes de validar.');
+      setErrorMsg('Lectura requerida: Debes escanear el código de barras de la posición física antes de validar.');
       setTimeout(() => setErrorMsg(null), 4000);
       return;
     }
@@ -393,7 +393,7 @@ export function PutawayModal({
     setRackScanSuccess(false);
     setRackScanFeedback({
       status: null,
-      message: `Código sugerido: ${currentBox.suggestedLocation.codigo}. Presione "Validar Rack" o escanee la etiqueta física para cotejar.`,
+      message: `Código sugerido: ${currentBox.suggestedLocation.codigo}. Presione "Validar Ubicación" o escanee la etiqueta física para cotejar.`,
       locationObj: currentBox.suggestedLocation,
     });
     playAudioTone('warning');
@@ -407,7 +407,7 @@ export function PutawayModal({
     setRackScanSuccess(false);
     setRackScanFeedback({
       status: 'ALTERNATIVE',
-      message: `Alternativa seleccionada: ${alt.codigo} (${alt.zonaNombre}). Presione "Validar Rack" o escanee la etiqueta física para cotejar.`,
+      message: `Alternativa seleccionada: ${alt.codigo} (${alt.zonaNombre}). Presione "Validar Ubicación" o escanee la etiqueta física para cotejar.`,
       locationObj: alt,
     });
     setShowAlternativesModal(false);
@@ -431,7 +431,7 @@ export function PutawayModal({
     // Candado estricto de Escaneo Dual
     if (!boxScanSuccess || !rackScanSuccess) {
       playAudioTone('error');
-      setErrorMsg('Principio de Escaneo Dual: Ambas validaciones (HU escaneada + Rack escaneado) son obligatorias.');
+      setErrorMsg('Principio de Escaneo Dual: Ambas validaciones (HU escaneada + Ubicación escaneada) son obligatorias.');
       setTimeout(() => setErrorMsg(null), 4000);
       return;
     }
@@ -2480,7 +2480,7 @@ export function PutawayModal({
                                       className="btn btn-ghost btn-sm"
                                       style={{ height: 38, color: '#64748B' }}
                                     >
-                                      Reescanear Rack
+                                      Reescanear Ubicación
                                     </button>
                                   )}
                                 </form>
@@ -2573,7 +2573,7 @@ export function PutawayModal({
                                     }}
                                   >
                                     {rackScanSuccess ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
-                                    Rack: {rackScanSuccess ? 'Validado' : 'Pendiente'}
+                                    Ubicación: {rackScanSuccess ? 'Validada' : 'Pendiente'}
                                   </div>
                                 </div>
                                 <span
@@ -2650,7 +2650,7 @@ export function PutawayModal({
                             <th style={{ padding: '10px 14px' }}>Lote / Caducidad</th>
                             <th style={{ padding: '10px 14px', textAlign: 'center' }}>Regla</th>
                             <th style={{ padding: '10px 14px' }}>Sugerencia IA & Match</th>
-                            <th style={{ padding: '10px 14px' }}>Rack Destino Asignado</th>
+                            <th style={{ padding: '10px 14px' }}>Ubicación Destino Asignada</th>
                             <th style={{ padding: '10px 14px', textAlign: 'center' }}>Estado</th>
                           </tr>
                         </thead>
@@ -2761,7 +2761,7 @@ export function PutawayModal({
                                         </span>
                                       )}
                                       <span style={{ fontSize: 9.5, color: '#15803D', fontWeight: 600 }}>
-                                        Asignada a rack
+                                        Asignada a ubicación
                                       </span>
                                     </div>
                                   ) : (
@@ -2808,7 +2808,7 @@ export function PutawayModal({
                       )}
                     </div>
                     <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>
-                      Al confirmar, la mercancía se traslada de Andén REC-01 a Racks y pasa de "En Tránsito Interno" a{' '}
+                      Al confirmar, la mercancía se traslada de Andén a Ubicaciones definitivas y pasa de "En Tránsito Interno" a{' '}
                       <strong style={{ color: '#059669' }}>"DISPONIBLE"</strong> para venta en el portal.
                     </div>
                   </div>
@@ -2831,7 +2831,7 @@ export function PutawayModal({
                       title={
                         !isAllConfirmed
                           ? `Bloqueado: Requiere Escaneo Dual completo en 14/14 cajas (${confirmedCount} de ${suggestionsList.length} validadas)`
-                          : 'Confirmar traslado físico a racks y activar inventario'
+                          : 'Confirmar traslado físico a ubicaciones y activar inventario'
                       }
                       style={{
                         backgroundColor: isAllConfirmed ? '#0D9488' : '#94A3B8',
@@ -2847,9 +2847,9 @@ export function PutawayModal({
                     >
                       <CheckCircle2 size={16} />
                       {submitting
-                        ? 'Activando Stock en Racks...'
+                        ? 'Activando Stock en Ubicaciones...'
                         : isAllConfirmed
-                        ? 'Confirmar Alojamiento a Racks y Activar Stock'
+                        ? 'Confirmar Alojamiento a Ubicaciones y Activar Stock'
                         : `Bloqueado: ${confirmedCount}/${suggestionsList.length} con Escaneo Dual`}
                     </button>
                   </div>

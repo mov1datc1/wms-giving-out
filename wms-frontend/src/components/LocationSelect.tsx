@@ -86,13 +86,13 @@ export function LocationSelect({
       const capacidad = loc.capacidadUnits || 50;
       const espacioLibre = Math.max(0, capacidad - ocupacion);
 
-      // Determinar tipo de zona visual
+      // Determinar tipo de zona canónica desde Zone (Desacoplado de strings rígidos de pasillo)
       let zoneType: 'TEXTIL' | 'ALIMENTOS' | 'CUARENTENA' | 'GENERAL' = 'GENERAL';
-      if (zoneCode.includes('ALM-A') || zoneName.includes('TEXTIL') || zoneName.includes('ROPA') || pasillo.startsWith('A')) {
+      if (zoneCode.includes('ALM-A') || zoneName.includes('TEXTIL') || zoneName.includes('ROPA')) {
         zoneType = 'TEXTIL';
-      } else if (zoneCode.includes('ALM-B') || zoneName.includes('ALIMENTO') || zoneName.includes('COMIDA') || pasillo.startsWith('B')) {
+      } else if (zoneCode.includes('ALM-B') || zoneName.includes('ALIMENTO') || zoneName.includes('COMIDA')) {
         zoneType = 'ALIMENTOS';
-      } else if (zoneCode.includes('DEV') || zoneName.includes('DEVOLUCION') || zoneName.includes('CUARENTENA') || pasillo.startsWith('DEV')) {
+      } else if (zoneCode.includes('DEV') || zoneName.includes('DEVOLUCION') || zoneName.includes('CUARENTENA') || zoneCode.includes('PNC') || zoneName.includes('PNC')) {
         zoneType = 'CUARENTENA';
       }
 
@@ -125,19 +125,30 @@ export function LocationSelect({
           }
         }
 
-        // 1.3 Reglas de Picking y Rotación (FIFO vs FEFO)
+        // 1.3 Reglas de Picking y Rotación (FIFO vs FEFO) - Desacoplado de racks multinivel
         const regla = client?.reglaInventario || 'FIFO';
+        const isPickingLevel =
+          (loc as any).tipoNivel === 'PICKING' ||
+          (loc as any).funcionNivel === 'PICKING' ||
+          (loc as any).funcionOperativa === 'PICKING' ||
+          loc.tipoUbicacion === 'TARIMA_PISO' ||
+          (loc.tipoUbicacion === 'PISO' && (loc as any).esAlmacenable !== false) ||
+          nivel === 'N1' ||
+          nivel === '1' ||
+          nivel === 'PISO';
+        const isMidLevel = nivel === 'N2' || nivel === '2';
+
         if (regla === 'FIFO') {
-          // Nivel 1 es nivel de suelo (Fast Picking rápido)
-          if (nivel === 'N1' || nivel === '1') {
+          // Nivel de suelo / acceso directo (Fast Picking rápido)
+          if (isPickingLevel) {
             score += 300;
-            reasons.push('Nivel 1 (Picking rápido FIFO)');
-          } else if (nivel === 'N2' || nivel === '2') {
+            reasons.push('Nivel accesible (Picking rápido FIFO)');
+          } else if (isMidLevel) {
             score += 150;
           }
         } else if (regla === 'FEFO') {
-          // En FEFO agrupamos en estantería accesible
-          if (nivel === 'N1' || nivel === 'N2') {
+          // En FEFO agrupamos en estantería / posición accesible
+          if (isPickingLevel || isMidLevel) {
             score += 250;
             reasons.push('Nivel accesible (Control FEFO)');
           }
@@ -160,7 +171,7 @@ export function LocationSelect({
 
       } else {
         // === CASO 2: ZONA NO CONFORME (CUARENTENA / DAÑADO) ===
-        if (zoneType === 'CUARENTENA' || loc.tipoUbicacion === 'CUARENTENA' || loc.codigo.startsWith('DEV')) {
+        if (zoneType === 'CUARENTENA' || loc.tipoUbicacion === 'CUARENTENA' || loc.tipoUbicacion === 'PNC' || loc.codigo.startsWith('DEV') || loc.codigo.startsWith('NC') || loc.codigo.includes('PNC')) {
           score += 2500;
           reasons.push('Zona de Cuarentena / Retención');
         } else if (loc.tipoUbicacion === 'PISO') {

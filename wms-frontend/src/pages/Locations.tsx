@@ -22,7 +22,7 @@ function getFriendlyCategory(categoria?: string): string {
     case 'ESPECIAL_OTRAS':
       return 'Área especial';
     case 'FISICA_ALMACENABLE':
-      return 'Celda de Rack';
+      return 'Celda / Posición Comercial';
     default:
       return 'Área especial';
   }
@@ -113,7 +113,7 @@ export function Locations() {
   const [filterZona, setFilterZona] = useState('');
   const [filterPasillo, setFilterPasillo] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
-  const [viewMode, setViewMode] = useState<'layout' | 'operational'>('layout');
+  const [viewMode, setViewMode] = useState<'layout' | 'operational' | 'spatial'>('layout');
 
   // Pasillos colapsables / expandibles (Punto 1)
   const [collapsedAisles, setCollapsedAisles] = useState<Record<string, boolean>>({});
@@ -432,7 +432,7 @@ export function Locations() {
               onClick={() => setViewMode('layout')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
             >
-              <Layers size={15} /> Mapa del Almacén
+              <Layers size={15} /> Mapa del Almacén (Racks)
             </button>
             <button
               type="button"
@@ -441,6 +441,15 @@ export function Locations() {
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
             >
               <Grid3X3 size={15} /> Vista por Zonas
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${viewMode === 'spatial' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setViewMode('spatial')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+              title="Esqueleto desacoplado preparado para el plano 2D real del almacén tras confirmación de Alejandra"
+            >
+              <MapPin size={15} /> Plano Físico 2D (Esqueleto)
             </button>
           </div>
           <button className="btn btn-secondary" onClick={loadData}>
@@ -458,7 +467,7 @@ export function Locations() {
             <div className="stat-icon" style={{ background: 'var(--teal-bg)', color: 'var(--teal)' }}><Warehouse size={22}/></div>
             <div className="stat-info">
               <span className="stat-value">{almacenableLocs.length}</span>
-              <span className="stat-label">Celdas en racks ({totalLibres} libres)</span>
+              <span className="stat-label">Posiciones físicas / Celdas ({totalLibres} libres)</span>
             </div>
           </div>
 
@@ -480,12 +489,12 @@ export function Locations() {
               {hayCapacidadBultosGlobal ? (
                 <>
                   <span className="stat-value">{pctBultos}% ocupado en bultos</span>
-                  <span className="stat-label">{totalBultosAlojados} de {totalCapacidadBultos} bultos en racks</span>
+                  <span className="stat-label">{totalBultosAlojados} de {totalCapacidadBultos} bultos en almacén</span>
                 </>
               ) : (
                 <>
                   <span className="stat-value">{totalBultosAlojados} bultos alojados</span>
-                  <span className="stat-label">Límite de bultos por rack no configurado</span>
+                  <span className="stat-label">Límite de bultos por ubicación no configurado</span>
                 </>
               )}
             </div>
@@ -787,6 +796,18 @@ export function Locations() {
         <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-secondary)' }}>
           <RefreshCw className="animate-spin" size={24}/> Cargando mapa y ubicaciones...
         </div>
+      ) : viewMode === 'spatial' ? (
+        /* ========================================================
+           VISTA 3: ESQUELETO DESACOPLADO DEL PLANO FÍSICO 2D (FASE 2)
+           Preparado para recibir configuración espacial de Alejandra
+           sin ubicaciones G0001 reales ni posiciones inventadas.
+           ======================================================== */
+        <PhysicalWarehouseMapSkeleton
+          locations={locations}
+          specialLocs={specialLocs}
+          filterCliente={filterCliente}
+          selectedClientName={selectedClientName}
+        />
       ) : viewMode === 'layout' ? (
         /* ========================================================
            VISTA 1: MAPA DEL ALMACÉN (PASILLOS COLAPSABLES) - Punto 1
@@ -2108,3 +2129,203 @@ const demoLocations = [
   { id: 'loc-4', codigo: 'A01-R01-N2', estado: 'LIBRE', ocupacionUnidades: 0, capacidadUnits: 40, ocupacionBultos: 0, capacidadBultos: 5, tipoUbicacion: 'ESTANTERIA', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'LIBRE', pasillo: 'A01', rack: 'R01', nivel: 'N2', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
   { id: 'loc-5', codigo: 'B01-R01-N1', estado: 'OCUPADO', ocupacionUnidades: 586, capacidadUnits: 40, ocupacionBultos: 4, capacidadBultos: 5, tipoUbicacion: 'RACK', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'SOBRECAPACIDAD', pasillo: 'B01', rack: 'R01', nivel: 'N1', zona: { codigo: 'ZONA-ALIM', nombre: 'Zona Almacenaje Alimentos (FEFO)' } }
 ];
+
+// ============================================================================
+// ESQUELETO DESACOPLADO DEL PLANO FÍSICO 2D (FASE 2 DE AUDITORÍA Y PLANIFICACIÓN)
+// ============================================================================
+// Diseñado para recibir metadatos espaciales (coordenadas relativas, bounds y rotación)
+// en cuanto el cliente (Alejandra) confirme:
+//  1. Numeración consecutiva oficial (G0001, G0002, ...)
+//  2. Capacidad física de estiba (tarima simple vs doble/triple)
+//  3. Uso operativo definitivo del Exterior Techado y Zona PNC
+//  4. Delimitación de áreas no inventariables (mesas de trabajo, sanitarios)
+// ============================================================================
+interface SpatialSkeletonProps {
+  locations: any[];
+  specialLocs: any[];
+  filterCliente?: string;
+  selectedClientName?: string;
+}
+
+function PhysicalWarehouseMapSkeleton({
+  locations,
+  specialLocs,
+  filterCliente,
+  selectedClientName
+}: SpatialSkeletonProps) {
+  return (
+    <div className="card animate-fade-in" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Banner Informativo de Fase de Arquitectura */}
+      <div style={{
+        padding: '16px 20px',
+        borderRadius: 10,
+        backgroundColor: 'rgba(37, 99, 235, 0.06)',
+        border: '1px solid rgba(37, 99, 235, 0.25)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 14
+      }}>
+        <div style={{
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          backgroundColor: '#2563EB',
+          color: '#FFFFFF',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0
+        }}>
+          <MapPin size={20} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#1E3A8A' }}>
+              Plano Físico 2D — Módulo Espacial (Esqueleto de Fase 2)
+            </h3>
+            <span style={{
+              fontSize: 11,
+              fontWeight: 800,
+              padding: '2px 8px',
+              borderRadius: 6,
+              backgroundColor: '#DBEAFE',
+              color: '#1E40AF',
+              border: '1px solid #93C5FD'
+            }}>
+              Arquitectura Lista · En Espera de Confirmación Operativa
+            </span>
+          </div>
+          <p style={{ margin: '6px 0 0', fontSize: 13, color: '#334155', lineHeight: 1.5 }}>
+            El motor del WMS ha sido desacoplado para soportar <strong>estiba de tarimas en piso</strong>,
+            códigos correlativos consecutivos (<code>G0001+</code>) y áreas no inventariables sin forzar estructuras de racks multinivel.
+            Este lienzo renderizará dinámicamente las posiciones en cuanto el cliente confirme numeración, estiba y capacidades definitivas.
+          </p>
+        </div>
+      </div>
+
+      {/* Blueprint Visual de las 3 Zonas Físicas Identificadas */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+        gap: 16
+      }}>
+        {/* Zona 1: Área Interior */}
+        <div style={{
+          borderRadius: 10,
+          border: '1.5px dashed #2563EB',
+          backgroundColor: 'rgba(37, 99, 235, 0.03)',
+          padding: 18,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 800, fontSize: 14, color: '#1E40AF' }}>
+              1. Nave Principal (ÁREA INTERIOR)
+            </span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, backgroundColor: '#EFF6FF', color: '#1D4ED8' }}>
+              Almacenamiento Comercial
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            • <strong>Alcance:</strong> Posiciones físicas de tarima en piso distribuidas perimetralmente y en bloques internos.<br />
+            • <strong>Elementos identificados:</strong> 2 Mesas de trabajo (no inventariables), Baños y Tableros de control.<br />
+            • <strong>Estado técnico:</strong> Clasificador listo para otorgar <code>ALMACENABLE_COMERCIAL</code> a tarimas autorizadas.<br />
+            • <strong>Pendiente de cliente:</strong> Secuencia de numeración <code>G0001+</code> y altura máxima de estiba.
+          </div>
+        </div>
+
+        {/* Zona 2: Exterior Techado */}
+        <div style={{
+          borderRadius: 10,
+          border: '1.5px dashed #0D9488',
+          backgroundColor: 'rgba(13, 148, 136, 0.03)',
+          padding: 18,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 800, fontSize: 14, color: '#0F766E' }}>
+              2. Patio Cubierto (EXTERIOR TECHADO)
+            </span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, backgroundColor: '#F0FDFA', color: '#0F766E' }}>
+              Recibo / Maniobra / Pulmón
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            • <strong>Alcance:</strong> Posiciones de piso para descarga, maniobra y tránsito de mercancía.<br />
+            • <strong>Elementos identificados:</strong> Mesa auxiliar, escaleras de acceso y rampas de comunicación.<br />
+            • <strong>Estado técnico:</strong> Protegido como <code>TRANSITO_INTERNO</code> por defecto (no surtible hasta Putaway).<br />
+            • <strong>Pendiente de cliente:</strong> Definición de qué posiciones serán inventariables definitivas.
+          </div>
+        </div>
+
+        {/* Zona 3: PNC (Producto No Conforme) */}
+        <div style={{
+          borderRadius: 10,
+          border: '1.5px dashed #E11D48',
+          backgroundColor: 'rgba(225, 29, 72, 0.03)',
+          padding: 18,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 800, fontSize: 14, color: '#BE123C' }}>
+              3. Área Segregada (ZONA PNC)
+            </span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, backgroundColor: '#FFF1F2', color: '#BE123C' }}>
+              Cuarentena / Bloqueado
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            • <strong>Alcance:</strong> Posiciones segregadas observadas en exterior techado.<br />
+            • <strong>Regla de negocio:</strong> Rigurosamente clasificado como <code>NO_CONFORME_BLOQUEADO</code>.<br />
+            • <strong>Protección activa:</strong> El motor de Putaway comercial y Picking excluyen de raíz estas posiciones.<br />
+            • <strong>Pendiente de cliente:</strong> Nomenclatura oficial (ej. <code>PNC-01</code> vs correlativo <code>Gxxxx</code>).
+          </div>
+        </div>
+      </div>
+
+      {/* Especificación Técnica del Esquema Espacial JSON */}
+      <div style={{
+        padding: 16,
+        borderRadius: 8,
+        backgroundColor: '#0F172A',
+        color: '#F8FAFC',
+        fontFamily: 'monospace',
+        fontSize: 12,
+        overflowX: 'auto'
+      }}>
+        <div style={{ color: '#94A3B8', marginBottom: 8, fontWeight: 700 }}>
+          // ESQUEMA DE INTEGRACIÓN ESPACIAL PREPARADO (CONTRATO DE DATOS FASE 3/4):
+        </div>
+        <pre style={{ margin: 0 }}>
+{`{
+  "almacenId": "ALM-TEPOZ",
+  "canvas": { "anchoMm": 32000, "altoMm": 24000, "escala": "1:100" },
+  "zonas": [
+    { "codigo": "INTERIOR", "nombre": "Nave Interior Techada", "tipoZona": "ALMACENAMIENTO" },
+    { "codigo": "EXTERIOR_TECHADO", "nombre": "Patio Exterior Techado", "tipoZona": "RECIBO" },
+    { "codigo": "PNC", "nombre": "Zona Producto No Conforme", "tipoZona": "CUARENTENA" }
+  ],
+  "posicionesFisicas": "En espera de confirmación de Alejandra (G0001+)",
+  "integridadHistorica": "Preservada (A01-R01-N1, B02-R01-N1, REC-01, DEV-01 intactos)"
+}`}
+        </pre>
+      </div>
+
+      {/* Estado del Inventario Actual */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)', flexWrap: 'wrap', gap: 10 }}>
+        <span>
+          Actualmente {locations.length} ubicaciones en catálogo · {specialLocs.length} áreas especiales
+          {filterCliente ? ` · Filtrando por depositante: ${selectedClientName}` : ''}
+        </span>
+        <span style={{ fontStyle: 'italic' }}>
+          Para consultar el inventario físico operativo actual, use las vistas "Mapa del Almacén (Racks)" o "Vista por Zonas".
+        </span>
+      </div>
+    </div>
+  );
+}

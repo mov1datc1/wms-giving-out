@@ -59,8 +59,16 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
   // PRIORIDAD 1: ATRIBUTOS ESTRUCTURALES DE ZONA (Zone.tipoZona / Zone.codigo)
   // --------------------------------------------------------------------------
 
-  // 1.A Zona de No Conforme / Devolución / Cuarentena
-  if (zonaTipo === 'DEVOLUCION' || zonaTipo === 'CUARENTENA' || zonaCode === 'DEVOLUCION' || zonaCode === 'CUARENTENA') {
+  // 1.A Zona de No Conforme / Devolución / Cuarentena / PNC
+  if (
+    zonaTipo === 'DEVOLUCION' ||
+    zonaTipo === 'CUARENTENA' ||
+    zonaTipo === 'PNC' ||
+    zonaCode === 'DEVOLUCION' ||
+    zonaCode === 'CUARENTENA' ||
+    zonaCode === 'PNC' ||
+    code.includes('PNC')
+  ) {
     return {
       rolOperativo: 'NO_CONFORME_BLOQUEADO',
       esVendible: false,
@@ -70,7 +78,7 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
       esNoConforme: true,
       badgeTexto: 'BLOQUEADO / NO CONFORME',
       badgeColor: 'rose',
-      motivoNoVendible: 'Ubicación asignada a zona de merma, cuarentena o producto no conforme.',
+      motivoNoVendible: 'Ubicación asignada a zona de merma, cuarentena o producto no conforme (PNC).',
     };
   }
 
@@ -85,7 +93,7 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
       esNoConforme: false,
       badgeTexto: 'EN TRÁNSITO / PENDIENTE DE PUTAWAY',
       badgeColor: 'amber',
-      motivoNoVendible: 'Existencia física en andén de recibo/tránsito. No disponible para surtido hasta completar Putaway en racks.',
+      motivoNoVendible: 'Existencia física en andén de recibo/tránsito. No disponible para surtido hasta completar Putaway en racks o posiciones de piso.',
     };
   }
 
@@ -104,10 +112,27 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
     };
   }
 
-  // 1.D Zona de Almacenamiento o Picking Comercial
-  if (zonaTipo === 'ALMACENAMIENTO' || zonaTipo === 'PICKING') {
+  // 1.D Zona de Almacenamiento o Picking Comercial (Racks y Tarimas en Piso)
+  const esZonaAlmacenable =
+    zonaTipo === 'ALMACENAMIENTO' ||
+    zonaTipo === 'PICKING' ||
+    zonaCode.startsWith('ALM-') ||
+    zonaCode === 'INTERIOR';
+
+  if (esZonaAlmacenable) {
     // Si la zona es almacenable, verificar que el tipo de ubicación no indique segregación
-    if (tipoUbi !== 'DEVOLUCION' && tipoUbi !== 'CUARENTENA' && tipoUbi !== 'RECIBO' && tipoUbi !== 'STAGING') {
+    const esTipoSegregado =
+      tipoUbi === 'DEVOLUCION' ||
+      tipoUbi === 'CUARENTENA' ||
+      tipoUbi === 'RECIBO' ||
+      tipoUbi === 'STAGING' ||
+      tipoUbi === 'PNC' ||
+      tipoUbi === 'TRABAJO' ||
+      tipoUbi === 'ESTRUCTURAL' ||
+      tipoUbi === 'MESA_TRABAJO';
+
+    if (!esTipoSegregado) {
+      const isPiso = tipoUbi === 'PISO' || tipoUbi === 'TARIMA_PISO';
       return {
         rolOperativo: 'ALMACENABLE_COMERCIAL',
         esVendible: true,
@@ -115,7 +140,7 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
         esAlmacenable: true,
         esTransitoInterno: false,
         esNoConforme: false,
-        badgeTexto: 'ALMACENABLE EN RACK',
+        badgeTexto: isPiso ? 'ALMACENABLE EN PISO' : 'ALMACENABLE EN RACK',
         badgeColor: 'emerald',
       };
     }
@@ -135,11 +160,11 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
       esNoConforme: false,
       badgeTexto: 'EN TRÁNSITO / PENDIENTE DE PUTAWAY',
       badgeColor: 'amber',
-      motivoNoVendible: 'Ubicación tipificada como recibo/tránsito inbound. Requiere Putaway a racks.',
+      motivoNoVendible: 'Ubicación tipificada como recibo/tránsito inbound. Requiere Putaway a posiciones de almacenamiento.',
     };
   }
 
-  if (tipoUbi === 'CUARENTENA' || tipoUbi === 'DEVOLUCION') {
+  if (tipoUbi === 'CUARENTENA' || tipoUbi === 'DEVOLUCION' || tipoUbi === 'PNC') {
     return {
       rolOperativo: 'NO_CONFORME_BLOQUEADO',
       esVendible: false,
@@ -149,7 +174,7 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
       esNoConforme: true,
       badgeTexto: 'BLOQUEADO / NO CONFORME',
       badgeColor: 'rose',
-      motivoNoVendible: 'Ubicación tipificada como cuarentena o devolución no conforme.',
+      motivoNoVendible: 'Ubicación tipificada como cuarentena, devolución o producto no conforme (PNC).',
     };
   }
 
@@ -165,6 +190,35 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
       badgeColor: 'slate',
       motivoNoVendible: 'Área de staging no elegible para surtido directo.',
     };
+  }
+
+  if (tipoUbi === 'TRABAJO' || tipoUbi === 'ESTRUCTURAL' || tipoUbi === 'MESA_TRABAJO') {
+    return {
+      rolOperativo: 'NO_ELEGIBLE_SURTIDO',
+      esVendible: false,
+      esElegibleSurtido: false,
+      esAlmacenable: false,
+      esTransitoInterno: false,
+      esNoConforme: false,
+      badgeTexto: 'ÁREA ESPECIAL / NO SURTIBLE',
+      badgeColor: 'slate',
+      motivoNoVendible: 'Área de trabajo, mesa o elemento arquitectónico no inventariable.',
+    };
+  }
+
+  if (tipoUbi === 'TARIMA_PISO') {
+    if (esZonaAlmacenable) {
+      return {
+        rolOperativo: 'ALMACENABLE_COMERCIAL',
+        esVendible: true,
+        esElegibleSurtido: true,
+        esAlmacenable: true,
+        esTransitoInterno: false,
+        esNoConforme: false,
+        badgeTexto: 'ALMACENABLE EN PISO',
+        badgeColor: 'emerald',
+      };
+    }
   }
 
   if (tipoUbi === 'RACK' || tipoUbi === 'ESTANTERIA') {
