@@ -4,6 +4,53 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.23] — 2026-11-07 (Adaptación al Almacén Físico Real — Fase 3A y Auditoría de Corte Pre-3B)
+
+### 🏢 Layout Canónico Real (G0001–G0045), Regla 1 Tarima y Blindaje Comercial / PNC
+
+Esta versión consolida la arquitectura del layout físico real derivado del plano arquitectónico oficial confirmado por el cliente (Alejandra), incorporando la configuración espacial simétrica en backend y frontend, la regla estricta de 1 tarima física por posición respetando la jerarquía de HUs, el blindaje bidireccional Comercial $\leftrightarrow$ PNC con RBAC y auditoría transaccional, y el diagnóstico integral de corte para la transición limpia de datos demo.
+
+### Backend
+- **Configuración Canónica del Layout Físico (`warehouse-layout.config.ts`):**
+  - Mapeo espacial exacto de 45 posiciones físicas de piso: 35 en área `INTERIOR` (`G0001`–`G0035`) y 10 en área `EXTERIOR_TECHADO` (`G0036`–`G0045`).
+  - Nomenclatura consecutiva correlativa `G0001` a `G0045`, sin saltos ni sesgos de producto por zona.
+  - Registro de landmarks arquitectónicos y operativos (mesas de trabajo de empaque, baños, mesa exterior techada, accesos y jardineras).
+- **Regla Estricta de 1 Tarima por Posición vs. Jerarquía de HUs (`putaway-engine.service.ts` & `master-data.controller.ts`):**
+  - Modelado de capacidad estricta `capacidadBultos = 1` para ubicaciones de piso (`TARIMA_PISO`).
+  - Agrupación inteligente de Handling Units: las cajas hijas (`tipoHu: 'CAJA'`) anidadas bajo una tarima máster (`parentHuId`) colapsan a una sola unidad física contenedora (`bultosReales = new Set(hus.map(h => h.parentHuId || h.id)).size`).
+  - Eliminación absoluta de falsos positivos de sobrecapacidad (`11/1`) cuando una tarima contiene múltiples cajas o paquetes.
+  - Revalidación transaccional en Putaway que rechaza de forma estricta la estiba de una segunda tarima física independiente en una posición ocupada.
+- **Blindaje Bidireccional Comercial $\leftrightarrow$ PNC (`master-data.controller.ts`):**
+  - Separación canónica entre calidad del inventario (`LotInventory`) y uso operativo de la celda (`Location.tipoUbicacion`).
+  - *Normal a PNC:* Bloqueo estricto con `400 Bad Request` si la ubicación contiene inventario disponible, inventario reservado, pedidos activos en `ASIGNADO`/`EN_PICKING` o HUs comerciales activas.
+  - *PNC a Normal:* Bloqueo estricto con `400 Bad Request` si contiene inventario bloqueado, lotes con calidad no liberada (`CUARENTENA`, `MERMA`, `NO_CONFORME`, `PENDIENTE`) o HUs dañadas/retenidas.
+- **Control de Acceso RBAC y Auditoría (`master-data.controller.ts`):**
+  - Validación de token JWT en `PATCH /api/locations/:id/pnc-designation` (401 en token ausente o inválido).
+  - Restricción de cambio de uso operativo exclusivamente a niveles $\le 4$ (`Super Admin`, `Dirección`, `Gerente Operaciones`, `Supervisor Almacén`) o roles con permiso formal sobre el módulo ubicaciones; operadores rechazados con `403 Forbidden`.
+  - Inserción transaccional obligatoria en `AuditLog` registrando usuario, timestamp, ubicación, código inmutable, valor anterior, valor nuevo y motivo operativo.
+
+### Frontend
+- **Configuración Simétrica de Layout (`warehouse-layout.config.ts`):**
+  - Configuración 100% idéntica byte por byte a la del backend, probada mediante test automatizado de divergencia.
+- **Plano Físico 2D Interactivo (`Locations.tsx`):**
+  - Visualización espacial interactiva a escala del almacén real con las 45 posiciones físicas distribuidas en Interior y Exterior Techado.
+  - Renderizado en tiempo real de ocupación física 1/1, badges de estado (`LIBRE`, `OCUPADO`, `PNC`), orientación y coordenadas.
+  - Modal de detalle de ubicación con soporte para alternar designación operativa entre Almacenamiento Comercial y PNC con validación de motivos y blindajes defensivos.
+
+### Auditoría y Transición Pre-3B
+- **Auditoría de Corte Demo/Pruebas vs. Operación Real:**
+  - Inspección exhaustiva de las 16 ubicaciones con saldo remanente: confirmadas como **100% DEMO/TEST** (1,689 piezas y 35 HUs generadas en simulaciones E2E de fases 4 y 5, con códigos de lote de prueba `E2E-`, `LOT-QA-`, etc.).
+  - Identificación del aviso de recibo `REC-2026-0019` de `CELERA SA DE CV` (Alejandra Casamayor, 18 PZA de bebida energética) como el único registro pre-operativo real que debe protegerse.
+  - Demostración de que desactivar racks (`activo=false`) no basta por sí solo para aislar datos demo, ya que múltiples consultas de stock vivo agregan directamente desde `LotInventory`.
+  - Selección de la **Estrategia C** (*Respaldo certificado de datos DEMO + arranque transaccional limpio*) como la ruta autorizada para la siguiente sesión.
+- **Garantías de No Modificación:**
+  - Cero cambios en `schema.prisma`.
+  - Cero migraciones ejecutadas en base de datos.
+  - Cero ubicaciones `G0001+` creadas en base de datos (`TOTAL_G_LOCATIONS_IN_DB: 0`).
+  - Cero alteraciones a datos productivos.
+  - Checkpoint seguro en rama `feature/layout-warehouse-adaptation-phase-3` (`7344b91`).
+  - Ramas `main` y `dev` preservadas intactas en `78ceaf4`.
+
 ## [1.9.22] — 2026-11-04 (Preparación Arquitectural de Layout Físico en Piso — Fases 1 y 2)
 
 ### 🏗️ Desacoplamiento Estructural y Generalización de Posiciones de Piso
