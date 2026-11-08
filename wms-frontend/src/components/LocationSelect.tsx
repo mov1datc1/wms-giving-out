@@ -86,13 +86,25 @@ export function LocationSelect({
       const capacidad = loc.capacidadUnits || 50;
       const espacioLibre = Math.max(0, capacidad - ocupacion);
 
+      const isFloorPallet =
+        loc.tipoUbicacion === 'TARIMA_PISO' ||
+        (loc.tipoUbicacion === 'PISO' && (loc as any).esAlmacenable !== false) ||
+        (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
       // Determinar tipo de zona canónica desde Zone (Desacoplado de strings rígidos de pasillo)
       let zoneType: 'TEXTIL' | 'ALIMENTOS' | 'CUARENTENA' | 'GENERAL' = 'GENERAL';
       if (zoneCode.includes('ALM-A') || zoneName.includes('TEXTIL') || zoneName.includes('ROPA')) {
         zoneType = 'TEXTIL';
       } else if (zoneCode.includes('ALM-B') || zoneName.includes('ALIMENTO') || zoneName.includes('COMIDA')) {
         zoneType = 'ALIMENTOS';
-      } else if (zoneCode.includes('DEV') || zoneName.includes('DEVOLUCION') || zoneName.includes('CUARENTENA') || zoneCode.includes('PNC') || zoneName.includes('PNC')) {
+      } else if (
+        zoneCode === 'CUARENTENA' ||
+        zoneCode === 'PNC' ||
+        zoneCode === 'DEVOLUCION' ||
+        zoneName.includes('CUARENTENA') ||
+        zoneName.includes('DEVOLUCION') ||
+        (zoneName.includes('PNC') && !zoneCode.includes('EXTERIOR'))
+      ) {
         zoneType = 'CUARENTENA';
       }
 
@@ -125,21 +137,21 @@ export function LocationSelect({
           }
         }
 
-        // 1.3 Reglas de Picking y Rotación (FIFO vs FEFO) - Desacoplado de racks multinivel
+        // 1.3 Reglas de Picking y Rotación (FIFO vs FEFO)
         const regla = client?.reglaInventario || 'FIFO';
         const isPickingLevel =
           (loc as any).tipoNivel === 'PICKING' ||
           (loc as any).funcionNivel === 'PICKING' ||
           (loc as any).funcionOperativa === 'PICKING' ||
-          loc.tipoUbicacion === 'TARIMA_PISO' ||
-          (loc.tipoUbicacion === 'PISO' && (loc as any).esAlmacenable !== false) ||
           nivel === 'N1' ||
-          nivel === '1' ||
-          nivel === 'PISO';
+          nivel === '1';
         const isMidLevel = nivel === 'N2' || nivel === '2';
 
-        if (regla === 'FIFO') {
-          // Nivel de suelo / acceso directo (Fast Picking rápido)
+        if (isFloorPallet) {
+          // Posición física en piso: accesibilidad universal a nivel de suelo para tarima
+          score += 250;
+          reasons.push('Posición física en piso accesible');
+        } else if (regla === 'FIFO') {
           if (isPickingLevel) {
             score += 300;
             reasons.push('Nivel accesible (Picking rápido FIFO)');
@@ -147,7 +159,6 @@ export function LocationSelect({
             score += 150;
           }
         } else if (regla === 'FEFO') {
-          // En FEFO agrupamos en estantería / posición accesible
           if (isPickingLevel || isMidLevel) {
             score += 250;
             reasons.push('Nivel accesible (Control FEFO)');
@@ -159,19 +170,40 @@ export function LocationSelect({
         else if (rack === 'R02' || rack === '02') score += 60;
 
         // 1.5 Capacidad y disponibilidad
-        if (ocupacion === 0) {
-          score += 200;
-          reasons.push('100% Libre');
-        } else if (espacioLibre >= quantity && espacioLibre > 0) {
-          score += 100 + (espacioLibre / capacidad) * 50;
-          reasons.push(`Espacio disponible (${espacioLibre} uds)`);
-        } else if (espacioLibre <= 0) {
-          score -= 4000; // Saturada
+        if (isFloorPallet) {
+          const isFloorOccupied =
+            ((loc as any).ocupacionBultos && (loc as any).ocupacionBultos >= 1) ||
+            (loc as any).estadoCapacidad === 'LLENO' ||
+            ocupacion > 0;
+          if (isFloorOccupied) {
+            score -= 4000;
+            reasons.push('Ocupada (1/1 tarimas)');
+          } else {
+            score += 200;
+            reasons.push('Posición 100% Libre');
+          }
+        } else {
+          if (ocupacion === 0) {
+            score += 200;
+            reasons.push('100% Libre');
+          } else if (espacioLibre >= quantity && espacioLibre > 0) {
+            score += 100 + (espacioLibre / capacidad) * 50;
+            reasons.push(`Espacio disponible (${espacioLibre} uds)`);
+          } else if (espacioLibre <= 0) {
+            score -= 4000; // Saturada
+          }
         }
 
       } else {
         // === CASO 2: ZONA NO CONFORME (CUARENTENA / DAÑADO) ===
-        if (zoneType === 'CUARENTENA' || loc.tipoUbicacion === 'CUARENTENA' || loc.tipoUbicacion === 'PNC' || loc.codigo.startsWith('DEV') || loc.codigo.startsWith('NC') || loc.codigo.includes('PNC')) {
+        if (
+          zoneType === 'CUARENTENA' ||
+          loc.tipoUbicacion === 'CUARENTENA' ||
+          loc.tipoUbicacion === 'PNC' ||
+          loc.codigo.startsWith('DEV') ||
+          loc.codigo.startsWith('NC') ||
+          (loc.codigo.includes('PNC') && !loc.codigo.startsWith('G'))
+        ) {
           score += 2500;
           reasons.push('Zona de Cuarentena / Retención');
         } else if (loc.tipoUbicacion === 'PISO') {
@@ -369,9 +401,9 @@ export function LocationSelect({
                   </span>
                 )}
 
-                {/* Nivel */}
+                {/* Nivel / Tipo */}
                 <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  Pasillo {selectedObj.pasillo} • Nivel {selectedObj.nivel}
+                  {selectedObj.pasillo ? `Pasillo ${selectedObj.pasillo} • Nivel ${selectedObj.nivel}` : 'Posición en Piso (Cap: 1 tarima)'}
                 </span>
               </div>
 
@@ -565,8 +597,8 @@ export function LocationSelect({
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3, fontSize: 11, color: 'var(--text-tertiary)' }}>
-                        <span>Pasillo {loc.pasillo} • Rack {loc.rack} • Nivel {loc.nivel}</span>
-                        <span>• Capacidad: {ocupacion}/{capacidad} uds ({100 - pct}% libre)</span>
+                        <span>{loc.pasillo ? `Pasillo ${loc.pasillo} • Rack ${loc.rack} • Nivel ${loc.nivel}` : 'Posición de Piso (1 tarima)'}</span>
+                        <span>• Capacidad: {loc.pasillo ? `${ocupacion}/${capacidad} uds (${100 - pct}% libre)` : (ocupacion > 0 ? '1/1 tarimas ocupada' : 'Libre')}</span>
                       </div>
 
                       {reasons.length > 0 && (

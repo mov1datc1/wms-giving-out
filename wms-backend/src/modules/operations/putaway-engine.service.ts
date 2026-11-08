@@ -155,7 +155,7 @@ export class PutawayEngineService {
       code === 'NC-EXCESO-01' ||
       code.includes('DEV') ||
       code.includes('CUARENTENA') ||
-      code.includes('PNC') ||
+      (code.includes('PNC') && !code.startsWith('G')) ||
       tipo === 'CUARENTENA' ||
       tipo === 'DEVOLUCION' ||
       tipo === 'PNC' ||
@@ -211,7 +211,9 @@ export class PutawayEngineService {
       zonaTipo === 'ALMACENAMIENTO' ||
       zonaTipo === 'PICKING' ||
       zonaCode.startsWith('ALM-') ||
-      zonaCode === 'INTERIOR';
+      zonaCode === 'INTERIOR' ||
+      zonaCode === 'EXTERIOR_TECHADO' ||
+      zonaCode.includes('EXTERIOR');
 
     if (tipo === 'TARIMA_PISO' && esZonaAlmacenable) {
       return {
@@ -294,6 +296,8 @@ export class PutawayEngineService {
         select: {
           id: true,
           codigo: true,
+          tipoHu: true,
+          parentHuId: true,
           ubicacionActual: true,
           clienteId: true,
           skuCodigo: true,
@@ -322,9 +326,11 @@ export class PutawayEngineService {
       }
     }
 
-    // Indexar HUs activas por ubicación
+    // Indexar HUs activas por ubicación agrupando cajas hijas bajo su tarima física master
     const huCountByLoc: Record<string, number> = {};
     const husByLoc: Record<string, any[]> = {};
+    const distinctPalletsByLoc: Record<string, Set<string>> = {};
+
     for (const hu of allActiveHus) {
       let effectiveLoc = hu.ubicacionActual;
       const isRampa = !effectiveLoc || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'STAGING', 'ANDEN'].includes(effectiveLoc);
@@ -333,10 +339,18 @@ export class PutawayEngineService {
       }
 
       if (effectiveLoc && !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'STAGING', 'ANDEN'].includes(effectiveLoc)) {
-        huCountByLoc[effectiveLoc] = (huCountByLoc[effectiveLoc] || 0) + 1;
         if (!husByLoc[effectiveLoc]) husByLoc[effectiveLoc] = [];
         husByLoc[effectiveLoc].push({ ...hu, ubicacionActual: effectiveLoc });
+
+        if (!distinctPalletsByLoc[effectiveLoc]) distinctPalletsByLoc[effectiveLoc] = new Set<string>();
+        // Si la caja pertenece a una tarima master (parentHuId), cuenta como parte de dicha tarima
+        // Si es una tarima independiente o HU raíz, cuenta su propio ID
+        distinctPalletsByLoc[effectiveLoc].add(hu.parentHuId || hu.id);
       }
+    }
+
+    for (const locKey of Object.keys(distinctPalletsByLoc)) {
+      huCountByLoc[locKey] = distinctPalletsByLoc[locKey].size;
     }
 
     return locations.map((loc) => {
@@ -356,34 +370,57 @@ export class PutawayEngineService {
       // Describe únicamente la función operativa para surtido/FEFO, NUNCA la capacidad física de bultos.
       const tipoNivel = this.resolveFuncionNivel(loc);
 
-      // Capacidad física de bultos: Exclusivamente proveniente de configuración física real de cada Location.
-      // Si no existe fuente física real en la entidad Location, se tipifica estrictamente como NO_CONFIGURADA (null).
-      // Prohibido inventar 5, 1 ni basarse en la función operativa (PICKING/RESERVA/MIXTO).
+      const isFloorPallet =
+        loc.tipoUbicacion === 'TARIMA_PISO' ||
+        (loc.tipoUbicacion === 'PISO' && classification.esAlmacenable) ||
+        (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
+      // Capacidad física de bultos:
+      // Para posiciones de tarima en piso (incluyendo nomenclatura G0001+), la capacidad canónica
+      // es exactamente de 1 tarima física (confirmado operativamente por Alejandra).
+      // Para celdas de rack tradicionales, proviene de configuración física real de cada Location.
       const hasConfiguredCapBultos =
-        typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0;
-      const capBultos: number | null = hasConfiguredCapBultos ? (loc as any).capacidadBultos : null;
+        isFloorPallet ||
+        (typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0);
+      const capBultos: number | null = isFloorPallet
+        ? 1
+        : hasConfiguredCapBultos
+        ? (loc as any).capacidadBultos
+        : null;
       const capacidadBultosEstado: 'CONFIGURADA' | 'NO_CONFIGURADA' = hasConfiguredCapBultos
         ? 'CONFIGURADA'
         : 'NO_CONFIGURADA';
 
-      // Ocupación de bultos: conteo estricto de HandlingUnits activas (dato informativo real)
+      // Ocupación de bultos: conteo estricto de HandlingUnits activas o existencia física de tarima
       const bultosLoc = huCountByLoc[loc.codigo] || huCountByLoc[loc.id] || 0;
-      const ocupBultos = bultosLoc;
+      const ocupBultos = isFloorPallet
+        ? (bultosLoc > 0 ? bultosLoc : (ocupUnidades > 0 ? 1 : 0))
+        : bultosLoc;
 
-      // Capacidades disponibles derivadas
-      const capDispUnidades = Math.max(0, capUnits - ocupUnidades);
+      // Capacidades disponibles derivadas:
+      // En posiciones de tarima en piso, una posición vacía admite una tarima completa entrante (capUnits disponible).
+      // Si la posición ya tiene una tarima alojada, no admite más bultos ni piezas adicionales.
       const capDispBultos = hasConfiguredCapBultos && capBultos !== null
         ? Math.max(0, capBultos - ocupBultos)
         : null;
+      const capDispUnidades = isFloorPallet
+        ? (ocupBultos >= 1 ? 0 : capUnits)
+        : Math.max(0, capUnits - ocupUnidades);
 
       // Estado de capacidad canónico:
-      // Cuando la capacidad de bultos es NO_CONFIGURADA, la decisión temporal se apoya
-      // exclusivamente en la capacidad real de piezas + estado físico de la celda.
       let estadoCapacidad: 'LIBRE' | 'PARCIAL' | 'LLENO' | 'SOBRECAPACIDAD' | 'BLOQUEADO' | 'NO_APLICA' = 'LIBRE';
       if (!classification.esAlmacenable) {
         estadoCapacidad = 'NO_APLICA';
       } else if (loc.estado === 'BLOQUEADO') {
         estadoCapacidad = 'BLOQUEADO';
+      } else if (isFloorPallet) {
+        if (ocupBultos > 1) {
+          estadoCapacidad = 'SOBRECAPACIDAD';
+        } else if (ocupBultos >= 1 || ocupUnidades > 0) {
+          estadoCapacidad = 'LLENO';
+        } else {
+          estadoCapacidad = 'LIBRE';
+        }
       } else if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
         estadoCapacidad = 'SOBRECAPACIDAD';
       } else if (ocupUnidades >= capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos >= capBultos)) {
@@ -475,23 +512,24 @@ export class PutawayEngineService {
 
   /**
    * Fallback retrocompatible para determinar la función del nivel sin forzar migraciones DDL:
+   * - Posiciones físicas de tarima en piso (incluyendo G0001+): 'MIXTO' (accesibilidad universal a nivel de piso;
+   *   la reserva y surtido son procesos operativos virtuales, no restricciones físicas de la posición).
    * - Ubicaciones históricas N1 o '1' -> 'PICKING' (suelo de rack para surtido rápido)
    * - Ubicaciones históricas N2, N3 -> 'RESERVA' (niveles altos de rack)
-   * - Posiciones de tarima en piso comercial (donde el pallet reposa en el suelo con acceso directo) -> 'PICKING'
    * - Demás posiciones por defecto -> 'RESERVA'
    */
-  private fallbackTemporalNivelFuncionDemo(loc: any): 'PICKING' | 'RESERVA' {
+  private fallbackTemporalNivelFuncionDemo(loc: any): 'PICKING' | 'RESERVA' | 'MIXTO' {
+    const tipoUpper = String(loc.tipoUbicacion || '').toUpperCase().trim();
+    const codeUpper = String(loc.codigo || '').toUpperCase().trim();
+    if (tipoUpper === 'TARIMA_PISO' || (tipoUpper === 'PISO' && loc.esAlmacenable !== false) || codeUpper.startsWith('G')) {
+      return 'MIXTO';
+    }
     const nivelUpper = String(loc.nivel || '').toUpperCase().trim();
     if (nivelUpper === 'N1' || nivelUpper === '1') {
       return 'PICKING';
     }
     if (nivelUpper === 'N2' || nivelUpper === 'N3' || nivelUpper === '2' || nivelUpper === '3') {
       return 'RESERVA';
-    }
-    // Posiciones físicas de piso almacenable (tarima en piso con accesibilidad directa al nivel del suelo)
-    const tipoUpper = String(loc.tipoUbicacion || '').toUpperCase().trim();
-    if (tipoUpper === 'TARIMA_PISO' || (tipoUpper === 'PISO' && loc.esAlmacenable !== false)) {
-      return 'PICKING';
     }
     return 'RESERVA';
   }
@@ -682,15 +720,21 @@ export class PutawayEngineService {
       }
 
       // 5. Excluir falta de capacidad en piezas para la HU entrante
-      if (loc.capacidadDisponibleUnidades < huCantidad) {
+      // En posiciones de tarima en piso (capacidad = 1 tarima física), una posición libre admite
+      // una tarima completa independientemente del conteo de piezas. Para racks se valida capacidad en piezas.
+      const isFloorPallet =
+        loc.tipoUbicacion === 'TARIMA_PISO' ||
+        (loc.tipoUbicacion === 'PISO' && loc.esAlmacenable) ||
+        (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
+      if (!isFloorPallet && loc.capacidadDisponibleUnidades < huCantidad) {
         discardedInsufficientUnits++;
         continue;
       }
 
       // 6. Capacidad física en bultos (HUs):
       // Si existe una capacidad real/configurada de bultos para la Location, validarla estrictamente.
-      // Si no existe fuente real en BD (capacidadBultos === null / NO_CONFIGURADA), NO inventar valores
-      // (5 ni 1) ni descartar por bultos ficticios; la decisión temporal se apoya en capacidad real de piezas + estado físico.
+      // Para posiciones de piso (capacidad = 1 tarima), si ya está ocupada se descarta estrictamente aquí.
       if (loc.capacidadBultos !== null && loc.capacidadDisponibleBultos !== null) {
         if (loc.capacidadDisponibleBultos < 1) {
           discardedInsufficientBultos++;
@@ -937,6 +981,9 @@ export class PutawayEngineService {
         if (isPicking) {
           score += 15;
           razonesFavorables.push('Nivel Picking: Fácil acceso operativo para surtido');
+        } else if (isMixto) {
+          score += 15;
+          razonesFavorables.push('Posición física en piso: Accesibilidad directa a nivel de suelo para tarima');
         } else {
           score += 12;
           razonesFavorables.push('Nivel Reserva: Almacenaje estandarizado en estantería alta');
@@ -1394,13 +1441,30 @@ export class PutawayEngineService {
       };
     }
 
-    // 3. Conteo de bultos actuales en tiempo real dentro de la transacción
-    const activeHusCount = await db.handlingUnit.count({
-      where: {
-        OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
-        estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
-      },
-    });
+    // 3. Conteo de tarimas físicas actuales en tiempo real dentro de la transacción
+    // Agrupa cajas hijas (parentHuId) bajo su tarima física master para evitar falsa sobrecapacidad
+    let activeHusCount = 0;
+    if (typeof db.handlingUnit?.findMany === 'function') {
+      const activeHusInLoc = await db.handlingUnit.findMany({
+        where: {
+          OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
+          estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
+        },
+        select: { id: true, parentHuId: true, tipoHu: true },
+      });
+      const distinctPallets = new Set<string>();
+      for (const h of activeHusInLoc) {
+        distinctPallets.add(h.parentHuId || h.id);
+      }
+      activeHusCount = distinctPallets.size;
+    } else if (typeof db.handlingUnit?.count === 'function') {
+      activeHusCount = await db.handlingUnit.count({
+        where: {
+          OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
+          estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
+        },
+      });
+    }
 
     const capUnits = (loc as any).capacidadUnits || 100;
     const hasConfiguredCapBultos =
@@ -1417,29 +1481,45 @@ export class PutawayEngineService {
       ? Math.max(0, capBultos - ocupBultos)
       : null;
 
-    // 4. Verificación de sobrecapacidad actual
-    if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
-      return {
-        valid: false,
-        error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y se encuentra en sobrecapacidad (${ocupUnidades}/${capUnits} piezas${hasConfiguredCapBultos ? `, ${ocupBultos}/${capBultos} bultos` : ''}). Solicite una nueva ubicación.`,
-      };
-    }
+    const isFloorPallet =
+      loc.tipoUbicacion === 'TARIMA_PISO' ||
+      (loc.tipoUbicacion === 'PISO' && classification.esAlmacenable) ||
+      (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
 
-    // 5. Verificación de capacidad restante en piezas (Mensaje operativo canónico de Regla 7)
-    if (capDispUnidades < huCantidad) {
-      return {
-        valid: false,
-        error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene capacidad suficiente. Solicite una nueva ubicación.`,
-      };
-    }
+    // Regla Canónica de Capacidad para Posiciones de Tarima en Piso (Confirmada por Alejandra):
+    // Cada ubicación física de piso admite exactamente UNA sola tarima (capacidad = 1 tarima física).
+    if (isFloorPallet) {
+      if (activeHusCount >= 1 || (sumDisp + sumBloq) > 0) {
+        return {
+          valid: false,
+          error: `La ubicación física ${loc.codigo} ya contiene una tarima alojada (${Math.max(activeHusCount, 1)}/1 tarimas). No es posible estibar una segunda tarima.`,
+        };
+      }
+    } else {
+      // 4. Verificación de sobrecapacidad actual
+      if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
+        return {
+          valid: false,
+          error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y se encuentra en sobrecapacidad (${ocupUnidades}/${capUnits} piezas${hasConfiguredCapBultos ? `, ${ocupBultos}/${capBultos} bultos` : ''}). Solicite una nueva ubicación.`,
+        };
+      }
 
-    // 6. Verificación de capacidad restante en bultos (SOLO si existe configuración física real en BD)
-    const requiredBultos = options?.huBultos || 1;
-    if (hasConfiguredCapBultos && capDispBultos !== null && capDispBultos < requiredBultos) {
-      return {
-        valid: false,
-        error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene espacio para bultos adicionales (${ocupBultos}/${capBultos} bultos ocupados). Solicite una nueva ubicación.`,
-      };
+      // 5. Verificación de capacidad restante en piezas (Mensaje operativo canónico de Regla 7)
+      if (capDispUnidades < huCantidad) {
+        return {
+          valid: false,
+          error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene capacidad suficiente. Solicite una nueva ubicación.`,
+        };
+      }
+
+      // 6. Verificación de capacidad restante en bultos (SOLO si existe configuración física real en BD)
+      const requiredBultos = options?.huBultos || 1;
+      if (hasConfiguredCapBultos && capDispBultos !== null && capDispBultos < requiredBultos) {
+        return {
+          valid: false,
+          error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene espacio para bultos adicionales (${ocupBultos}/${capBultos} bultos ocupados). Solicite una nueva ubicación.`,
+        };
+      }
     }
 
     // 7. Compatibilidad producto-zona dentro de la transacción (si se suministra item)
@@ -1527,9 +1607,19 @@ export class PutawayEngineService {
       0,
     );
 
-    // Ocupación canónica de bultos derivada estrictamente de HandlingUnit activas
+    // Ocupación canónica de bultos/tarimas físicas derivada de HandlingUnit activas
     let ocupacionBultos = 0;
-    if (typeof tx.handlingUnit?.count === 'function') {
+    if (typeof tx.handlingUnit?.findMany === 'function') {
+      const activeHus = await tx.handlingUnit.findMany({
+        where: {
+          ubicacionActual: loc.codigo,
+          estadoHu: 'ACTIVO',
+        },
+        select: { id: true, parentHuId: true, tipoHu: true },
+      });
+      const distinctPallets = new Set(activeHus.map((h: any) => h.parentHuId || h.id));
+      ocupacionBultos = distinctPallets.size;
+    } else if (typeof tx.handlingUnit?.count === 'function') {
       ocupacionBultos = await tx.handlingUnit.count({
         where: {
           ubicacionActual: loc.codigo,
@@ -1556,12 +1646,28 @@ export class PutawayEngineService {
       };
     }
 
+    const isFloorPallet =
+      loc.tipoUbicacion === 'TARIMA_PISO' ||
+      (loc.tipoUbicacion === 'PISO' && classification.esAlmacenable) ||
+      (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
+    const effectiveCapBultos = isFloorPallet ? 1 : capBultos;
+    const hasCapBultos = isFloorPallet || hasConfiguredCapBultos;
+
     let nuevoEstado = 'LIBRE';
-    if (ocupacionUnidades === 0 && ocupacionBultos === 0) {
+    if (isFloorPallet) {
+      if (ocupacionBultos > 1) {
+        nuevoEstado = 'SOBRECAPACIDAD';
+      } else if (ocupacionBultos >= 1 || ocupacionUnidades > 0) {
+        nuevoEstado = 'LLENO';
+      } else {
+        nuevoEstado = 'LIBRE';
+      }
+    } else if (ocupacionUnidades === 0 && ocupacionBultos === 0) {
       nuevoEstado = 'LIBRE';
-    } else if (ocupacionUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupacionBultos > capBultos)) {
+    } else if (ocupacionUnidades > capUnits || (hasCapBultos && effectiveCapBultos !== null && ocupacionBultos > effectiveCapBultos)) {
       nuevoEstado = 'SOBRECAPACIDAD';
-    } else if (ocupacionUnidades >= capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupacionBultos >= capBultos)) {
+    } else if (ocupacionUnidades >= capUnits || (hasCapBultos && effectiveCapBultos !== null && ocupacionBultos >= effectiveCapBultos)) {
       nuevoEstado = 'LLENO';
     } else {
       nuevoEstado = 'PARCIAL';

@@ -67,7 +67,7 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
     zonaCode === 'DEVOLUCION' ||
     zonaCode === 'CUARENTENA' ||
     zonaCode === 'PNC' ||
-    code.includes('PNC')
+    (code.includes('PNC') && !code.startsWith('G'))
   ) {
     return {
       rolOperativo: 'NO_CONFORME_BLOQUEADO',
@@ -117,7 +117,9 @@ export function classifyLocationOperationalRole(location: any): LocationOperatio
     zonaTipo === 'ALMACENAMIENTO' ||
     zonaTipo === 'PICKING' ||
     zonaCode.startsWith('ALM-') ||
-    zonaCode === 'INTERIOR';
+    zonaCode === 'INTERIOR' ||
+    zonaCode === 'EXTERIOR_TECHADO' ||
+    zonaCode.includes('EXTERIOR');
 
   if (esZonaAlmacenable) {
     // Si la zona es almacenable, verificar que el tipo de ubicación no indique segregación

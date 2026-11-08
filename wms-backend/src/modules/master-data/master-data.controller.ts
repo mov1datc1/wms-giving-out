@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body, Headers, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body, Headers, HttpException, HttpStatus, BadRequestException, NotFoundException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 import { EmailService } from '../../email.service';
@@ -510,6 +510,8 @@ export class MasterDataController {
         select: {
           id: true,
           codigo: true,
+          tipoHu: true,
+          parentHuId: true,
           ubicacionActual: true,
           cantidad: true,
           clienteId: true,
@@ -526,9 +528,11 @@ export class MasterDataController {
       })
     ]);
 
-    // Index HUs por ubicacionActual y por cliente (exclusivamente con existencia física real)
+    // Index HUs por ubicacionActual agrupando cajas hijas bajo su tarima física master
     const huCountByLoc: Record<string, number> = {};
     const husByLocAndClient: Record<string, Record<string, number>> = {};
+    const distinctPalletsByLoc: Record<string, Set<string>> = {};
+
     for (const hu of allActiveHus) {
       // Si la HU tiene lote asociado, verificar que el lote tenga saldo físico real (> 0)
       if (hu.lote) {
@@ -539,11 +543,17 @@ export class MasterDataController {
       }
 
       if (hu.ubicacionActual) {
-        huCountByLoc[hu.ubicacionActual] = (huCountByLoc[hu.ubicacionActual] || 0) + 1;
+        if (!distinctPalletsByLoc[hu.ubicacionActual]) distinctPalletsByLoc[hu.ubicacionActual] = new Set<string>();
+        distinctPalletsByLoc[hu.ubicacionActual].add((hu as any).parentHuId || hu.id);
+
         if (!husByLocAndClient[hu.ubicacionActual]) husByLocAndClient[hu.ubicacionActual] = {};
         const cid = hu.clienteId || 'DESCONOCIDO';
         husByLocAndClient[hu.ubicacionActual][cid] = (husByLocAndClient[hu.ubicacionActual][cid] || 0) + 1;
       }
+    }
+
+    for (const locKey of Object.keys(distinctPalletsByLoc)) {
+      huCountByLoc[locKey] = distinctPalletsByLoc[locKey].size;
     }
 
     return locations.map(loc => {
@@ -559,32 +569,51 @@ export class MasterDataController {
       const sumRes = loc.lotes.reduce((sum, l) => sum + Math.max(0, l.cantidadReservada || 0), 0);
       const ocupUnidades = sumDisp + sumBloq;
       
-      // Capacidad de bultos: exclusivamente desde configuración física real en BD.
-      // Si no existe, se tipifica como NO_CONFIGURADA (null), sin inventar 5 ni 1.
-      const hasConfiguredCapBultos = typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0;
-      const capBultos: number | null = hasConfiguredCapBultos ? (loc as any).capacidadBultos : null;
+      const isFloorPallet =
+        loc.tipoUbicacion === 'TARIMA_PISO' ||
+        (loc.tipoUbicacion === 'PISO' && classification.esAlmacenable) ||
+        (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
+      // Capacidad de bultos:
+      // Para posiciones de tarima en piso (incluyendo nomenclatura G0001+), la capacidad física canónica
+      // es exactamente de 1 tarima física (confirmado operativamente por Alejandra).
+      // Para celdas tradicionales proviene de configuración en BD.
+      const hasConfiguredCapBultos =
+        isFloorPallet ||
+        (typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0);
+      const capBultos: number | null = isFloorPallet
+        ? 1
+        : hasConfiguredCapBultos
+        ? (loc as any).capacidadBultos
+        : null;
       const capacidadBultosEstado = hasConfiguredCapBultos ? 'CONFIGURADA' : 'NO_CONFIGURADA';
-      
+
       // Fuente de verdad de bultos en esta fase: se deriva estrictamente de HandlingUnits activas
       const bultosReales = huCountByLoc[loc.codigo] || huCountByLoc[loc.id] || 0;
-      const ocupBultos = bultosReales;
-      
+      const ocupBultos = isFloorPallet
+        ? (bultosReales > 0 ? bultosReales : (ocupUnidades > 0 ? 1 : 0))
+        : bultosReales;
+
       // Reservas comprometidas
       const resUnidades = (loc as any).reservaUnidades ?? 0;
       const resBultos = (loc as any).reservaBultos ?? 0;
-      
-      // Capacidades disponibles derivadas
-      const capDispUnidades = Math.max(0, capUnits - ocupUnidades - resUnidades);
+
+      // Capacidades disponibles derivadas:
+      // En posiciones de tarima en piso, una posición vacía admite una tarima completa entrante (capUnits disponible).
+      // Si la posición ya tiene una tarima alojada, no admite más bultos ni piezas adicionales.
+      const capDispUnidades = isFloorPallet
+        ? (ocupBultos >= 1 ? 0 : capUnits)
+        : Math.max(0, capUnits - ocupUnidades - resUnidades);
       const capDispBultos = hasConfiguredCapBultos && capBultos !== null
         ? Math.max(0, capBultos - ocupBultos - resBultos)
         : null;
-      
+
       // Porcentajes de ocupación (0 - 100%+)
       const pctUnidades = capUnits > 0 ? Math.round((ocupUnidades / capUnits) * 100) : 0;
       const pctBultos = hasConfiguredCapBultos && capBultos !== null && capBultos > 0
         ? Math.round((ocupBultos / capBultos) * 100)
         : null;
-      
+
       // Estado de capacidad canónico (Instrucciones 2 y 3)
       let estadoCapacidad = 'LIBRE';
       if (!classification.esAlmacenable) {
@@ -592,6 +621,14 @@ export class MasterDataController {
         estadoCapacidad = 'NO_APLICA';
       } else if (loc.estado === 'BLOQUEADO') {
         estadoCapacidad = 'BLOQUEADO';
+      } else if (isFloorPallet) {
+        if (ocupBultos > 1) {
+          estadoCapacidad = 'SOBRECAPACIDAD';
+        } else if (ocupBultos >= 1 || ocupUnidades > 0) {
+          estadoCapacidad = 'LLENO';
+        } else {
+          estadoCapacidad = 'LIBRE';
+        }
       } else if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
         // Detección estricta de sobrecapacidad física sin alterar inventario histórico
         estadoCapacidad = 'SOBRECAPACIDAD';
@@ -682,16 +719,35 @@ export class MasterDataController {
     const sumRes = loc.lotes.reduce((sum, l) => sum + Math.max(0, l.cantidadReservada || 0), 0);
     const ocupUnidades = sumDisp + sumBloq;
 
-    // Capacidad de bultos: exclusivamente desde configuración física real en BD.
-    const hasConfiguredCapBultos = typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0;
-    const capBultos: number | null = hasConfiguredCapBultos ? (loc as any).capacidadBultos : null;
+    const isFloorPallet =
+      loc.tipoUbicacion === 'TARIMA_PISO' ||
+      (loc.tipoUbicacion === 'PISO' && classification.esAlmacenable) ||
+      (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
+    // Capacidad de bultos:
+    // Para posiciones de tarima en piso (incluyendo G0001+), la capacidad física canónica
+    // es estrictamente de 1 tarima física (Alejandra).
+    // Para celdas tradicionales proviene de configuración en BD.
+    const hasConfiguredCapBultos =
+      isFloorPallet ||
+      (typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0);
+    const capBultos: number | null = isFloorPallet
+      ? 1
+      : hasConfiguredCapBultos
+      ? (loc as any).capacidadBultos
+      : null;
     const capacidadBultosEstado = hasConfiguredCapBultos ? 'CONFIGURADA' : 'NO_CONFIGURADA';
-    const ocupBultos = hus.length;
+    const bultosReales = new Set(hus.map((h: any) => h.parentHuId || h.id)).size;
+    const ocupBultos = isFloorPallet
+      ? (bultosReales > 0 ? bultosReales : (ocupUnidades > 0 ? 1 : 0))
+      : bultosReales;
 
     const resUnidades = (loc as any).reservaUnidades ?? 0;
     const resBultos = (loc as any).reservaBultos ?? 0;
 
-    const capDispUnidades = Math.max(0, capUnits - ocupUnidades - resUnidades);
+    const capDispUnidades = isFloorPallet
+      ? (ocupBultos >= 1 ? 0 : capUnits)
+      : Math.max(0, capUnits - ocupUnidades - resUnidades);
     const capDispBultos = hasConfiguredCapBultos && capBultos !== null
       ? Math.max(0, capBultos - ocupBultos - resBultos)
       : null;
@@ -706,6 +762,14 @@ export class MasterDataController {
       estadoCapacidad = 'NO_APLICA';
     } else if (loc.estado === 'BLOQUEADO') {
       estadoCapacidad = 'BLOQUEADO';
+    } else if (isFloorPallet) {
+      if (ocupBultos > 1) {
+        estadoCapacidad = 'SOBRECAPACIDAD';
+      } else if (ocupBultos >= 1 || ocupUnidades > 0) {
+        estadoCapacidad = 'LLENO';
+      } else {
+        estadoCapacidad = 'LIBRE';
+      }
     } else if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
       estadoCapacidad = 'SOBRECAPACIDAD';
     } else if (ocupUnidades >= capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos >= capBultos)) {
@@ -766,7 +830,7 @@ export class MasterDataController {
       code === 'NC-EXCESO-01' ||
       code.includes('DEV') ||
       code.includes('CUARENTENA') ||
-      code.includes('PNC') ||
+      (code.includes('PNC') && !code.startsWith('G')) ||
       tipo === 'CUARENTENA' ||
       tipo === 'DEVOLUCION' ||
       tipo === 'PNC' ||
@@ -814,7 +878,9 @@ export class MasterDataController {
       zonaTipo === 'ALMACENAMIENTO' ||
       zonaTipo === 'PICKING' ||
       zonaCode.startsWith('ALM-') ||
-      zonaCode === 'INTERIOR';
+      zonaCode === 'INTERIOR' ||
+      zonaCode === 'EXTERIOR_TECHADO' ||
+      zonaCode.includes('EXTERIOR');
 
     if (tipo === 'TARIMA_PISO' && esZonaAlmacenable) {
       return {
@@ -857,6 +923,215 @@ export class MasterDataController {
   @ApiOperation({ summary: 'Actualizar ubicación' })
   async updateLocation(@Param('id') id: string, @Body() data: any) {
     return this.prisma.location.update({ where: { id }, data });
+  }
+
+  @Patch('locations/:id/pnc-designation')
+  @ApiOperation({ summary: 'Alternar designación operativa entre Almacenamiento Comercial (TARIMA_PISO) y No Conforme (PNC) con blindaje y RBAC' })
+  async setLocationPncDesignation(
+    @Param('id') id: string,
+    @Body() body: { usoPnc: boolean; motivo?: string; usuario?: string },
+    @Headers('authorization') authHeader?: string,
+  ) {
+    // 1. AUTENTICACIÓN Y VALIDACIÓN DE TOKEN JWT
+    if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+      throw new UnauthorizedException('No autenticado: Token de sesión requerido');
+    }
+
+    const token = authHeader.replace('Bearer ', '').trim();
+    let decoded: any;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch {
+      throw new UnauthorizedException('Token de sesión inválido o expirado');
+    }
+
+    const userId = decoded.userId || decoded.id;
+    if (!userId) {
+      throw new UnauthorizedException('Token inválido: falta identificador de usuario');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        rol: {
+          include: {
+            permisos: true,
+          },
+        },
+      },
+    });
+
+    if (!user || !user.activo) {
+      throw new UnauthorizedException('Sesión inválida: usuario inactivo o no encontrado');
+    }
+
+    // 2. CONTROL DE ACCESO BASADO EN ROLES (RBAC)
+    // Autorizados: Super Admin (nivel 1), Dirección (2), Gerente Operaciones (3), Supervisor Almacén (4)
+    // o cualquier rol con permiso formal sobre el módulo ubicaciones
+    const isSuperAdmin = user.rol?.nombre === 'Super Admin' || user.rol?.nivel === 1;
+    const isAuthorizedRole = isSuperAdmin || (typeof user.rol?.nivel === 'number' && user.rol.nivel <= 4);
+    const hasPermisoUbicaciones = user.rol?.permisos?.some(
+      (p: any) => p.modulo === 'ubicaciones' && ['editar', 'ajustar', 'administrar'].includes(p.accion),
+    );
+
+    if (!isAuthorizedRole && !hasPermisoUbicaciones) {
+      throw new ForbiddenException(
+        `ACCESO_DENEGADO: El rol "${user.rol?.nombre || 'Sin Rol'}" carece de privilegios para alterar el uso operativo de ubicaciones. Acción reservada a Supervisor, Gerente o Administrador.`,
+      );
+    }
+
+    const auditUser = user.nombre || user.email || body.usuario || 'supervisor';
+
+    // 3. RECUPERAR UBICACIÓN CON LOTES ASOCIADOS
+    const loc = await this.prisma.location.findFirst({
+      where: { OR: [{ id }, { codigo: id }] },
+      include: { lotes: true, zona: true },
+    });
+    if (!loc) {
+      throw new NotFoundException(`Ubicación con identificador "${id}" no encontrada`);
+    }
+
+    const unDisponibles = (loc.lotes || []).reduce((sum, l) => sum + (l.cantidadDisponible || 0), 0);
+    const unReservadas = (loc.lotes || []).reduce((sum, l) => sum + (l.cantidadReservada || 0), 0);
+    const unBloqueadas = (loc.lotes || []).reduce((sum, l) => sum + (l.cantidadBloqueada || 0), 0);
+
+    // 4. BLINDAJE COMPLETO: NORMAL -> PNC
+    if (body.usoPnc) {
+      // 4.1 Inventario disponible comercial
+      if (unDisponibles > 0) {
+        throw new BadRequestException(
+          `No es posible designar la ubicación ${loc.codigo} como PNC porque contiene ${unDisponibles} unidades disponibles de producto en buen estado. Transfiera o bloquee el inventario comercial antes de cambiar su designación operativa.`,
+        );
+      }
+
+      // 4.2 Inventario reservado para pedidos
+      if (unReservadas > 0) {
+        throw new BadRequestException(
+          `No es posible designar la ubicación ${loc.codigo} como PNC porque contiene ${unReservadas} unidades reservadas para pedidos de salida. Cancele o concluya los despachos antes de cambiar su designación operativa.`,
+        );
+      }
+
+      // 4.3 Asignaciones activas a pedidos o surtido en curso
+      const activeOrderLines = await this.prisma.salesOrderLine.count({
+        where: {
+          OR: [{ ubicacionAsignada: loc.codigo }, { ubicacionEscaneada: loc.codigo }],
+          pickingCompletado: false,
+          orden: { estado: { in: ['ASIGNADO', 'EN_PICKING'] } },
+        },
+      });
+      if (activeOrderLines > 0) {
+        throw new BadRequestException(
+          `No es posible designar la ubicación ${loc.codigo} como PNC: tiene ${activeOrderLines} pedidos o surtidos activos asignados a esta posición. Concluya o reasigne los pedidos antes de cambiar el uso operativo.`,
+        );
+      }
+
+      // 4.4 Handling Units comerciales activas en la ubicación
+      const activeCommercialHus = await this.prisma.handlingUnit.findMany({
+        where: {
+          OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
+          estadoHu: { in: ['ACTIVO', 'EN_TRANSITO'] },
+        },
+        select: { id: true, codigo: true, tipoHu: true },
+      });
+      if (activeCommercialHus.length > 0) {
+        throw new BadRequestException(
+          `No es posible designar la ubicación ${loc.codigo} como PNC: contiene ${activeCommercialHus.length} Handling Units comerciales activas (${activeCommercialHus.map(h => h.codigo).slice(0, 3).join(', ')}). Desaloje o reasigne las unidades antes de cambiar la designación.`,
+        );
+      }
+
+      const valorAnterior = loc.tipoUbicacion;
+      const valorNuevo = 'PNC';
+
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const u = await tx.location.update({
+          where: { id: loc.id },
+          data: { tipoUbicacion: valorNuevo },
+          include: { zona: true, lotes: true },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            usuario: auditUser,
+            accion: 'DESIGNAR_PNC',
+            entidad: 'Location',
+            entidadId: loc.id,
+            detalle: `Ubicación: ${loc.codigo} | Valor anterior: ${valorAnterior} | Valor nuevo: ${valorNuevo} | Motivo: ${body.motivo || 'Reasignación operativa de layout'} | Código inmutable: ${loc.codigo}`,
+          },
+        });
+
+        return u;
+      });
+
+      return {
+        success: true,
+        message: `Ubicación ${loc.codigo} designada exitosamente como PNC/Merma`,
+        location: updated,
+        classification: this.classifyLocation(updated),
+      };
+
+    } else {
+      // 5. BLINDAJE COMPLETO: PNC -> NORMAL (COMERCIAL)
+      // 5.1 Inventario bloqueado
+      if (unBloqueadas > 0) {
+        throw new BadRequestException(
+          `No es posible restituir la ubicación ${loc.codigo} a uso comercial porque contiene ${unBloqueadas} unidades en estado bloqueado/PNC. Desaloje la mercancía no conforme antes de habilitar uso comercial.`,
+        );
+      }
+
+      // 5.2 Lotes con estado de calidad no liberado (CUARENTENA, BLOQUEADO, MERMA, NO_CONFORME, PENDIENTE)
+      const nonLiberatedLots = (loc.lotes || []).filter(
+        (l: any) => l.estadoCalidad && l.estadoCalidad !== 'LIBERADO',
+      );
+      if (nonLiberatedLots.length > 0) {
+        throw new BadRequestException(
+          `No es posible restituir la ubicación ${loc.codigo} a uso comercial: contiene ${nonLiberatedLots.length} lotes con estado de calidad no liberado (${nonLiberatedLots.map((l: any) => `${l.lote || 'S/L'}: ${l.estadoCalidad}`).join(', ')}).`,
+        );
+      }
+
+      // 5.3 Handling Units no conformes o dañadas
+      const nonConformingHus = await this.prisma.handlingUnit.findMany({
+        where: {
+          OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
+          estadoHu: { in: ['DAÑADO', 'CUARENTENA', 'RETENIDO'] },
+        },
+        select: { id: true, codigo: true, estadoHu: true },
+      });
+      if (nonConformingHus.length > 0) {
+        throw new BadRequestException(
+          `No es posible restituir la ubicación ${loc.codigo} a comercial: contiene ${nonConformingHus.length} Handling Units no conformes o retenidas (${nonConformingHus.map(h => `${h.codigo} [${h.estadoHu}]`).slice(0, 3).join(', ')}).`,
+        );
+      }
+
+      const valorAnterior = loc.tipoUbicacion;
+      const valorNuevo = 'TARIMA_PISO';
+
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const u = await tx.location.update({
+          where: { id: loc.id },
+          data: { tipoUbicacion: valorNuevo },
+          include: { zona: true, lotes: true },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            usuario: auditUser,
+            accion: 'RESTITUIR_COMERCIAL',
+            entidad: 'Location',
+            entidadId: loc.id,
+            detalle: `Ubicación: ${loc.codigo} | Valor anterior: ${valorAnterior} | Valor nuevo: ${valorNuevo} | Motivo: ${body.motivo || 'Habilitación de posición para mercancía en buen estado'} | Código inmutable: ${loc.codigo}`,
+          },
+        });
+
+        return u;
+      });
+
+      return {
+        success: true,
+        message: `Ubicación ${loc.codigo} restituida exitosamente a Almacenamiento Comercial (TARIMA_PISO)`,
+        location: updated,
+        classification: this.classifyLocation(updated),
+      };
+    }
   }
 
   // ============ ALERTS ============

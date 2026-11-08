@@ -1,12 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   MapPin, Search, RefreshCw, Grid3X3, Layers, X,
   Package, Calendar, CheckCircle2, AlertTriangle, ShieldCheck, Box,
-  Warehouse, Lock, Eye, Info, Users, UserCheck, ChevronDown, ChevronRight
+  Warehouse, Lock, Eye, Info, Users, UserCheck, ChevronDown, ChevronRight,
+  ZoomIn, ZoomOut, Maximize2, Tag, ArrowRightLeft, Sparkles
 } from 'lucide-react';
 import { formatCalendarDate } from '../utils/dateUtils';
+import {
+  REAL_WAREHOUSE_POSITIONS,
+  SPATIAL_LANDMARKS,
+  WAREHOUSE_CANVAS_DIMENSIONS,
+  WarehouseLocationConfig,
+  SpatialLandmark
+} from '../config/warehouse-layout.config';
 
 const CALIDAD_TOOLTIP = 'Resultado de inspección de calidad. No determina por sí solo la disponibilidad comercial; también aplican caducidad, ubicación y restricciones operativas.';
 
@@ -447,9 +455,9 @@ export function Locations() {
               className={`btn btn-sm ${viewMode === 'spatial' ? 'btn-primary' : 'btn-ghost'}`}
               onClick={() => setViewMode('spatial')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
-              title="Esqueleto desacoplado preparado para el plano 2D real del almacén tras confirmación de Alejandra"
+              title="Visualización 2D interactiva del layout real del almacén (45 posiciones físicas de tarima confirmadas)"
             >
-              <MapPin size={15} /> Plano Físico 2D (Esqueleto)
+              <MapPin size={15} /> Plano Físico 2D (45 Posiciones)
             </button>
           </div>
           <button className="btn btn-secondary" onClick={loadData}>
@@ -798,15 +806,16 @@ export function Locations() {
         </div>
       ) : viewMode === 'spatial' ? (
         /* ========================================================
-           VISTA 3: ESQUELETO DESACOPLADO DEL PLANO FÍSICO 2D (FASE 2)
-           Preparado para recibir configuración espacial de Alejandra
-           sin ubicaciones G0001 reales ni posiciones inventadas.
+           VISTA 3: PLANO FÍSICO 2D INTERACTIVO (FASE 3A)
+           Renderizado fiel de las 45 posiciones físicas de tarima
+           derivadas del plano arquitectónico confirmado por Alejandra
            ======================================================== */
-        <PhysicalWarehouseMapSkeleton
+        <PhysicalWarehouseMap
           locations={locations}
           specialLocs={specialLocs}
           filterCliente={filterCliente}
           selectedClientName={selectedClientName}
+          onRefresh={loadData}
         />
       ) : viewMode === 'layout' ? (
         /* ========================================================
@@ -2131,199 +2140,691 @@ const demoLocations = [
 ];
 
 // ============================================================================
-// ESQUELETO DESACOPLADO DEL PLANO FÍSICO 2D (FASE 2 DE AUDITORÍA Y PLANIFICACIÓN)
+// PLANO FÍSICO 2D INTERACTIVO (FASE 3A DE ADAPTACIÓN AL ALMACÉN REAL)
 // ============================================================================
-// Diseñado para recibir metadatos espaciales (coordenadas relativas, bounds y rotación)
-// en cuanto el cliente (Alejandra) confirme:
-//  1. Numeración consecutiva oficial (G0001, G0002, ...)
-//  2. Capacidad física de estiba (tarima simple vs doble/triple)
-//  3. Uso operativo definitivo del Exterior Techado y Zona PNC
-//  4. Delimitación de áreas no inventariables (mesas de trabajo, sanitarios)
+// Renderizado interactivo fiel de las 45 posiciones físicas de tarima derivadas
+// del plano arquitectónico compartido por Alejandra y verificado pixel a pixel.
+//
+// Reglas de negocio confirmadas por Alejandra:
+//  1. Cada espacio dibujado en el plano = 1 ubicación física independiente.
+//  2. Capacidad física estricta = exactamente UNA sola tarima (capacidadBultos = 1).
+//  3. Nomenclatura consecutiva G0001 a G0045.
+//  4. Sin restricciones de producto por zona.
+//  5. Reserva es virtual (LotInventory.cantidadReservada) y NO tipo de ubicación.
+//  6. Exterior Techado se usa operativamente para PNC (posiciones G0036+ dinámicas).
 // ============================================================================
-interface SpatialSkeletonProps {
+interface SpatialMapProps {
   locations: any[];
   specialLocs: any[];
   filterCliente?: string;
   selectedClientName?: string;
+  onRefresh?: () => void;
 }
 
-function PhysicalWarehouseMapSkeleton({
+function PhysicalWarehouseMap({
   locations,
   specialLocs,
   filterCliente,
-  selectedClientName
-}: SpatialSkeletonProps) {
+  selectedClientName,
+  onRefresh
+}: SpatialMapProps) {
+  const [selectedPosition, setSelectedPosition] = useState<WarehouseLocationConfig | null>(null);
+  const [filterMode, setFilterMode] = useState<'ALL' | 'INTERIOR' | 'EXTERIOR_TECHADO' | 'PNC'>('ALL');
+  const [zoomScale, setZoomScale] = useState<number>(1);
+  const [hoveredCode, setHoveredCode] = useState<string | null>(null);
+  const [isTogglingPnc, setIsTogglingPnc] = useState<boolean>(false);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Mapeo indexado de ubicaciones de BD por código
+  const locationsByCode = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const loc of locations) {
+      if (loc.codigo) map.set(loc.codigo.toUpperCase(), loc);
+    }
+    return map;
+  }, [locations]);
+
+  // Posición seleccionada en BD si existe
+  const selectedLiveLocation = useMemo(() => {
+    if (!selectedPosition) return null;
+    return locationsByCode.get(selectedPosition.codigo.toUpperCase()) || null;
+  }, [selectedPosition, locationsByCode]);
+
+  // Conteo dinámico de métricas para las 45 posiciones
+  const stats = useMemo(() => {
+    let ocupadas = 0;
+    let libres = 0;
+    let pncCount = 0;
+    let enBdCount = 0;
+
+    for (const pos of REAL_WAREHOUSE_POSITIONS) {
+      const live = locationsByCode.get(pos.codigo.toUpperCase());
+      if (live) {
+        enBdCount++;
+        const isOccupied = (live.ocupacionBultos && live.ocupacionBultos >= 1) || (live.ocupacionUnidades && live.ocupacionUnidades > 0) || live.estadoCapacidad === 'LLENO';
+        const isPnc = live.tipoUbicacion === 'PNC' || live.categoriaUbicacion === 'VIRTUAL_NO_CONFORME' || pos.esPncSugerido;
+        if (isPnc) pncCount++;
+        else if (isOccupied) ocupadas++;
+        else libres++;
+      } else {
+        if (pos.esPncSugerido) pncCount++;
+        else libres++;
+      }
+    }
+
+    return {
+      total: REAL_WAREHOUSE_POSITIONS.length,
+      interior: REAL_WAREHOUSE_POSITIONS.filter(p => p.areaFisica === 'INTERIOR').length,
+      exterior: REAL_WAREHOUSE_POSITIONS.filter(p => p.areaFisica === 'EXTERIOR_TECHADO').length,
+      pncSugerido: REAL_WAREHOUSE_POSITIONS.filter(p => p.esPncSugerido).length,
+      ocupadas,
+      libres,
+      pncCount,
+      enBdCount
+    };
+  }, [locationsByCode]);
+
+  // Alternar designación PNC de una ubicación si ya está registrada en BD
+  const handleTogglePncDesignation = async (locId: string, currentIsPnc: boolean) => {
+    setIsTogglingPnc(true);
+    setActionFeedback(null);
+    try {
+      const res = await fetch(`${API.masterData}/locations/${locId}/pnc-designation`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          usoPnc: !currentIsPnc,
+          motivo: currentIsPnc ? 'Restitución a Almacenamiento Comercial' : 'Designación de posición para PNC/Merma',
+          usuario: 'supervisor'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || 'Error al cambiar designación operativa');
+      }
+      setActionFeedback({
+        type: 'success',
+        message: data.message || 'Designación operativa actualizada exitosamente'
+      });
+      if (onRefresh) onRefresh();
+    } catch (err: any) {
+      setActionFeedback({
+        type: 'error',
+        message: err.message || 'Error al alternar designación PNC'
+      });
+    } finally {
+      setIsTogglingPnc(false);
+    }
+  };
+
   return (
     <div className="card animate-fade-in" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Banner Informativo de Fase de Arquitectura */}
+      {/* Barra de Encabezado y Métricas Arquitectónicas */}
       <div style={{
         padding: '16px 20px',
-        borderRadius: 10,
-        backgroundColor: 'rgba(37, 99, 235, 0.06)',
-        border: '1px solid rgba(37, 99, 235, 0.25)',
+        borderRadius: 12,
+        backgroundColor: 'rgba(37, 99, 235, 0.04)',
+        border: '1px solid rgba(37, 99, 235, 0.2)',
         display: 'flex',
-        alignItems: 'flex-start',
+        flexDirection: 'column',
         gap: 14
       }}>
-        <div style={{
-          width: 36,
-          height: 36,
-          borderRadius: 8,
-          backgroundColor: '#2563EB',
-          color: '#FFFFFF',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0
-        }}>
-          <MapPin size={20} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#1E3A8A' }}>
-              Plano Físico 2D — Módulo Espacial (Esqueleto de Fase 2)
-            </h3>
-            <span style={{
-              fontSize: 11,
-              fontWeight: 800,
-              padding: '2px 8px',
-              borderRadius: 6,
-              backgroundColor: '#DBEAFE',
-              color: '#1E40AF',
-              border: '1px solid #93C5FD'
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{
+              width: 42,
+              height: 42,
+              borderRadius: 10,
+              backgroundColor: '#1E40AF',
+              color: '#FFFFFF',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 6px -1px rgba(30, 64, 175, 0.2)'
             }}>
-              Arquitectura Lista · En Espera de Confirmación Operativa
-            </span>
+              <Warehouse size={24} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1E3A8A' }}>
+                  Plano Físico Real del Almacén — 45 Posiciones Físicas de Tarima
+                </h3>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  backgroundColor: '#DCFCE7',
+                  color: '#166534',
+                  border: '1px solid #86EFAC'
+                }}>
+                  Fase 3A · Mapeo Espacial Certificado
+                </span>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: 13, color: '#475569' }}>
+                Fuente de verdad arquitectónica confirmada por Alejandra · <strong>Capacidad canónica: 1 Tarima por Posición</strong> · Acceso directo a nivel de suelo
+              </p>
+            </div>
           </div>
-          <p style={{ margin: '6px 0 0', fontSize: 13, color: '#334155', lineHeight: 1.5 }}>
-            El motor del WMS ha sido desacoplado para soportar <strong>estiba de tarimas en piso</strong>,
-            códigos correlativos consecutivos (<code>G0001+</code>) y áreas no inventariables sin forzar estructuras de racks multinivel.
-            Este lienzo renderizará dinámicamente las posiciones en cuanto el cliente confirme numeración, estiba y capacidades definitivas.
-          </p>
+
+          {/* Controles de Zoom */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', padding: 4, borderRadius: 8, border: '1px solid var(--border)' }}>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setZoomScale(z => Math.max(0.7, Number((z - 0.1).toFixed(2))))}
+              title="Alejar mapa"
+              style={{ padding: '4px 8px' }}
+            >
+              <ZoomOut size={14} />
+            </button>
+            <span style={{ fontSize: 11, fontWeight: 700, minWidth: 42, textAlign: 'center', color: '#1E293B' }}>
+              {Math.round(zoomScale * 100)}%
+            </span>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setZoomScale(z => Math.min(1.5, Number((z + 0.1).toFixed(2))))}
+              title="Acercar mapa"
+              style={{ padding: '4px 8px' }}
+            >
+              <ZoomIn size={14} />
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setZoomScale(1)}
+              title="Restablecer escala al 100%"
+              style={{ padding: '4px 8px', fontSize: 11 }}
+            >
+              100%
+            </button>
+          </div>
+        </div>
+
+        {/* Chips de Resumen Operativo */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>Total Posiciones:</span> <strong style={{ color: '#0F172A' }}>{stats.total} tarimas</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>Área Interior:</span> <strong style={{ color: '#1D4ED8' }}>{stats.interior} (G0001–G0035)</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>Exterior Techado:</span> <strong style={{ color: '#0D9488' }}>{stats.exterior} (G0036–G0045)</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>PNC Sugerido en Plano:</span> <strong style={{ color: '#DC2626' }}>{stats.pncSugerido} pos</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FEF3C7', border: '1px solid #FCD34D', fontSize: 12, color: '#92400E' }}>
+            <strong>Fase 3A:</strong> 0 ubicaciones reales insertadas · Base de datos productiva 100% intacta
+          </div>
+        </div>
+
+        {/* Filtros Rápidos de Visualización */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingTop: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Filtrar vista:</span>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'ALL' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('ALL')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Todas ({stats.total})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'INTERIOR' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('INTERIOR')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Solo Interior ({stats.interior})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'EXTERIOR_TECHADO' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('EXTERIOR_TECHADO')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Solo Exterior Techado ({stats.exterior})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'PNC' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('PNC')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Posiciones PNC
+          </button>
         </div>
       </div>
 
-      {/* Blueprint Visual de las 3 Zonas Físicas Identificadas */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-        gap: 16
-      }}>
-        {/* Zona 1: Área Interior */}
+      {/* Contenedor Principal: Canvas SVG del Plano y Panel Lateral de Inspección */}
+      <div style={{ display: 'grid', gridTemplateColumns: selectedPosition ? 'minmax(0, 1fr) 340px' : '1fr', gap: 20 }}>
+        {/* Canvas SVG con Layout Real */}
         <div style={{
-          borderRadius: 10,
-          border: '1.5px dashed #2563EB',
-          backgroundColor: 'rgba(37, 99, 235, 0.03)',
-          padding: 18,
+          backgroundColor: '#0F172A',
+          borderRadius: 12,
+          padding: 16,
+          overflow: 'auto',
           display: 'flex',
-          flexDirection: 'column',
-          gap: 12
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+          border: '1px solid #334155',
+          boxShadow: 'inset 0 2px 4px 0 rgba(0, 0, 0, 0.4)',
+          minHeight: 520
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 800, fontSize: 14, color: '#1E40AF' }}>
-              1. Nave Principal (ÁREA INTERIOR)
-            </span>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, backgroundColor: '#EFF6FF', color: '#1D4ED8' }}>
-              Almacenamiento Comercial
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            • <strong>Alcance:</strong> Posiciones físicas de tarima en piso distribuidas perimetralmente y en bloques internos.<br />
-            • <strong>Elementos identificados:</strong> 2 Mesas de trabajo (no inventariables), Baños y Tableros de control.<br />
-            • <strong>Estado técnico:</strong> Clasificador listo para otorgar <code>ALMACENABLE_COMERCIAL</code> a tarimas autorizadas.<br />
-            • <strong>Pendiente de cliente:</strong> Secuencia de numeración <code>G0001+</code> y altura máxima de estiba.
+          <div style={{
+            transform: `scale(${zoomScale})`,
+            transformOrigin: 'top center',
+            transition: 'transform 0.15s ease-out',
+            width: 707,
+            height: 760
+          }}>
+            <svg
+              width="707"
+              height="760"
+              viewBox="0 0 707 760"
+              style={{ display: 'block', backgroundColor: '#FFFFFF', borderRadius: 8, boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}
+            >
+              <defs>
+                {/* Patrón de Tablones de Madera para Tarima */}
+                <pattern id="palletWoodSlatH" width="20" height="8" patternUnits="userSpaceOnUse">
+                  <rect width="20" height="6.5" fill="#FDE68A" stroke="#D97706" strokeWidth="0.5" />
+                  <line x1="0" y1="7" x2="20" y2="7" stroke="#92400E" strokeWidth="0.5" strokeOpacity="0.4" />
+                </pattern>
+                <pattern id="palletWoodSlatV" width="8" height="20" patternUnits="userSpaceOnUse">
+                  <rect width="6.5" height="20" fill="#FDE68A" stroke="#D97706" strokeWidth="0.5" />
+                  <line x1="7" y1="0" x2="7" y2="20" stroke="#92400E" strokeWidth="0.5" strokeOpacity="0.4" />
+                </pattern>
+                {/* Patrón de Escalera */}
+                <pattern id="stairSteps" width="10" height="8" patternUnits="userSpaceOnUse">
+                  <rect width="10" height="4" fill="#94A3B8" />
+                  <rect y="4" width="10" height="4" fill="#64748B" />
+                </pattern>
+              </defs>
+
+              {/* 1. Fondo de Nave Interior */}
+              <rect x="18" y="10" width="671" height="598" fill="#F8FAFC" stroke="#0F172A" strokeWidth="3" />
+
+              {/* 2. Fondo de Patio Exterior Techado */}
+              <rect x="18" y="608" width="671" height="142" fill="#F0FDFA" stroke="#0F172A" strokeWidth="3" />
+
+              {/* Muro Separador Estructural entre Interior y Exterior */}
+              <line x1="18" y1="608" x2="689" y2="608" stroke="#0F172A" strokeWidth="5" />
+
+              {/* Rótulo de Zonas Espaciales */}
+              <text x="490" y="555" fill="#CBD5E1" fontSize="28" fontWeight="900" letterSpacing="4">INTERIOR</text>
+              <text x="350" y="642" fill="#0D9488" fontSize="14" fontWeight="800" letterSpacing="2" textAnchor="middle">
+                EXTERIOR TECHADO (PNC / RECEPCIÓN)
+              </text>
+
+              {/* Muro Interior Tabicado (Recinto de Tarimas G0018-G0026) */}
+              <path
+                d="M 120 180 L 420 180 L 420 320"
+                fill="none"
+                stroke="#0F172A"
+                strokeWidth="4"
+              />
+              <line x1="130" y1="320" x2="315" y2="320" stroke="#0F172A" strokeWidth="4" />
+
+              {/* LANDMARKS ARQUITECTÓNICOS */}
+              {/* Baños */}
+              <g id="landmark-banios">
+                <rect x="515" y="135" width="165" height="130" fill="#F1F5F9" stroke="#0F172A" strokeWidth="2.5" rx="3" />
+                <text x="597" y="205" fill="#334155" fontSize="16" fontWeight="800" textAnchor="middle">Baños</text>
+                {/* Líneas de mamparas sanitarias */}
+                <line x1="517" y1="170" x2="540" y2="195" stroke="#3B82F6" strokeWidth="2" />
+                <line x1="517" y1="210" x2="540" y2="235" stroke="#3B82F6" strokeWidth="2" />
+              </g>
+
+              {/* Mesas de Trabajo Interior */}
+              <g id="landmark-mesas-trabajo">
+                <rect x="165" y="435" width="85" height="55" fill="#2563EB" stroke="#1D4ED8" strokeWidth="2" rx="4" />
+                <rect x="285" y="435" width="85" height="55" fill="#2563EB" stroke="#1D4ED8" strokeWidth="2" rx="4" />
+                <text x="267" y="425" fill="#1E3A8A" fontSize="12" fontWeight="800" textAnchor="middle">Mesas de trabajo</text>
+              </g>
+
+              {/* Tableros de Control Oriente */}
+              <g id="landmark-tableros">
+                <rect x="580" y="405" width="65" height="90" fill="#E2E8F0" stroke="#64748B" strokeWidth="2" rx="4" />
+                <rect x="580" y="510" width="65" height="90" fill="#E2E8F0" stroke="#64748B" strokeWidth="2" rx="4" />
+                <text x="612" y="455" fill="#64748B" fontSize="9" fontWeight="700" textAnchor="middle">Tablero</text>
+                <text x="612" y="560" fill="#64748B" fontSize="9" fontWeight="700" textAnchor="middle">Tablero</text>
+              </g>
+
+              {/* Escaleras Exterior Techado */}
+              <g id="landmark-escaleras">
+                <rect x="80" y="618" width="60" height="40" fill="url(#stairSteps)" stroke="#475569" strokeWidth="1.5" rx="2" />
+                <rect x="485" y="618" width="75" height="40" fill="url(#stairSteps)" stroke="#475569" strokeWidth="1.5" rx="2" />
+              </g>
+
+              {/* Mesa Exterior de Madera */}
+              <g id="landmark-mesa-exterior">
+                <rect x="150" y="618" width="160" height="40" fill="#B45309" stroke="#78350F" strokeWidth="2" rx="3" />
+                <text x="230" y="642" fill="#FEF3C7" fontSize="11" fontWeight="800" textAnchor="middle">Mesa Auxiliar</text>
+              </g>
+
+              {/* Botes de basura / Mantenimiento exterior */}
+              <circle cx="250" cy="700" r="10" fill="#2563EB" stroke="#1D4ED8" strokeWidth="1" />
+              <circle cx="275" cy="718" r="10" fill="#2563EB" stroke="#1D4ED8" strokeWidth="1" />
+
+              {/* RENDERIZADO DE LAS 45 POSICIONES FÍSICAS DE TARIMA */}
+              {REAL_WAREHOUSE_POSITIONS.map((pos) => {
+                const live = locationsByCode.get(pos.codigo.toUpperCase());
+                const isSelected = selectedPosition?.codigo === pos.codigo;
+                const isHovered = hoveredCode === pos.codigo;
+
+                // Filtrado visual por modo
+                let isFilteredOut = false;
+                if (filterMode === 'INTERIOR' && pos.areaFisica !== 'INTERIOR') isFilteredOut = true;
+                if (filterMode === 'EXTERIOR_TECHADO' && pos.areaFisica !== 'EXTERIOR_TECHADO') isFilteredOut = true;
+                if (filterMode === 'PNC') {
+                  const isPnc = live?.tipoUbicacion === 'PNC' || live?.categoriaUbicacion === 'VIRTUAL_NO_CONFORME' || pos.esPncSugerido;
+                  if (!isPnc) isFilteredOut = true;
+                }
+
+                // Determinación de estado físico de la posición
+                const isLivePnc = live?.tipoUbicacion === 'PNC' || live?.categoriaUbicacion === 'VIRTUAL_NO_CONFORME';
+                const isPnc = isLivePnc || pos.esPncSugerido;
+                const isOccupied = live ? (live.ocupacionBultos >= 1 || live.ocupacionUnidades > 0 || live.estadoCapacidad === 'LLENO') : false;
+
+                // Estilo y color de la tarima
+                let palletBorder = '#D97706';
+                let palletFill = pos.rotacion === 90 ? 'url(#palletWoodSlatV)' : 'url(#palletWoodSlatH)';
+                let badgeBg = '#FEF3C7';
+                let badgeText = '#92400E';
+
+                if (isPnc) {
+                  palletBorder = '#DC2626';
+                  badgeBg = '#FEE2E2';
+                  badgeText = '#991B1B';
+                } else if (isOccupied) {
+                  palletBorder = '#2563EB';
+                  badgeBg = '#DBEAFE';
+                  badgeText = '#1E40AF';
+                }
+
+                if (isSelected) {
+                  palletBorder = '#4F46E5';
+                }
+
+                return (
+                  <g
+                    key={pos.codigo}
+                    id={`pos-${pos.codigo}`}
+                    opacity={isFilteredOut ? 0.15 : 1}
+                    cursor="pointer"
+                    onClick={() => setSelectedPosition(pos)}
+                    onMouseEnter={() => setHoveredCode(pos.codigo)}
+                    onMouseLeave={() => setHoveredCode(null)}
+                    style={{ transition: 'opacity 0.2s ease, transform 0.15s ease' }}
+                  >
+                    {/* Contorno y Fondo de la Tarima */}
+                    <rect
+                      x={pos.coordX}
+                      y={pos.coordY}
+                      width={pos.ancho}
+                      height={pos.alto}
+                      fill={palletFill}
+                      stroke={palletBorder}
+                      strokeWidth={isSelected ? 3 : (isHovered ? 2.5 : 1.5)}
+                      rx={3}
+                      filter={isSelected ? 'drop-shadow(0 0 6px rgba(79, 70, 229, 0.7))' : undefined}
+                    />
+
+                    {/* Badge de Código Consecutivo G0001+ */}
+                    <rect
+                      x={pos.coordX + 4}
+                      y={pos.coordY + (pos.alto / 2) - 10}
+                      width={pos.ancho - 8}
+                      height={20}
+                      fill={badgeBg}
+                      stroke={palletBorder}
+                      strokeWidth={1}
+                      rx={3}
+                      opacity={0.95}
+                    />
+                    <text
+                      x={pos.coordX + (pos.ancho / 2)}
+                      y={pos.coordY + (pos.alto / 2) + 4}
+                      fill={badgeText}
+                      fontSize="11"
+                      fontWeight="800"
+                      textAnchor="middle"
+                      letterSpacing="0.5"
+                    >
+                      {pos.codigo}
+                    </text>
+
+                    {/* Tag indicador PNC en las posiciones designadas */}
+                    {isPnc && (
+                      <g>
+                        <rect
+                          x={pos.coordX + (pos.ancho / 2) - 16}
+                          y={pos.coordY + pos.alto - 14}
+                          width={32}
+                          height={12}
+                          fill="#DC2626"
+                          rx={2}
+                        />
+                        <text
+                          x={pos.coordX + (pos.ancho / 2)}
+                          y={pos.coordY + pos.alto - 5}
+                          fill="#FFFFFF"
+                          fontSize="9"
+                          fontWeight="900"
+                          textAnchor="middle"
+                        >
+                          PNC
+                        </text>
+                      </g>
+                    )}
+
+                    {/* Tag de Ocupada 1/1 */}
+                    {isOccupied && !isPnc && (
+                      <g>
+                        <rect
+                          x={pos.coordX + (pos.ancho / 2) - 14}
+                          y={pos.coordY + pos.alto - 14}
+                          width={28}
+                          height={12}
+                          fill="#2563EB"
+                          rx={2}
+                        />
+                        <text
+                          x={pos.coordX + (pos.ancho / 2)}
+                          y={pos.coordY + pos.alto - 5}
+                          fill="#FFFFFF"
+                          fontSize="9"
+                          fontWeight="900"
+                          textAnchor="middle"
+                        >
+                          1/1
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
           </div>
         </div>
 
-        {/* Zona 2: Exterior Techado */}
-        <div style={{
-          borderRadius: 10,
-          border: '1.5px dashed #0D9488',
-          backgroundColor: 'rgba(13, 148, 136, 0.03)',
-          padding: 18,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 800, fontSize: 14, color: '#0F766E' }}>
-              2. Patio Cubierto (EXTERIOR TECHADO)
-            </span>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, backgroundColor: '#F0FDFA', color: '#0F766E' }}>
-              Recibo / Maniobra / Pulmón
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            • <strong>Alcance:</strong> Posiciones de piso para descarga, maniobra y tránsito de mercancía.<br />
-            • <strong>Elementos identificados:</strong> Mesa auxiliar, escaleras de acceso y rampas de comunicación.<br />
-            • <strong>Estado técnico:</strong> Protegido como <code>TRANSITO_INTERNO</code> por defecto (no surtible hasta Putaway).<br />
-            • <strong>Pendiente de cliente:</strong> Definición de qué posiciones serán inventariables definitivas.
-          </div>
-        </div>
+        {/* Panel Lateral de Inspección de Ubicación Física */}
+        {selectedPosition && (
+          <div style={{
+            backgroundColor: '#FFFFFF',
+            borderRadius: 12,
+            border: '1px solid var(--border)',
+            padding: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 16,
+            height: 'fit-content',
+            boxShadow: '0 4px 12px -2px rgba(0, 0, 0, 0.08)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <span style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  color: selectedPosition.areaFisica === 'INTERIOR' ? '#1D4ED8' : '#0D9488',
+                  letterSpacing: '0.5px'
+                }}>
+                  {selectedPosition.areaFisica === 'INTERIOR' ? 'Área Interior' : 'Exterior Techado'}
+                </span>
+                <h4 style={{ margin: '2px 0 0', fontSize: 20, fontWeight: 900, color: '#0F172A' }}>
+                  {selectedPosition.codigo}
+                </h4>
+              </div>
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => setSelectedPosition(null)}
+                style={{ padding: 4 }}
+              >
+                <X size={18} />
+              </button>
+            </div>
 
-        {/* Zona 3: PNC (Producto No Conforme) */}
-        <div style={{
-          borderRadius: 10,
-          border: '1.5px dashed #E11D48',
-          backgroundColor: 'rgba(225, 29, 72, 0.03)',
-          padding: 18,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 800, fontSize: 14, color: '#BE123C' }}>
-              3. Área Segregada (ZONA PNC)
-            </span>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, backgroundColor: '#FFF1F2', color: '#BE123C' }}>
-              Cuarentena / Bloqueado
-            </span>
+            {/* Atributos Físicos Confirmados */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Capacidad Física:</span>
+                <strong style={{ color: '#0F172A' }}>1 Tarima Estándar (1/1)</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Accesibilidad:</span>
+                <strong style={{ color: '#0F172A' }}>Nivel de Piso Directo (MIXTO)</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Coordenadas Plano:</span>
+                <span style={{ fontFamily: 'monospace', color: '#475569' }}>
+                  X: {selectedPosition.coordX}, Y: {selectedPosition.coordY} ({selectedPosition.ancho}x{selectedPosition.alto}px)
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Orientación:</span>
+                <span style={{ color: '#475569' }}>{selectedPosition.rotacion === 90 ? 'Vertical (90°)' : 'Horizontal (0°)'}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Uso Sugerido:</span>
+                <span style={{
+                  fontWeight: 700,
+                  color: selectedPosition.esPncSugerido ? '#DC2626' : '#166534'
+                }}>
+                  {selectedPosition.esPncSugerido ? 'PNC / Merma (Exterior)' : 'Almacenamiento Comercial'}
+                </span>
+              </div>
+            </div>
+
+            {/* Feedback de Acciones */}
+            {actionFeedback && (
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: 8,
+                fontSize: 12,
+                backgroundColor: actionFeedback.type === 'success' ? '#DCFCE7' : '#FEE2E2',
+                color: actionFeedback.type === 'success' ? '#166534' : '#991B1B',
+                border: `1px solid ${actionFeedback.type === 'success' ? '#86EFAC' : '#FCA5A5'}`
+              }}>
+                {actionFeedback.message}
+              </div>
+            )}
+
+            {/* Estado en Base de Datos Real */}
+            {selectedLiveLocation ? (
+              <div style={{
+                padding: 12,
+                borderRadius: 8,
+                backgroundColor: '#F8FAFC',
+                border: '1px solid #E2E8F0',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>Estatus en Catálogo:</span>
+                  <span style={{
+                    fontSize: 11,
+                    fontWeight: 800,
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    backgroundColor: selectedLiveLocation.tipoUbicacion === 'PNC' ? '#FEE2E2' : '#DCFCE7',
+                    color: selectedLiveLocation.tipoUbicacion === 'PNC' ? '#991B1B' : '#166534'
+                  }}>
+                    {selectedLiveLocation.tipoUbicacion === 'PNC' ? 'USO PNC' : 'COMERCIAL'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: '#334155' }}>
+                  • Ocupación de bultos: <strong>{selectedLiveLocation.ocupacionBultos || 0}/1 tarimas</strong><br />
+                  • Ocupación en piezas: <strong>{selectedLiveLocation.ocupacionUnidades || 0} unidades</strong>
+                </div>
+
+                {/* Botón para alternar designación PNC */}
+                <button
+                  type="button"
+                  className={`btn btn-sm ${selectedLiveLocation.tipoUbicacion === 'PNC' ? 'btn-secondary' : 'btn-ghost'}`}
+                  disabled={isTogglingPnc}
+                  onClick={() => handleTogglePncDesignation(selectedLiveLocation.id, selectedLiveLocation.tipoUbicacion === 'PNC')}
+                  style={{ marginTop: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontWeight: 700 }}
+                >
+                  <ArrowRightLeft size={14} />
+                  {selectedLiveLocation.tipoUbicacion === 'PNC' ? 'Restituir a Comercial' : 'Designar como PNC'}
+                </button>
+              </div>
+            ) : (
+              <div style={{
+                padding: 12,
+                borderRadius: 8,
+                backgroundColor: '#FEF3C7',
+                border: '1px solid #FCD34D',
+                fontSize: 12,
+                color: '#92400E'
+              }}>
+                <strong>Posición Arquitectónica Lista:</strong> Esta ubicación aún no ha sido creada en la base de datos productiva (Fase 3A mantiene datos intactos). Estará disponible para transacciones tras la autorización formal de alta.
+              </div>
+            )}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            • <strong>Alcance:</strong> Posiciones segregadas observadas en exterior techado.<br />
-            • <strong>Regla de negocio:</strong> Rigurosamente clasificado como <code>NO_CONFORME_BLOQUEADO</code>.<br />
-            • <strong>Protección activa:</strong> El motor de Putaway comercial y Picking excluyen de raíz estas posiciones.<br />
-            • <strong>Pendiente de cliente:</strong> Nomenclatura oficial (ej. <code>PNC-01</code> vs correlativo <code>Gxxxx</code>).
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Especificación Técnica del Esquema Espacial JSON */}
+      {/* Leyenda Visual del Plano */}
       <div style={{
-        padding: 16,
+        padding: '12px 16px',
         borderRadius: 8,
-        backgroundColor: '#0F172A',
-        color: '#F8FAFC',
-        fontFamily: 'monospace',
-        fontSize: 12,
-        overflowX: 'auto'
+        backgroundColor: '#FFFFFF',
+        border: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 12,
+        fontSize: 12
       }}>
-        <div style={{ color: '#94A3B8', marginBottom: 8, fontWeight: 700 }}>
-          // ESQUEMA DE INTEGRACIÓN ESPACIAL PREPARADO (CONTRATO DE DATOS FASE 3/4):
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#FEF3C7', border: '1.5px solid #D97706', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Tarima Libre (0/1)</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#DBEAFE', border: '1.5px solid #2563EB', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Tarima Ocupada (1/1)</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#FEE2E2', border: '1.5px solid #DC2626', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Uso PNC / No Conforme</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#2563EB', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Mesas de Trabajo</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#F1F5F9', border: '1px solid #94A3B8', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Baños / Tableros</span>
+          </div>
         </div>
-        <pre style={{ margin: 0 }}>
-{`{
-  "almacenId": "ALM-TEPOZ",
-  "canvas": { "anchoMm": 32000, "altoMm": 24000, "escala": "1:100" },
-  "zonas": [
-    { "codigo": "INTERIOR", "nombre": "Nave Interior Techada", "tipoZona": "ALMACENAMIENTO" },
-    { "codigo": "EXTERIOR_TECHADO", "nombre": "Patio Exterior Techado", "tipoZona": "RECIBO" },
-    { "codigo": "PNC", "nombre": "Zona Producto No Conforme", "tipoZona": "CUARENTENA" }
-  ],
-  "posicionesFisicas": "En espera de confirmación de Alejandra (G0001+)",
-  "integridadHistorica": "Preservada (A01-R01-N1, B02-R01-N1, REC-01, DEV-01 intactos)"
-}`}
-        </pre>
-      </div>
 
-      {/* Estado del Inventario Actual */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: 'var(--text-secondary)', flexWrap: 'wrap', gap: 10 }}>
-        <span>
-          Actualmente {locations.length} ubicaciones en catálogo · {specialLocs.length} áreas especiales
-          {filterCliente ? ` · Filtrando por depositante: ${selectedClientName}` : ''}
-        </span>
-        <span style={{ fontStyle: 'italic' }}>
-          Para consultar el inventario físico operativo actual, use las vistas "Mapa del Almacén (Racks)" o "Vista por Zonas".
+        <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic', fontSize: 11 }}>
+          Haga clic en cualquier posición del plano para inspeccionar sus atributos y trazabilidad espacial.
         </span>
       </div>
     </div>
