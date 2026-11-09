@@ -4,6 +4,45 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.24] — 2026-11-09 (Transición a Operación Real y Activación de Layout Físico — Fase 3B)
+
+### 🚀 Cutover DEMO $\rightarrow$ Operación Real y Vista Principal del Almacén Físico
+
+Esta versión oficializa el corte operativo de datos de prueba hacia la operación real del almacén, dando de alta las 45 posiciones físicas oficiales de tarima en piso, activando el Plano Físico 2D interactivo como la vista operativa predeterminada del WMS, y archivando las 48 celdas de estantería anteriores exclusivamente para fines de trazabilidad y auditoría.
+
+### Transición y Corte de Datos
+- **Cutover DEMO $\rightarrow$ Operación Real Completado:**
+  - Ejecución transaccional atómica certificada que eliminó de forma limpia los registros generados durante el periodo de desarrollo/pruebas.
+  - Generación de respaldos transaccionales certificados (`SQL dump` y `JSON` determinista) con checksum SHA-256 verificado.
+  - Preservación íntegra de datos maestros, catálogo estructural de clientes y zonas, y 6 áreas especiales de maniobra activas (`REC-01`, `REC-02`, `STG-01`, `STG-02`, `DEV-01`, `NC-EXCESO-01`).
+  - **Preservación de Aviso de Recibo Real:** Se protegió de forma absoluta la recepción `REC-2026-0019` de `CELERA SA DE CV` (Alejandra Casamayor), preservando su UUID original (`3b5fca37-4f79-4c96-8500-a5ff3b5f000f`), estado `PENDIENTE_ARRIBO` y partida de 18 piezas.
+
+### Base de Datos y Layout Operativo (Fase 3B-A)
+- **Alta de 45 Posiciones Físicas Reales (`G0001`–`G0045`):**
+  - Creación física en base de datos con `activo = true`, `estado = LIBRE` y 0 saldo inicial en inventario.
+  - Distribución arquitectónica oficial: 35 posiciones en `Área Interior` (`G0001`–`G0035`) y 10 posiciones en `Exterior Techado` (`G0036`–`G0045`).
+  - Capacidad física canónica estricta: exactamente **1 tarima por posición** (`capacidadBultos = 1`).
+  - Designación operativa inicial de 3 posiciones para Producto No Conforme / Merma (`G0036`, `G0041`, `G0042`) en Exterior Techado, con mutabilidad bidireccional Comercial $\leftrightarrow$ PNC protegida por RBAC y auditoría.
+- **Inactivación de Racks Históricos (`Axx/Bxx`):**
+  - Las 48 celdas de estantería del modelo previo quedaron formalmente inactivadas (`activo = false`, `estado = LIBRE`).
+  - Excluidas en un 100% de los motores de alojamiento (Putaway), surtido (Picking) y consultas de disponibilidad operativa.
+
+### Frontend e Interfaz Operativa (Fase 3B-B)
+- **Plano Físico 2D como Vista Predeterminada en `/locations`:**
+  - Renderizado espacial a escala de las 45 tarimas en piso distribuidas fielmente según el plano arquitectónico.
+  - Indicadores en tiempo real de ocupación física 1/1, estados operativos (`COMERCIAL` vs. `USO PNC`), UUIDs reales en base de datos y detalle de posición.
+- **Aislamiento Estricto de Dataset Histórico:**
+  - Pestaña de consulta *“Histórico — Racks anteriores”* alimentada exclusivamente por las 48 celdas `Axx/Bxx` inactivas con badges `HISTÓRICO` e `INACTIVO`.
+  - Exclusión matemática de posiciones `G0001`–`G0045` y áreas especiales del tab histórico (0 posiciones G en histórico).
+- **Aislamiento de Búsqueda por Vista e Invarianza de Cabecera:**
+  - Estados de búsqueda independientes por pestaña (`spatial`, `operational`, `layout`), evitando contaminación cruzada entre el plano 2D y el histórico.
+  - El encabezado global reporta de forma fija e invariable las **6 áreas especiales de maniobra** estructurales del almacén.
+- **KPIs Operativos y Componentes WMS:**
+  - Barra de estadísticas contextuales sincronizada con la capacidad física real (45 posiciones, ocupación 1/1, libres comerciales y vacías PNC).
+  - Componente `LocationSelect` actualizado para priorizar posiciones oficiales en piso (`+1000`) y penalizar estiba conforme en PNC (`-4000`).
+
+---
+
 ## [1.9.23] — 2026-11-07 (Adaptación al Almacén Físico Real — Fase 3A y Auditoría de Corte Pre-3B)
 
 ### 🏢 Layout Canónico Real (G0001–G0045), Regla 1 Tarima y Blindaje Comercial / PNC
