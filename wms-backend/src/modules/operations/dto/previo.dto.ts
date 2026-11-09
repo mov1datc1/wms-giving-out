@@ -529,6 +529,25 @@ export class RampaArriboDto {
   andenAsignado?: string;
 
   @ApiPropertyOptional({
+    description: 'Estado de los sellos o precintos de seguridad del transporte',
+    enum: ['INTACTO', 'ROTO', 'NO_APLICA'],
+    example: 'INTACTO',
+  })
+  estadoSello?: 'INTACTO' | 'ROTO' | 'NO_APLICA';
+
+  @ApiPropertyOptional({
+    description: 'Indicador de sellos intactos (true si INTACTO, false si ROTO o NO_APLICA)',
+    example: true,
+  })
+  sellosIntactos?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Folio o número de precinto de seguridad del transporte',
+    example: 'MX-448102',
+  })
+  numeroSello?: string;
+
+  @ApiPropertyOptional({
     description: 'Línea de transporte o fletera',
     example: 'TRANSPORTES CASTORES S.A. DE C.V.',
   })

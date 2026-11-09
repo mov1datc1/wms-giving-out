@@ -312,13 +312,27 @@ export class OperationsController {
     if ((!body.nombreChofer || !body.nombreChofer.trim()) && !receipt.nombreChofer) {
       throw new HttpException('El nombre del chofer de la unidad es obligatorio para emitir el acta de rampa.', HttpStatus.BAD_REQUEST);
     }
+    if ((!body.andenAsignado || !body.andenAsignado.trim()) && !receipt.andenAsignado) {
+      throw new HttpException('El andén de descarga asignado es obligatorio para emitir el acta de rampa.', HttpStatus.BAD_REQUEST);
+    }
+    if ((!body.nombreReceptor || !body.nombreReceptor.trim()) && !receipt.nombreReceptor) {
+      throw new HttpException('El nombre del responsable de recibo en andén es obligatorio para emitir el acta de rampa.', HttpStatus.BAD_REQUEST);
+    }
+
+    // Normalización explícita y trazable de sellos de seguridad
+    const estadoSello = body.estadoSello || (body.sellosIntactos === true ? 'INTACTO' : (body.sellosIntactos === false ? 'ROTO' : 'INTACTO'));
+    const sellosIntactos = body.sellosIntactos !== undefined ? Boolean(body.sellosIntactos) : estadoSello === 'INTACTO';
+
+    if (estadoSello === 'ROTO' && (!body.observacionesRampa || body.observacionesRampa.trim().length < 5)) {
+      throw new HttpException('Al registrar el sello como Roto o Alterado, es obligatorio detallar las observaciones de la anomalía en rampa (mínimo 5 caracteres).', HttpStatus.BAD_REQUEST);
+    }
 
     const diferenciaBultos = bultosRecibidos - bultosDeclarados;
     const now = new Date();
     const usuario = body.usuario || body.nombreReceptor || 'Supervisor Andén';
 
-    // Rótulo legal de la firma del chofer: No usar "a conformidad" si hay reservas o discrepancias
-    const tieneReservas = diferenciaBultos !== 0 || bultosDanados > 0;
+    // Rótulo legal de la firma del chofer: No usar "a conformidad" si hay reservas, daños o sello roto
+    const tieneReservas = diferenciaBultos !== 0 || bultosDanados > 0 || estadoSello === 'ROTO';
     const leyendaFirmaChofer = tieneReservas
       ? 'Entregó con reservas y discrepancias asentadas'
       : 'Entregó carga conforme (revisión exterior)';
@@ -360,11 +374,17 @@ export class OperationsController {
           placa: body.placa,
           nombreChofer: body.nombreChofer,
           lineaTransporte: body.lineaTransporte,
+          estadoSello,
+          sellosIntactos,
+          numeroSello: body.numeroSello || null,
         },
       });
       await this.audit(usuario, 'CORRECCION_ACTA_RAMPA', 'Receipt', receiptId, `Acta de rampa rectificada: ${body.motivoCorreccion || 'Sin motivo'}`);
     } else {
-      await this.audit(usuario, 'ACTA_RAMPA_LIBERACION_CHOFER', 'Receipt', receiptId, `Chofer liberado. Bultos: ${bultosRecibidos}/${bultosDeclarados} (Daño: ${bultosDanados}, Dif: ${diferenciaBultos})`);
+      await this.audit(usuario, 'ACTA_RAMPA_LIBERACION_CHOFER', 'Receipt', receiptId, `Chofer liberado. Bultos: ${bultosRecibidos}/${bultosDeclarados} (Daño: ${bultosDanados}, Dif: ${diferenciaBultos}). Sello: ${estadoSello}${body.numeroSello ? ` #${body.numeroSello}` : ''}`);
+      if (estadoSello === 'ROTO') {
+        await this.audit(usuario, 'INCIDENCIA_SELLO_RAMPA', 'Receipt', receiptId, `Incidencia en rampa: Sello roto o alterado (${body.numeroSello || 'S/N'}). Observaciones: ${body.observacionesRampa}`);
+      }
     }
 
     const updated = await this.prisma.receipt.update({
@@ -413,12 +433,18 @@ export class OperationsController {
           unidad: updated.capacidadCarga || 'Camión',
           folio: updated.folioTransporte || updated.codigo,
           anden: updated.andenAsignado || 'Andén 01',
+          estadoSello,
+          sellosIntactos,
+          numeroSello: body.numeroSello || null,
         },
         conteoExterior: {
           declarados: bultosDeclarados,
           recibidos: bultosRecibidos,
           danadosVisibles: bultosDanados,
           diferencia: diferenciaBultos,
+          estadoSello,
+          sellosIntactos,
+          numeroSello: body.numeroSello || null,
           estadoCarga: tieneReservas ? 'CON_RESERVAS' : 'CONFORME_EXTERIOR',
           observaciones: updated.observacionesRampa || 'Sin observaciones de empaque',
         },
@@ -460,7 +486,20 @@ export class OperationsController {
     const diferencia = receipt.diferenciaBultos !== null && receipt.diferenciaBultos !== undefined
       ? receipt.diferenciaBultos
       : (recibidos - declarados);
-    const tieneReservas = diferencia !== 0 || danados > 0;
+    // Detección trazable de sello a partir de historial u observaciones
+    let estadoSello: 'INTACTO' | 'ROTO' | 'NO_APLICA' = 'INTACTO';
+    let numeroSello: string | null = null;
+    if (receipt.observacionesRampa) {
+      const match = receipt.observacionesRampa.match(/\[SELLO:\s*([A-Z_]+)(?:\s*#([A-Za-z0-9_-]+))?\]/);
+      if (match) {
+        if (['INTACTO', 'ROTO', 'NO_APLICA'].includes(match[1])) {
+          estadoSello = match[1] as any;
+        }
+        if (match[2]) numeroSello = match[2];
+      }
+    }
+    const sellosIntactos = estadoSello === 'INTACTO';
+    const tieneReservas = diferencia !== 0 || danados > 0 || estadoSello === 'ROTO';
     const leyendaFirmaChofer = tieneReservas
       ? 'Entregó con reservas y discrepancias asentadas'
       : 'Entregó carga conforme (revisión exterior)';
@@ -483,6 +522,9 @@ export class OperationsController {
       folioTransporte: receipt.folioTransporte || receipt.codigo,
       anden: receipt.andenAsignado || 'Rampa 1',
       andenAsignado: receipt.andenAsignado || 'Rampa 1',
+      estadoSello,
+      sellosIntactos,
+      numeroSello,
     };
 
     const conteoObj = {
@@ -494,6 +536,9 @@ export class OperationsController {
       bultosDanados: danados,
       diferencia,
       diferenciaBultos: diferencia,
+      estadoSello,
+      sellosIntactos,
+      numeroSello,
       estadoCarga: tieneReservas ? 'CON_RESERVAS' : 'CONFORME_EXTERIOR',
       tieneReservas,
       tieneDiscrepancias: tieneReservas,
