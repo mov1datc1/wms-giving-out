@@ -46,7 +46,8 @@ interface ScoredLocation {
   score: number;
   reasons: string[];
   isRecommended: boolean;
-  zoneType: 'TEXTIL' | 'ALIMENTOS' | 'CUARENTENA' | 'GENERAL';
+  zoneType: 'INTERIOR' | 'EXTERIOR_TECHADO' | 'TEXTIL' | 'ALIMENTOS' | 'CUARENTENA' | 'GENERAL';
+  isPncLoc?: boolean;
 }
 
 export function LocationSelect({
@@ -91,9 +92,18 @@ export function LocationSelect({
         (loc.tipoUbicacion === 'PISO' && (loc as any).esAlmacenable !== false) ||
         (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
 
+      const isPncLoc =
+        loc.tipoUbicacion === 'PNC' ||
+        (loc as any).categoriaUbicacion === 'VIRTUAL_NO_CONFORME' ||
+        ['G0036', 'G0041', 'G0042'].includes(loc.codigo?.toUpperCase());
+
       // Determinar tipo de zona canónica desde Zone (Desacoplado de strings rígidos de pasillo)
-      let zoneType: 'TEXTIL' | 'ALIMENTOS' | 'CUARENTENA' | 'GENERAL' = 'GENERAL';
-      if (zoneCode.includes('ALM-A') || zoneName.includes('TEXTIL') || zoneName.includes('ROPA')) {
+      let zoneType: 'INTERIOR' | 'EXTERIOR_TECHADO' | 'TEXTIL' | 'ALIMENTOS' | 'CUARENTENA' | 'GENERAL' = 'GENERAL';
+      if (zoneCode === 'INTERIOR' || zoneName.includes('INTERIOR')) {
+        zoneType = 'INTERIOR';
+      } else if (zoneCode === 'EXTERIOR_TECHADO' || zoneName.includes('EXTERIOR')) {
+        zoneType = 'EXTERIOR_TECHADO';
+      } else if (zoneCode.includes('ALM-A') || zoneName.includes('TEXTIL') || zoneName.includes('ROPA')) {
         zoneType = 'TEXTIL';
       } else if (zoneCode.includes('ALM-B') || zoneName.includes('ALIMENTO') || zoneName.includes('COMIDA')) {
         zoneType = 'ALIMENTOS';
@@ -110,6 +120,18 @@ export function LocationSelect({
 
       if (isConforme) {
         // === CASO 1: ZONA CONFORME (LIBERADO) ===
+        // Penalizar fuertemente si la posición está designada para PNC
+        if (isPncLoc) {
+          score -= 4000;
+          reasons.push('Posición designada para PNC');
+        }
+
+        // Posición física oficial en piso (G0001–G0045)
+        if (isFloorPallet && !isPncLoc) {
+          score += 1000;
+          reasons.push('Posición oficial de tarima en piso');
+        }
+
         // 1.1 Zona asignada al cliente o giro de negocio
         const isRopa = sku?.categoria === 'PRENDA' || client?.giro === 'ROPA';
         const isComida = sku?.categoria === 'ALIMENTO' || client?.giro === 'COMIDA';
@@ -196,10 +218,12 @@ export function LocationSelect({
 
       } else {
         // === CASO 2: ZONA NO CONFORME (CUARENTENA / DAÑADO) ===
-        if (
+        if (isPncLoc) {
+          score += 3500;
+          reasons.push('Posición oficial designada para PNC');
+        } else if (
           zoneType === 'CUARENTENA' ||
           loc.tipoUbicacion === 'CUARENTENA' ||
-          loc.tipoUbicacion === 'PNC' ||
           loc.codigo.startsWith('DEV') ||
           loc.codigo.startsWith('NC') ||
           (loc.codigo.includes('PNC') && !loc.codigo.startsWith('G'))
@@ -223,7 +247,8 @@ export function LocationSelect({
         score,
         reasons,
         isRecommended: false,
-        zoneType
+        zoneType,
+        isPncLoc
       };
     }).sort((a, b) => b.score - a.score);
   }, [locations, sku, client, isConforme, quantity]);
@@ -293,9 +318,12 @@ export function LocationSelect({
       if (filterTab === 'ZONE') {
         if (isConforme) {
           const isRopa = sku?.categoria === 'PRENDA' || client?.giro === 'ROPA';
+          if (item.zoneType === 'INTERIOR' || item.zoneType === 'EXTERIOR_TECHADO') {
+            return !item.isPncLoc;
+          }
           return isRopa ? item.zoneType === 'TEXTIL' : item.zoneType === 'ALIMENTOS';
         }
-        return item.zoneType === 'CUARENTENA';
+        return item.zoneType === 'CUARENTENA' || item.isPncLoc;
       }
       if (filterTab === 'FREE') {
         return (loc.ocupacion || 0) === 0;
@@ -305,8 +333,15 @@ export function LocationSelect({
   }, [rankedList, searchTerm, filterTab, isConforme, sku, client]);
 
   // Color de badge de zona
-  const getZoneBadgeStyle = (zoneType: string) => {
+  const getZoneBadgeStyle = (zoneType: string, isPnc?: boolean) => {
+    if (isPnc) {
+      return { bg: 'rgba(239, 68, 68, 0.12)', border: 'rgba(239, 68, 68, 0.35)', text: '#dc2626', label: 'PNC / Retención' };
+    }
     switch (zoneType) {
+      case 'INTERIOR':
+        return { bg: 'rgba(37, 99, 235, 0.1)', border: 'rgba(37, 99, 235, 0.3)', text: '#1e40af', label: 'Área Interior' };
+      case 'EXTERIOR_TECHADO':
+        return { bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)', text: '#065f46', label: 'Ext. Techado' };
       case 'TEXTIL':
         return { bg: 'rgba(124, 58, 237, 0.1)', border: 'rgba(124, 58, 237, 0.3)', text: '#7c3aed', label: 'ALM-A Textil' };
       case 'ALIMENTOS':
@@ -314,7 +349,7 @@ export function LocationSelect({
       case 'CUARENTENA':
         return { bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.3)', text: '#d97706', label: 'DEV Cuarentena' };
       default:
-        return { bg: 'rgba(37, 99, 235, 0.1)', border: 'rgba(37, 99, 235, 0.3)', text: '#2563eb', label: 'General' };
+        return { bg: 'rgba(100, 116, 139, 0.1)', border: 'rgba(100, 116, 139, 0.3)', text: '#334155', label: 'General' };
     }
   };
 
@@ -393,24 +428,28 @@ export function LocationSelect({
                     fontWeight: 600,
                     padding: '2px 6px',
                     borderRadius: 4,
-                    background: getZoneBadgeStyle(selectedScored.zoneType).bg,
-                    color: getZoneBadgeStyle(selectedScored.zoneType).text,
-                    border: `1px solid ${getZoneBadgeStyle(selectedScored.zoneType).border}`
+                    background: getZoneBadgeStyle(selectedScored.zoneType, selectedScored.isPncLoc).bg,
+                    color: getZoneBadgeStyle(selectedScored.zoneType, selectedScored.isPncLoc).text,
+                    border: `1px solid ${getZoneBadgeStyle(selectedScored.zoneType, selectedScored.isPncLoc).border}`
                   }}>
-                    {getZoneBadgeStyle(selectedScored.zoneType).label}
+                    {getZoneBadgeStyle(selectedScored.zoneType, selectedScored.isPncLoc).label}
                   </span>
                 )}
 
                 {/* Nivel / Tipo */}
                 <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  {selectedObj.pasillo ? `Pasillo ${selectedObj.pasillo} • Nivel ${selectedObj.nivel}` : 'Posición en Piso (Cap: 1 tarima)'}
+                  {selectedObj.codigo.startsWith('G') || selectedObj.pasillo === 'PISO'
+                    ? `Posición en Piso (Cap: 1 tarima) • ${selectedObj.zona?.nombre || 'Almacén'}`
+                    : `Pasillo ${selectedObj.pasillo} • Nivel ${selectedObj.nivel}`}
                 </span>
               </div>
 
               {/* Barra de ocupación y razón */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, fontSize: 11, color: 'var(--text-tertiary)' }}>
                 <span style={{ fontWeight: 500, color: (selectedObj.ocupacion || 0) === 0 ? 'var(--emerald)' : 'var(--text-secondary)' }}>
-                  {(selectedObj.ocupacion || 0) === 0 ? '100% Libre' : `Ocupación: ${selectedObj.ocupacion}/${selectedObj.capacidadUnits || 50} uds`}
+                  {selectedObj.codigo.startsWith('G') || selectedObj.pasillo === 'PISO'
+                    ? (selectedObj.ocupacion || 0) === 0 ? '100% Libre (0/1 tarimas)' : 'Ocupada (1/1 tarimas)'
+                    : (selectedObj.ocupacion || 0) === 0 ? '100% Libre' : `Ocupación: ${selectedObj.ocupacion}/${selectedObj.capacidadUnits || 50} uds`}
                 </span>
                 {selectedScored?.reasons && selectedScored.reasons.length > 0 && (
                   <span style={{ color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -525,9 +564,10 @@ export function LocationSelect({
                 No se encontraron ubicaciones con ese criterio.
               </div>
             ) : (
-              filteredOptions.map(({ location: loc, score, reasons, isRecommended, zoneType }) => {
+              filteredOptions.map(({ location: loc, score, reasons, isRecommended, zoneType, isPncLoc }) => {
                 const isSelected = loc.id === value;
-                const badgeInfo = getZoneBadgeStyle(zoneType);
+                const badgeInfo = getZoneBadgeStyle(zoneType, isPncLoc);
+                const isFloorPallet = loc.codigo?.startsWith('G') || loc.pasillo === 'PISO';
                 const ocupacion = loc.ocupacion || 0;
                 const capacidad = loc.capacidadUnits || 50;
                 const pct = Math.round((ocupacion / capacidad) * 100);
@@ -597,8 +637,8 @@ export function LocationSelect({
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3, fontSize: 11, color: 'var(--text-tertiary)' }}>
-                        <span>{loc.pasillo ? `Pasillo ${loc.pasillo} • Rack ${loc.rack} • Nivel ${loc.nivel}` : 'Posición de Piso (1 tarima)'}</span>
-                        <span>• Capacidad: {loc.pasillo ? `${ocupacion}/${capacidad} uds (${100 - pct}% libre)` : (ocupacion > 0 ? '1/1 tarimas ocupada' : 'Libre')}</span>
+                        <span>{isFloorPallet ? `Posición en Piso (Cap: 1 tarima) • ${loc.zona?.nombre || 'Almacén'}` : `Pasillo ${loc.pasillo} • Rack ${loc.rack} • Nivel ${loc.nivel}`}</span>
+                        <span>• {isFloorPallet ? (ocupacion > 0 ? '1/1 tarimas ocupada' : 'Libre (1 tarima)') : `Capacidad: ${ocupacion}/${capacidad} uds (${100 - pct}% libre)`}</span>
                       </div>
 
                       {reasons.length > 0 && (
