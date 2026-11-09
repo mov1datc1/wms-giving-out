@@ -56,15 +56,19 @@ export interface RankedLocationCandidate {
   rack: string;
   nivel: string;
   tipoNivel: 'PICKING' | 'RESERVA' | 'MIXTO';
+  tipoUbicacion?: string;
+  isFloorPallet?: boolean;
   zonaNombre: string;
   score: number;
-  capacidadDisponibleUnidades: number;
+  capacidadLibre?: number | null;
+  capacidadDisponibleUnidades?: number | null;
   capacidadDisponibleBultos: number | null;
   capacidadBultosEstado: 'CONFIGURADA' | 'NO_CONFIGURADA';
+  capacidadTexto?: string;
   ocupacionUnidadesActual: number;
   ocupacionBultosActual: number;
   unidadesDespuesDeAlojar: number;
-  capacidadRestanteDespues: number;
+  capacidadRestanteDespues?: number | null;
   bultosDespuesDeAlojar: number;
   capacidadBultosRestanteDespues: number | null;
   razonesFavorables: string[];
@@ -122,7 +126,7 @@ export interface DiscardDiagnostics {
 
 @Injectable()
 export class PutawayEngineService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   /**
    * Clasifica una ubicación según su rol operativo físico vs especial/transitorio
@@ -385,8 +389,8 @@ export class PutawayEngineService {
       const capBultos: number | null = isFloorPallet
         ? 1
         : hasConfiguredCapBultos
-        ? (loc as any).capacidadBultos
-        : null;
+          ? (loc as any).capacidadBultos
+          : null;
       const capacidadBultosEstado: 'CONFIGURADA' | 'NO_CONFIGURADA' = hasConfiguredCapBultos
         ? 'CONFIGURADA'
         : 'NO_CONFIGURADA';
@@ -769,8 +773,8 @@ export class PutawayEngineService {
 
       const hasOtherSkuInLoc = Boolean(
         item?.skuCodigo &&
-          loc.skusPresentes.length > 0 &&
-          !loc.skusPresentes.includes(item.skuCodigo),
+        loc.skusPresentes.length > 0 &&
+        !loc.skusPresentes.includes(item.skuCodigo),
       );
       if (isSingleSkuEnforced && hasOtherSkuInLoc) {
         discardedProductIncompatibility++;
@@ -993,6 +997,11 @@ export class PutawayEngineService {
       // =======================================================================
       // 5. ESPACIO FÍSICO Y CAPACIDAD DESPUÉS DE ALOJAR (Regla 3)
       // =======================================================================
+      const isFloorPallet =
+        loc.tipoUbicacion === 'TARIMA_PISO' ||
+        (loc.tipoUbicacion === 'PISO' && loc.esAlmacenable) ||
+        (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
       const unidadesDespues = loc.ocupacionUnidades + item.cantidad;
       const capacidadRestanteDespues = Math.max(0, loc.capacidadUnits - unidadesDespues);
       const bultosDespues = loc.ocupacionBultos + 1;
@@ -1007,11 +1016,18 @@ export class PutawayEngineService {
         ? ` y ${capBultosRestanteDespues} bultos disponibles`
         : ` · Actualmente: ${formatBultosAlojad(loc.ocupacionBultos)} (después del acomodo: ${formatBultosAlojad(bultosDespues)} · límite no configurado)`;
 
-      razonesFavorables.push(
-        `Espacio verificado: Capacidad para alojar ${item.cantidad} piezas (quedarán ${capacidadRestanteDespues} pzas${bultosTexto})`,
-      );
+      if (isFloorPallet) {
+        const estadoOcupacionTexto = loc.ocupacionBultos === 0 ? '0/1 tarimas ocupadas (Libre)' : `${loc.ocupacionBultos}/1 tarimas ocupadas`;
+        razonesFavorables.push(
+          `Posición física en piso: Capacidad disponible 1 tarima (${estadoOcupacionTexto}) · 1/1 tarimas tras acomodo`,
+        );
+      } else {
+        razonesFavorables.push(
+          `Espacio verificado: Capacidad para alojar ${item.cantidad} piezas (quedarán ${capacidadRestanteDespues} pzas${bultosTexto})`,
+        );
+      }
 
-      if (capacidadRestanteDespues >= 10 && (!hasCapBultos || (capBultosRestanteDespues ?? 0) >= 1)) {
+      if (isFloorPallet ? (capBultosRestanteDespues ?? 1) >= 0 : (capacidadRestanteDespues >= 10 && (!hasCapBultos || (capBultosRestanteDespues ?? 0) >= 1))) {
         score += 5;
       }
 
@@ -1026,16 +1042,21 @@ export class PutawayEngineService {
         rack: loc.rack,
         nivel: loc.nivel,
         tipoNivel: loc.tipoNivel,
+        tipoUbicacion: loc.tipoUbicacion,
+        isFloorPallet,
         zonaNombre: loc.zona?.nombre || loc.zona?.codigo || 'Almacenamiento General',
         score: normalizedScore,
         rawScore,
-        capacidadDisponibleUnidades: loc.capacidadDisponibleUnidades,
+        capacidadDisponibleUnidades: isFloorPallet ? null : loc.capacidadDisponibleUnidades,
         capacidadDisponibleBultos: loc.capacidadDisponibleBultos,
         capacidadBultosEstado: loc.capacidadBultosEstado,
+        capacidadTexto: isFloorPallet
+          ? (loc.ocupacionBultos >= 1 ? '1/1 tarimas ocupadas' : 'Capacidad disponible: 1 tarima')
+          : `${loc.capacidadDisponibleUnidades} pzas libres`,
         ocupacionUnidadesActual: loc.ocupacionUnidades,
         ocupacionBultosActual: loc.ocupacionBultos,
         unidadesDespuesDeAlojar: unidadesDespues,
-        capacidadRestanteDespues,
+        capacidadRestanteDespues: isFloorPallet ? null : capacidadRestanteDespues,
         bultosDespuesDeAlojar: bultosDespues,
         capacidadBultosRestanteDespues: capBultosRestanteDespues,
         razonesFavorables,
@@ -1070,6 +1091,7 @@ export class PutawayEngineService {
       include: {
         cliente: true,
         lineas: { include: { sku: true } },
+        inspecciones: true,
         handlingUnits: {
           where: { estadoHu: 'ACTIVO' },
           include: { lote: true },
@@ -1082,12 +1104,22 @@ export class PutawayEngineService {
       throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
     }
 
-    const canProceed = receipt.etiquetasEstado === 'COLOCADAS';
-    const lockMessage = !canProceed
-      ? receipt.etiquetasEstado === 'IMPRESAS'
+    const totalDanadaLineas = receipt.lineas?.reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0) || 0;
+    const hasDamagedUnits = (receipt.bultosDanados || 0) > 0 || totalDanadaLineas > 0;
+    const isQualityLiberated =
+      receipt.inspeccionCalidadEstado === 'COMPLETADA' ||
+      (receipt.inspecciones && receipt.inspecciones.length > 0) ||
+      (!hasDamagedUnits && (receipt.estado === 'CONCILIADO' || receipt.conteoAndenEstado === 'COMPLETADO'));
+
+    const canProceed = receipt.etiquetasEstado === 'COLOCADAS' && isQualityLiberated;
+    let lockMessage: string | null = null;
+    if (!isQualityLiberated) {
+      lockMessage = 'La recepción no cuenta con dictamen de calidad LIBERADO. Se requiere completar la verificación y liberación en andén antes de alojar en racks.';
+    } else if (receipt.etiquetasEstado !== 'COLOCADAS') {
+      lockMessage = receipt.etiquetasEstado === 'IMPRESAS'
         ? 'Las etiquetas Giving Out ya están impresas pero aún no se ha confirmado su pegado físico en las cajas/tarimas. Confirma la colocación antes de trasladar a racks.'
-        : 'Las etiquetas Giving Out aún no han sido impresas ni colocadas. Debe completarse la Fase 3 (Doble Etiquetado) antes de iniciar el alojamiento.'
-      : null;
+        : 'Las etiquetas Giving Out aún no han sido impresas ni colocadas. Debe completarse la Fase 3 (Doble Etiquetado) antes de iniciar el alojamiento.';
+    }
 
     // Obtener layout enriquecido con ocupación real de BD
     const allLocations = await this.getEnrichedWarehouseLayout();
@@ -1190,26 +1222,34 @@ export class PutawayEngineService {
           : [canonicalNoCandidateMsg, ...(diagnostics.motivoAgotamiento ? [diagnostics.motivoAgotamiento] : [])],
         suggestedLocation: topCandidate
           ? {
-              id: topCandidate.id,
-              codigo: topCandidate.codigo,
-              pasillo: topCandidate.pasillo,
-              rack: topCandidate.rack,
-              nivel: topCandidate.nivel,
-              tipoNivel: topCandidate.tipoNivel,
-              zonaNombre: topCandidate.zonaNombre,
-              score: topCandidate.score,
-              capacidadLibre: topCandidate.capacidadDisponibleUnidades,
-              capacidadDisponibleUnidades: topCandidate.capacidadDisponibleUnidades,
-              capacidadDisponibleBultos: topCandidate.capacidadDisponibleBultos,
-              ocupacionUnidadesActual: topCandidate.ocupacionUnidadesActual,
-              ocupacionBultosActual: topCandidate.ocupacionBultosActual,
-              unidadesDespuesDeAlojar: topCandidate.unidadesDespuesDeAlojar,
-              capacidadRestanteDespues: topCandidate.capacidadRestanteDespues,
-              bultosDespuesDeAlojar: topCandidate.bultosDespuesDeAlojar,
-              capacidadBultosRestanteDespues: topCandidate.capacidadBultosRestanteDespues,
-              razonesFavorables: topCandidate.razonesFavorables,
-              advertencias: topCandidate.advertencias,
-            }
+            id: topCandidate.id,
+            codigo: topCandidate.codigo,
+            pasillo: topCandidate.pasillo,
+            rack: topCandidate.rack,
+            nivel: topCandidate.nivel,
+            tipoNivel: topCandidate.tipoNivel,
+            tipoUbicacion: topCandidate.tipoUbicacion,
+            zonaNombre: topCandidate.zonaNombre,
+            score: topCandidate.score,
+            capacidadLibre: topCandidate.codigo?.toUpperCase().startsWith('G') || topCandidate.tipoUbicacion === 'TARIMA_PISO'
+              ? (topCandidate.capacidadDisponibleBultos ?? (topCandidate.ocupacionBultosActual >= 1 ? 0 : 1))
+              : topCandidate.capacidadDisponibleUnidades,
+            capacidadDisponibleUnidades: topCandidate.codigo?.toUpperCase().startsWith('G') || topCandidate.tipoUbicacion === 'TARIMA_PISO'
+              ? null
+              : topCandidate.capacidadDisponibleUnidades,
+            capacidadDisponibleBultos: topCandidate.capacidadDisponibleBultos,
+            capacidadTexto: topCandidate.capacidadTexto || (topCandidate.ocupacionBultosActual >= 1 ? '1/1 tarimas ocupadas' : 'Capacidad disponible: 1 tarima'),
+            ocupacionUnidadesActual: topCandidate.ocupacionUnidadesActual,
+            ocupacionBultosActual: topCandidate.ocupacionBultosActual,
+            unidadesDespuesDeAlojar: topCandidate.unidadesDespuesDeAlojar,
+            capacidadRestanteDespues: topCandidate.codigo?.toUpperCase().startsWith('G') || topCandidate.tipoUbicacion === 'TARIMA_PISO'
+              ? null
+              : topCandidate.capacidadRestanteDespues,
+            bultosDespuesDeAlojar: topCandidate.bultosDespuesDeAlojar,
+            capacidadBultosRestanteDespues: topCandidate.capacidadBultosRestanteDespues,
+            razonesFavorables: topCandidate.razonesFavorables,
+            advertencias: topCandidate.advertencias,
+          }
           : null,
         alternativeLocations: alternatives.map((alt) => ({
           id: alt.id,
@@ -1218,15 +1258,23 @@ export class PutawayEngineService {
           rack: alt.rack,
           nivel: alt.nivel,
           tipoNivel: alt.tipoNivel,
+          tipoUbicacion: alt.tipoUbicacion,
           zonaNombre: alt.zonaNombre,
           score: alt.score,
-          capacidadLibre: alt.capacidadDisponibleUnidades,
-          capacidadDisponibleUnidades: alt.capacidadDisponibleUnidades,
+          capacidadLibre: alt.codigo?.toUpperCase().startsWith('G') || alt.tipoUbicacion === 'TARIMA_PISO'
+            ? (alt.capacidadDisponibleBultos ?? (alt.ocupacionBultosActual >= 1 ? 0 : 1))
+            : alt.capacidadDisponibleUnidades,
+          capacidadDisponibleUnidades: alt.codigo?.toUpperCase().startsWith('G') || alt.tipoUbicacion === 'TARIMA_PISO'
+            ? null
+            : alt.capacidadDisponibleUnidades,
           capacidadDisponibleBultos: alt.capacidadDisponibleBultos,
+          capacidadTexto: alt.capacidadTexto || (alt.ocupacionBultosActual >= 1 ? '1/1 tarimas ocupadas' : 'Capacidad disponible: 1 tarima'),
           ocupacionUnidadesActual: alt.ocupacionUnidadesActual,
           ocupacionBultosActual: alt.ocupacionBultosActual,
           unidadesDespuesDeAlojar: alt.unidadesDespuesDeAlojar,
-          capacidadRestanteDespues: alt.capacidadRestanteDespues,
+          capacidadRestanteDespues: alt.codigo?.toUpperCase().startsWith('G') || alt.tipoUbicacion === 'TARIMA_PISO'
+            ? null
+            : alt.capacidadRestanteDespues,
           bultosDespuesDeAlojar: alt.bultosDespuesDeAlojar,
           capacidadBultosRestanteDespues: alt.capacidadBultosRestanteDespues,
           razonesFavorables: alt.razonesFavorables,
@@ -1333,8 +1381,8 @@ export class PutawayEngineService {
         const motivo = isDeadlock
           ? 'PostgreSQL Deadlock (40P01)'
           : isLockTimeout
-          ? 'PostgreSQL Lock Timeout (55P03)'
-          : (error?.message || 'Error transaccional');
+            ? 'PostgreSQL Lock Timeout (55P03)'
+            : (error?.message || 'Error transaccional');
 
         if ((isDeadlock || isLockTimeout) && attempt <= maxRetries) {
           const backoffMs = 50 * attempt + Math.floor(Math.random() * 50);

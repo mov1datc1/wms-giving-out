@@ -3221,6 +3221,58 @@ export class OperationsController {
         });
       }
 
+      // Verificación y registro formal de Calidad para producto conforme (Fase 3 / Calidad Canónica)
+      const totalPiezasEsperadas = receipt.lineas.reduce((s, l) => s + (l.cantidadEsperada || 0), 0);
+      const totalPiezasConformes = auditUpdates.reduce((s, a) => s + (a.totalConformes || 0), 0);
+      const totalPiezasMerma = auditUpdates.reduce((s, a) => s + (a.merma || 0), 0);
+      const isAllConforming = totalPiezasMerma === 0 && totalPiezasConformes >= totalPiezasEsperadas;
+
+      if (isAllConforming && (receipt.bultosDanados || 0) === 0) {
+        await tx.receipt.update({
+          where: { id: receipt.id },
+          data: {
+            inspeccionCalidadEstado: 'COMPLETADA',
+          },
+        });
+
+        const existingInsp = await tx.qualityInspection.findFirst({
+          where: { receiptId: receipt.id },
+        });
+
+        if (!existingInsp) {
+          const folioInsp = `DICTAMEN-${receipt.codigo}`;
+          const packSize = receipt.lineas[0]?.sku?.capacidadEmpaque || 1;
+          const totalCajasEst = receipt.bultosRecibidos || Math.ceil(totalPiezasConformes / packSize) || auditUpdates.length;
+
+          await tx.qualityInspection.create({
+            data: {
+              folio: folioInsp,
+              receiptId: receipt.id,
+              clienteId: receipt.clienteId,
+              inspectorNombre: usuario || 'Control de Calidad Andén',
+              estado: 'COMPLETADA',
+              totalCajasInspeccionadas: totalCajasEst,
+              totalPiezasInspeccionadas: totalPiezasConformes,
+              totalPiezasRescatadas: totalPiezasConformes,
+              totalPiezasMerma: 0,
+              totalCajasNuevasArmadas: 0,
+              observaciones: 'Liberación formal de calidad en andén: 100% de producto conforme verificado. Sin daño ni merma. Lote y fecha de caducidad vigentes. Aprobado para almacenamiento comercial.',
+              detallesJson: JSON.stringify(auditUpdates),
+              firmadoPor: usuario || 'Control de Calidad Andén',
+            },
+          });
+
+          await this.audit(
+            usuario,
+            'DICTAMEN_CALIDAD_LIBERADO',
+            'Receipt',
+            receipt.id,
+            `Dictamen formal de Calidad (${folioInsp}): 100% producto conforme (${totalPiezasConformes} pzas). Cero averías reportadas. Mercancía LIBERADA formalmente para Putaway comercial en layout.`,
+            tx,
+          );
+        }
+      }
+
       await this.audit(
         usuario,
         'CONCILIACION_ANDEN',
@@ -3739,6 +3791,20 @@ export class OperationsController {
     if (receipt.etiquetasEstado !== 'COLOCADAS') {
       throw new HttpException(
         'Candado de Fase 4: No se puede ubicar en racks mercancía sin etiquetas Giving Out confirmadas como COLOCADAS.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const totalDanadaLineas = receipt.lineas?.reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0) || 0;
+    const hasDamagedUnits = (receipt.bultosDanados || 0) > 0 || totalDanadaLineas > 0;
+    const isQualityLiberated =
+      receipt.inspeccionCalidadEstado === 'COMPLETADA' ||
+      (receipt.inspecciones && receipt.inspecciones.length > 0) ||
+      (!hasDamagedUnits && (receipt.estado === 'CONCILIADO' || receipt.conteoAndenEstado === 'COMPLETADO'));
+
+    if (!isQualityLiberated) {
+      throw new HttpException(
+        'Candado de Calidad: No se puede proceder a Putaway comercial sin un dictamen formal de calidad LIBERADO.',
         HttpStatus.BAD_REQUEST,
       );
     }

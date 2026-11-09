@@ -350,10 +350,13 @@ export function PutawayModal({
 
     if (suggested && suggested.codigo.toUpperCase() === query) {
       // Coincidencia exacta con sugerencia del algoritmo
+      const isFloor = Boolean(suggested.codigo?.toUpperCase().startsWith('G') || suggested.tipoUbicacion === 'TARIMA_PISO' || suggested.tipoNivel === 'MIXTO');
       setRackScanSuccess(true);
       setRackScanFeedback({
         status: 'MATCH',
-        message: `Coincidencia Exacta Verificada: ${suggested.codigo} (${suggested.zonaNombre}) · Capacidad libre: ${suggested.capacidadLibre} uds.`,
+        message: isFloor
+          ? `Coincidencia Exacta Verificada: ${suggested.codigo} (${suggested.zonaNombre}) · Capacidad disponible: 1 tarima`
+          : `Coincidencia Exacta Verificada: ${suggested.codigo} (${suggested.zonaNombre}) · Capacidad libre: ${suggested.capacidadLibre} uds.`,
         locationObj: suggested,
       });
       const key = currentBox.huId || currentBox.huCodigo;
@@ -365,10 +368,13 @@ export function PutawayModal({
         (alt: any) => alt.codigo.toUpperCase() === query
       );
       if (foundAlt) {
+        const isFloorAlt = Boolean(foundAlt.codigo?.toUpperCase().startsWith('G') || foundAlt.tipoUbicacion === 'TARIMA_PISO' || foundAlt.tipoNivel === 'MIXTO');
         setRackScanSuccess(true);
         setRackScanFeedback({
           status: 'ALTERNATIVE',
-          message: `Ubicación Alternativa Válida Verificada: ${foundAlt.codigo} (${foundAlt.zonaNombre}) · Capacidad libre: ${foundAlt.capacidadLibre} uds.`,
+          message: isFloorAlt
+            ? `Ubicación Alternativa Válida Verificada: ${foundAlt.codigo} (${foundAlt.zonaNombre}) · Capacidad disponible: 1 tarima`
+            : `Ubicación Alternativa Válida Verificada: ${foundAlt.codigo} (${foundAlt.zonaNombre}) · Capacidad libre: ${foundAlt.capacidadLibre} uds.`,
           locationObj: foundAlt,
         });
         const key = currentBox.huId || currentBox.huCodigo;
@@ -1927,56 +1933,87 @@ export function PutawayModal({
                                 </div>
 
                                 {/* Desglose detallado de piezas, ocupación y bultos */}
-                                <div
-                                  style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-                                    gap: 8,
-                                    fontSize: 11.5,
-                                  }}
-                                >
-                                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
-                                    <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Ocupación actual:</span>
-                                    <strong style={{ color: '#475569', fontSize: 13, display: 'block' }}>
-                                      {currentBox.suggestedLocation.ocupacionUnidadesActual ?? 0} piezas
-                                    </strong>
-                                    <span style={{ color: '#64748B', fontSize: 10.5 }}>
-                                      {(currentBox.suggestedLocation.ocupacionBultosActual ?? 0) === 1 ? '1 bulto alojado' : `${currentBox.suggestedLocation.ocupacionBultosActual ?? 0} bultos`} · {currentBox.suggestedLocation.capacidadLibre ?? currentBox.suggestedLocation.capacidadDisponibleUnidades ?? 0} pzas libres
-                                    </span>
-                                  </div>
+                                  {Boolean(currentBox.suggestedLocation.codigo?.startsWith('G') || currentBox.suggestedLocation.tipoUbicacion === 'TARIMA_PISO' || currentBox.suggestedLocation.tipoNivel === 'MIXTO') ? (
+                                    <div
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                                        gap: 8,
+                                        fontSize: 11.5,
+                                      }}
+                                    >
+                                      <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '8px 12px' }}>
+                                        <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Capacidad de Posición Física:</span>
+                                        <strong style={{ color: '#0F766E', fontSize: 13, display: 'block' }}>
+                                          1 Tarima Física
+                                        </strong>
+                                        <span style={{ color: (currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1 ? '#DC2626' : '#16A34A', fontSize: 10.5, fontWeight: 700 }}>
+                                          {(currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1 ? '1/1 tarimas ocupadas (Completa)' : '0/1 tarimas ocupadas (Libre)'}
+                                        </span>
+                                      </div>
 
-                                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
-                                    <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>HU por ingresar:</span>
-                                    <strong style={{ color: '#0284C7', fontSize: 13, display: 'block' }}>
-                                      {currentBox.cantidad} piezas
-                                    </strong>
-                                    <span style={{ color: '#64748B', fontSize: 10.5 }}>
-                                      1 bulto (caja individual)
-                                    </span>
-                                  </div>
+                                      <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '8px 12px' }}>
+                                        <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Capacidad Disponible:</span>
+                                        <strong style={{ color: '#0284C7', fontSize: 13, display: 'block' }}>
+                                          {(currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1 ? '0 tarimas' : 'Capacidad disponible: 1 tarima'}
+                                        </strong>
+                                        <span style={{ color: '#64748B', fontSize: 10.5 }}>
+                                          1/1 tarimas ocupadas tras acomodo
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                                        gap: 8,
+                                        fontSize: 11.5,
+                                      }}
+                                    >
+                                      <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
+                                        <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Ocupación actual:</span>
+                                        <strong style={{ color: '#475569', fontSize: 13, display: 'block' }}>
+                                          {currentBox.suggestedLocation.ocupacionUnidadesActual ?? 0} piezas
+                                        </strong>
+                                        <span style={{ color: '#64748B', fontSize: 10.5 }}>
+                                          {(currentBox.suggestedLocation.ocupacionBultosActual ?? 0) === 1 ? '1 bulto alojado' : `${currentBox.suggestedLocation.ocupacionBultosActual ?? 0} bultos`} · {currentBox.suggestedLocation.capacidadLibre ?? currentBox.suggestedLocation.capacidadDisponibleUnidades ?? 0} pzas libres
+                                        </span>
+                                      </div>
 
-                                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
-                                    <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Tras alojar (proyección):</span>
-                                    <strong style={{ color: '#16A34A', fontSize: 13, display: 'block' }}>
-                                      {currentBox.suggestedLocation.unidadesDespuesDeAlojar ?? ((currentBox.suggestedLocation.ocupacionUnidadesActual ?? 0) + currentBox.cantidad)} piezas ocupadas
-                                    </strong>
-                                    <span style={{ color: '#15803D', fontSize: 10.5, fontWeight: 600 }}>
-                                      {currentBox.suggestedLocation.capacidadRestanteDespues ?? (currentBox.suggestedLocation.capacidadLibre - currentBox.cantidad)} piezas libres
-                                    </span>
-                                  </div>
+                                      <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
+                                        <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>HU por ingresar:</span>
+                                        <strong style={{ color: '#0284C7', fontSize: 13, display: 'block' }}>
+                                          {currentBox.cantidad} piezas
+                                        </strong>
+                                        <span style={{ color: '#64748B', fontSize: 10.5 }}>
+                                          1 bulto (caja individual)
+                                        </span>
+                                      </div>
 
-                                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
-                                    <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Capacidad de bultos:</span>
-                                    <strong style={{ color: '#0F766E', fontSize: 13, display: 'block' }}>
-                                      {currentBox.suggestedLocation.bultosDespuesDeAlojar ?? ((currentBox.suggestedLocation.ocupacionBultosActual ?? 0) + 1)} {(currentBox.suggestedLocation.bultosDespuesDeAlojar ?? ((currentBox.suggestedLocation.ocupacionBultosActual ?? 0) + 1)) === 1 ? 'bulto alojado' : 'bultos alojados'}
-                                    </strong>
-                                    <span style={{ color: '#64748B', fontSize: 10.5 }}>
-                                      {currentBox.suggestedLocation.capacidadBultos !== null && currentBox.suggestedLocation.capacidadBultos !== undefined
-                                        ? `Límite: ${currentBox.suggestedLocation.capacidadBultos} (${currentBox.suggestedLocation.capacidadBultosRestanteDespues ?? currentBox.suggestedLocation.capacidadDisponibleBultos} disp)`
-                                        : 'Límite HU: no configurado'}
-                                    </span>
-                                  </div>
-                                </div>
+                                      <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
+                                        <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Tras alojar (proyección):</span>
+                                        <strong style={{ color: '#16A34A', fontSize: 13, display: 'block' }}>
+                                          {currentBox.suggestedLocation.unidadesDespuesDeAlojar ?? ((currentBox.suggestedLocation.ocupacionUnidadesActual ?? 0) + currentBox.cantidad)} piezas ocupadas
+                                        </strong>
+                                        <span style={{ color: '#15803D', fontSize: 10.5, fontWeight: 600 }}>
+                                          {currentBox.suggestedLocation.capacidadRestanteDespues ?? (currentBox.suggestedLocation.capacidadLibre - currentBox.cantidad)} piezas libres
+                                        </span>
+                                      </div>
+
+                                      <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '6px 10px' }}>
+                                        <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Capacidad de bultos:</span>
+                                        <strong style={{ color: '#0F766E', fontSize: 13, display: 'block' }}>
+                                          {currentBox.suggestedLocation.bultosDespuesDeAlojar ?? ((currentBox.suggestedLocation.ocupacionBultosActual ?? 0) + 1)} {(currentBox.suggestedLocation.bultosDespuesDeAlojar ?? ((currentBox.suggestedLocation.ocupacionBultosActual ?? 0) + 1)) === 1 ? 'bulto alojado' : 'bultos alojados'}
+                                        </strong>
+                                        <span style={{ color: '#64748B', fontSize: 10.5 }}>
+                                          {currentBox.suggestedLocation.capacidadBultos !== null && currentBox.suggestedLocation.capacidadBultos !== undefined
+                                            ? `Límite: ${currentBox.suggestedLocation.capacidadBultos} (${currentBox.suggestedLocation.capacidadBultosRestanteDespues ?? currentBox.suggestedLocation.capacidadDisponibleBultos} disp)`
+                                            : 'Límite HU: no configurado'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
                               </div>
                             )}
 
@@ -2712,7 +2749,7 @@ export function PutawayModal({
                                     </span>
                                   </div>
                                   <div style={{ fontSize: 10.5, color: '#64748B', marginTop: 2 }}>
-                                    {box.suggestedLocation?.zonaNombre || ''} · Libre: {box.suggestedLocation?.capacidadLibre || 0} uds
+                                    {box.suggestedLocation?.zonaNombre || ''} · {Boolean(box.suggestedLocation?.codigo?.startsWith('G') || box.suggestedLocation?.tipoUbicacion === 'TARIMA_PISO' || box.suggestedLocation?.tipoNivel === 'MIXTO') ? 'Capacidad: 1 tarima' : ('Libre: ' + (box.suggestedLocation?.capacidadLibre || 0) + ' uds')}
                                   </div>
                                 </td>
 
@@ -2743,7 +2780,7 @@ export function PutawayModal({
                                     )}
                                     {(box.alternativeLocations || []).map((alt: any) => (
                                       <option key={alt.id} value={alt.id}>
-                                        {alt.codigo} ({alt.nivel}) — Libre: {alt.capacidadLibre} uds
+                                        {alt.codigo} ({alt.nivel}) — {Boolean(alt.codigo?.startsWith('G') || alt.tipoUbicacion === 'TARIMA_PISO' || alt.tipoNivel === 'MIXTO') ? 'Capacidad: 1 tarima' : ('Libre: ' + alt.capacidadLibre + ' uds')}
                                       </option>
                                     ))}
                                   </select>
@@ -2962,11 +2999,22 @@ export function PutawayModal({
                           </span>
                         </div>
                         <div style={{ fontSize: 11.5, color: '#475569', marginTop: 4 }}>
-                          Capacidad libre: <strong style={{ color: '#0284C7' }}>{alt.capacidadDisponibleUnidades ?? alt.capacidadLibre}</strong> piezas ·{' '}
-                          {alt.capacidadBultos !== null && alt.capacidadBultos !== undefined && alt.capacidadDisponibleBultos !== null
-                            ? <><strong style={{ color: '#0D9488' }}>{alt.capacidadDisponibleBultos}</strong> bultos disponibles</>
-                            : <span style={{ color: '#64748B' }}>Actualmente: {(alt.ocupacionBultosActual ?? 0) === 1 ? '1 bulto alojado' : `${alt.ocupacionBultosActual ?? 0} bultos alojados`} · límite no configurado</span>
-                          }
+                          {Boolean(alt.codigo?.startsWith('G') || alt.tipoUbicacion === 'TARIMA_PISO' || alt.tipoNivel === 'MIXTO') ? (
+                            <>
+                              Capacidad disponible: <strong style={{ color: '#0D9488' }}>1 tarima física</strong> ·{' '}
+                              <span style={{ color: (alt.ocupacionBultosActual ?? 0) >= 1 ? '#DC2626' : '#16A34A', fontWeight: 600 }}>
+                                {(alt.ocupacionBultosActual ?? 0) >= 1 ? '1/1 tarimas ocupadas' : '0/1 tarimas ocupadas (Libre)'}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              Capacidad libre: <strong style={{ color: '#0284C7' }}>{alt.capacidadDisponibleUnidades ?? alt.capacidadLibre}</strong> piezas ·{' '}
+                              {alt.capacidadBultos !== null && alt.capacidadBultos !== undefined && alt.capacidadDisponibleBultos !== null
+                                ? <><strong style={{ color: '#0D9488' }}>{alt.capacidadDisponibleBultos}</strong> bultos disponibles</>
+                                : <span style={{ color: '#64748B' }}>Actualmente: {(alt.ocupacionBultosActual ?? 0) === 1 ? '1 bulto alojado' : `${alt.ocupacionBultosActual ?? 0} bultos alojados`} · límite no configurado</span>
+                              }
+                            </>
+                          )}
                         </div>
                       </div>
 

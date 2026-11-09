@@ -1949,45 +1949,72 @@ export function Locations() {
                         /* Desglose de Capacidad Física para Celdas de Rack */
                         <>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-                            {/* Tarjeta Capacidad Piezas */}
-                            <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                                <span style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <Package size={15} style={{ color: 'var(--emerald)' }} /> Capacidad en Piezas
-                                </span>
-                                <span style={{ fontSize: 11.5, fontWeight: 700, color: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : 'var(--emerald)' }}>
-                                  Uso de capacidad: {locDetailData?.porcentajeOcupacionUnidades ?? 0}%
-                                </span>
+                            {/* Tarjeta Capacidad (Adaptativa Piso 1 Tarima vs Racks) */}
+                            {Boolean(locDetailData?.codigo && locDetailData.codigo.toUpperCase().startsWith('G')) ? (
+                              <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <Box size={15} style={{ color: 'var(--emerald)' }} /> Capacidad Física de Tarima
+                                  </span>
+                                  <span style={{ fontSize: 11.5, fontWeight: 700, color: (locDetailData?.ocupacionBultos ?? 0) >= 1 ? '#DC2626' : 'var(--emerald)' }}>
+                                    {(locDetailData?.ocupacionBultos ?? 0) >= 1 ? '100% (Ocupada)' : '0% (Libre)'}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
+                                  {(locDetailData?.ocupacionBultos ?? 0)} / 1 tarimas ocupadas
+                                </div>
+                                <div style={{ height: 6, width: '100%', background: 'rgba(0,0,0,0.06)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
+                                  <div style={{
+                                    height: '100%',
+                                    width: `${Math.min(100, (locDetailData?.ocupacionBultos ?? 0) * 100)}%`,
+                                    background: (locDetailData?.ocupacionBultos ?? 0) >= 1 ? '#0284C7' : '#10B981'
+                                  }} />
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+                                  <span>Capacidad disponible: <strong>{(locDetailData?.ocupacionBultos ?? 0) >= 1 ? 0 : 1} tarima</strong></span>
+                                  {(locDetailData?.ocupacionUnidades ?? 0) > 0 && <span>Contenido: {locDetailData.ocupacionUnidades} piezas</span>}
+                                </div>
                               </div>
-                              <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
-                                {filterCliente && showOnlyFilterClientInModal ? (
-                                  <>
-                                    <span>{clientPiecesInModal.toLocaleString()}</span>{' '}
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                      piezas de {selectedClientName} (Total celda: {locDetailData?.ocupacionUnidades ?? 0}/{locDetailData?.capacidadUnits || 100})
-                                    </span>
-                                  </>
-                                ) : (
-                                  <>
-                                    {locDetailData?.ocupacionUnidades ?? locDetailData?.totalFisico ?? 0}{' '}
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                      de {locDetailData?.capacidadUnits || 100} piezas
-                                    </span>
-                                  </>
-                                )}
+                            ) : (
+                              <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <Package size={15} style={{ color: 'var(--emerald)' }} /> Capacidad en Piezas
+                                  </span>
+                                  <span style={{ fontSize: 11.5, fontWeight: 700, color: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : 'var(--emerald)' }}>
+                                    Uso de capacidad: {locDetailData?.porcentajeOcupacionUnidades ?? 0}%
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
+                                  {filterCliente && showOnlyFilterClientInModal ? (
+                                    <>
+                                      <span>{clientPiecesInModal.toLocaleString()}</span>{' '}
+                                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                                        piezas de {selectedClientName} (Total celda: {locDetailData?.ocupacionUnidades ?? 0}/{locDetailData?.capacidadUnits || 100})
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {locDetailData?.ocupacionUnidades ?? locDetailData?.totalFisico ?? 0}{' '}
+                                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                                        de {locDetailData?.capacidadUnits || 100} piezas
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                                <div style={{ height: 6, width: '100%', background: 'rgba(0,0,0,0.06)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
+                                  <div style={{
+                                    height: '100%',
+                                    width: `${Math.min(100, locDetailData?.porcentajeOcupacionUnidades ?? 0)}%`,
+                                    background: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : (locDetailData?.porcentajeOcupacionUnidades ?? 0) >= 100 ? '#EF4444' : '#10B981'
+                                  }} />
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+                                  <span>Espacio libre: <strong>{locDetailData?.capacidadDisponibleUnidades ?? 0} piezas</strong></span>
+                                  {locDetailData?.reservaUnidades > 0 && <span>Reserva: {locDetailData.reservaUnidades} piezas</span>}
+                                </div>
                               </div>
-                              <div style={{ height: 6, width: '100%', background: 'rgba(0,0,0,0.06)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
-                                <div style={{
-                                  height: '100%',
-                                  width: `${Math.min(100, locDetailData?.porcentajeOcupacionUnidades ?? 0)}%`,
-                                  background: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : (locDetailData?.porcentajeOcupacionUnidades ?? 0) >= 100 ? '#EF4444' : '#10B981'
-                                }} />
-                              </div>
-                              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
-                                <span>Espacio libre: <strong>{locDetailData?.capacidadDisponibleUnidades ?? 0} piezas</strong></span>
-                                {locDetailData?.reservaUnidades > 0 && <span>Reserva: {locDetailData.reservaUnidades} piezas</span>}
-                              </div>
-                            </div>
+                            )}
 
                             {/* Tarjeta Capacidad Bultos */}
                             <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
