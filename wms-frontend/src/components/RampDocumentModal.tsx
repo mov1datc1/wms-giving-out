@@ -166,6 +166,7 @@ export function RampDocumentModal({ receipt, token, onClose }: RampDocumentModal
     (() => {
       const obs = conteo.observaciones || receipt?.observacionesRampa || '';
       if (obs.includes('[SELLO: ROTO]')) return 'ROTO';
+      if (obs.includes('[SELLO: SIN_SELLO]')) return 'SIN_SELLO';
       if (obs.includes('[SELLO: NO_APLICA]')) return 'NO_APLICA';
       if (obs.includes('[SELLO: INTACTO]')) return 'INTACTO';
       return null;
@@ -177,13 +178,14 @@ export function RampDocumentModal({ receipt, token, onClose }: RampDocumentModal
     (() => {
       const obs = conteo.observaciones || receipt?.observacionesRampa || '';
       const m = obs.match(/\[SELLO:\s*[A-Z_]+(?:\s*#([A-Za-z0-9_-]+))?\]/);
-      return m && m[1] ? m[1] : null;
+      return m && m[2] ? m[2] : null;
     })();
 
   const tieneDanados = typeof bultosDanados === 'number' && bultosDanados > 0;
   const tieneDiferencia = typeof diferencia === 'number' && diferencia !== 0;
   const tieneSelloRoto = estadoSello === 'ROTO';
-  const tieneReservas = tieneDanados || tieneDiferencia || tieneSelloRoto;
+  const tieneSinSello = estadoSello === 'SIN_SELLO';
+  const tieneReservas = tieneDanados || tieneDiferencia || tieneSelloRoto || tieneSinSello;
 
   // Observaciones de Rampa
   const observacionesRampa =
@@ -658,6 +660,11 @@ export function RampDocumentModal({ receipt, token, onClose }: RampDocumentModal
                           {tieneSelloRoto && (
                             <span style={{ color: '#DC2626', fontWeight: 700 }}>
                               Sello de seguridad roto o alterado{numeroSello ? ` (#${numeroSello})` : ''}.{' '}
+                            </span>
+                          )}
+                          {tieneSinSello && (
+                            <span style={{ color: '#D97706', fontWeight: 700 }}>
+                              Unidad arribó sin sello de seguridad requerido.{' '}
                             </span>
                           )}
                           {tieneDanados && `Se reporta ${bultosDanados} bulto(s) con daño exterior visible en empaque.`}

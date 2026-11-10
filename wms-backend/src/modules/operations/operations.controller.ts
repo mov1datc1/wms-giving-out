@@ -320,19 +320,23 @@ export class OperationsController {
     }
 
     // Normalización explícita y trazable de sellos de seguridad
-    const estadoSello = body.estadoSello || (body.sellosIntactos === true ? 'INTACTO' : (body.sellosIntactos === false ? 'ROTO' : 'INTACTO'));
-    const sellosIntactos = body.sellosIntactos !== undefined ? Boolean(body.sellosIntactos) : estadoSello === 'INTACTO';
+    const estadoSello: 'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA' =
+      body.estadoSello || (body.sellosIntactos === true ? 'INTACTO' : (body.sellosIntactos === false ? 'ROTO' : 'INTACTO'));
+    const sellosIntactos = estadoSello === 'INTACTO';
 
     if (estadoSello === 'ROTO' && (!body.observacionesRampa || body.observacionesRampa.trim().length < 5)) {
       throw new HttpException('Al registrar el sello como Roto o Alterado, es obligatorio detallar las observaciones de la anomalía en rampa (mínimo 5 caracteres).', HttpStatus.BAD_REQUEST);
+    }
+    if (estadoSello === 'SIN_SELLO' && (!body.observacionesRampa || body.observacionesRampa.trim().length < 5)) {
+      throw new HttpException('Al asentar que la unidad llegó Sin Sello cuando se requería, es obligatorio justificar el motivo en Observaciones (mínimo 5 caracteres).', HttpStatus.BAD_REQUEST);
     }
 
     const diferenciaBultos = bultosRecibidos - bultosDeclarados;
     const now = new Date();
     const usuario = body.usuario || body.nombreReceptor || 'Supervisor Andén';
 
-    // Rótulo legal de la firma del chofer: No usar "a conformidad" si hay reservas, daños o sello roto
-    const tieneReservas = diferenciaBultos !== 0 || bultosDanados > 0 || estadoSello === 'ROTO';
+    // Rótulo legal de la firma del chofer: No usar "a conformidad" si hay reservas, daños, sello roto o sello ausente
+    const tieneReservas = diferenciaBultos !== 0 || bultosDanados > 0 || estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO';
     const leyendaFirmaChofer = tieneReservas
       ? 'Entregó con reservas y discrepancias asentadas'
       : 'Entregó carga conforme (revisión exterior)';
@@ -384,6 +388,8 @@ export class OperationsController {
       await this.audit(usuario, 'ACTA_RAMPA_LIBERACION_CHOFER', 'Receipt', receiptId, `Chofer liberado. Bultos: ${bultosRecibidos}/${bultosDeclarados} (Daño: ${bultosDanados}, Dif: ${diferenciaBultos}). Sello: ${estadoSello}${body.numeroSello ? ` #${body.numeroSello}` : ''}`);
       if (estadoSello === 'ROTO') {
         await this.audit(usuario, 'INCIDENCIA_SELLO_RAMPA', 'Receipt', receiptId, `Incidencia en rampa: Sello roto o alterado (${body.numeroSello || 'S/N'}). Observaciones: ${body.observacionesRampa}`);
+      } else if (estadoSello === 'SIN_SELLO') {
+        await this.audit(usuario, 'INCIDENCIA_UNIDAD_SIN_SELLO', 'Receipt', receiptId, `Incidencia en rampa: Unidad arribó sin sello de seguridad cuando era requerido. Justificación: ${body.observacionesRampa}`);
       }
     }
 
@@ -487,19 +493,19 @@ export class OperationsController {
       ? receipt.diferenciaBultos
       : (recibidos - declarados);
     // Detección trazable de sello a partir de historial u observaciones
-    let estadoSello: 'INTACTO' | 'ROTO' | 'NO_APLICA' = 'INTACTO';
+    let estadoSello: 'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA' = 'INTACTO';
     let numeroSello: string | null = null;
     if (receipt.observacionesRampa) {
       const match = receipt.observacionesRampa.match(/\[SELLO:\s*([A-Z_]+)(?:\s*#([A-Za-z0-9_-]+))?\]/);
       if (match) {
-        if (['INTACTO', 'ROTO', 'NO_APLICA'].includes(match[1])) {
+        if (['INTACTO', 'ROTO', 'SIN_SELLO', 'NO_APLICA'].includes(match[1])) {
           estadoSello = match[1] as any;
         }
         if (match[2]) numeroSello = match[2];
       }
     }
     const sellosIntactos = estadoSello === 'INTACTO';
-    const tieneReservas = diferencia !== 0 || danados > 0 || estadoSello === 'ROTO';
+    const tieneReservas = diferencia !== 0 || danados > 0 || estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO';
     const leyendaFirmaChofer = tieneReservas
       ? 'Entregó con reservas y discrepancias asentadas'
       : 'Entregó carga conforme (revisión exterior)';

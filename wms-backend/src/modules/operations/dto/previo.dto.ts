@@ -530,10 +530,10 @@ export class RampaArriboDto {
 
   @ApiPropertyOptional({
     description: 'Estado de los sellos o precintos de seguridad del transporte',
-    enum: ['INTACTO', 'ROTO', 'NO_APLICA'],
+    enum: ['INTACTO', 'ROTO', 'SIN_SELLO', 'NO_APLICA'],
     example: 'INTACTO',
   })
-  estadoSello?: 'INTACTO' | 'ROTO' | 'NO_APLICA';
+  estadoSello?: 'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA';
 
   @ApiPropertyOptional({
     description: 'Indicador de sellos intactos (true si INTACTO, false si ROTO o NO_APLICA)',
