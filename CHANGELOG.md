@@ -4,6 +4,32 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.25] — 2026-11-09 (Hardening de Seguridad en Rampa y Cierre Pre-Operativo — REC-2026-0019)
+
+### 🛡️ Hardening de Rampa, Validación de Sellos y Preparación Pre-Operativa Real
+
+Esta versión consolida el hardening operativo y legal del flujo de Rampa & Liberación Exprés previo al inicio de la primera operación real post-cutover (`REC-2026-0019` de CELERA SA DE CV). El código queda verificado, respaldado y listo para reanudar operaciones directamente con la captura física y firma del acta.
+
+### Control de Sellos y Custodia en Rampa
+- **Sin Selección de Sello por Defecto:**
+  - En `RampArrivalModal`, el estado inicial de `estadoSello` es estrictamente `null` para unidades nuevas sin liberar; el botón *Guardar y Liberar Chofer* permanece inhabilitado (`#94A3B8`) hasta que el operador evalúa e ingresa físicamente la condición observada.
+- **Segregación Estricta `SIN_SELLO` vs. `NO_APLICA`:**
+  - `SIN_SELLO`: Asienta la anomalía de una unidad cerrada que requería precinto pero arriba sin él. Clasifica la carga como recibida con reservas (`tieneReservas = true`), exige justificación obligatoria en Observaciones ($≥ 5$ caracteres) y registra evento de auditoría `INCIDENCIA_UNIDAD_SIN_SELLO`.
+  - `NO_APLICA`: Reservado para transportes que por su naturaleza física no requieren precinto (e.g. plataforma abierta, camioneta local). Deshabilita la captura de folio y no penaliza la conformidad de la carga.
+  - `INTACTO` y `ROTO`: `INTACTO` exige captura obligatoria de folio troquelado; `ROTO` exige folio (o `"ILEGIBLE"`) y justificación obligatoria ($≥ 5$ caracteres) emitiendo `INCIDENCIA_SELLO_RAMPA`.
+- **Estado Neutral Previo a Validación:**
+  - Antes de completar el conteo físico de bultos o seleccionar el sello, el modal despliega el estado neutral *«Pendiente de validación física en rampa»*.
+  - La condición *«Carga Conforme en Rampa»* se habilita **única y exclusivamente** tras ingresar el conteo físico completo (`bultosRecibidos !== ''`), sello conforme (`INTACTO` o `NO_APLICA`), $diferencia === 0$ y $daño exterior === 0$.
+- **Acta Oficial de Entrada:**
+  - `RampDocumentModal` incorpora advertencia legal destacada para unidades que arriban con condición `SIN_SELLO` y asienta el estado del precinto en la bitácora legal.
+
+### Trazabilidad y Estado Certificado
+- **Checkpoint de Código Validado:** Commit `a40ad8f84c85f8ca207fc1debe9f905eed625044` en rama `feature/layout-warehouse-adaptation-phase-3`.
+- **Certificación de No Ejecución:** Se deja constancia expresa de que el arribo real de `REC-2026-0019` **NO fue registrado** en esta sesión. La recepción permanece intacta en estado `PENDIENTE_ARRIBO` (18 piezas esperadas / 0 recibidas), con 0 inventario (`LotInventory = 0`), 0 unidades de manipulación (`HandlingUnit = 0`) y 0 movimientos (`InventoryMovement = 0`).
+- **Punto Exacto de Reanudación:** Recepción $→$ `REC-2026-0019` $→$ Rampa $→$ Registrar Acta de Rampa.
+
+---
+
 ## [1.9.24] — 2026-11-09 (Transición a Operación Real y Activación de Layout Físico — Fase 3B)
 
 ### 🚀 Cutover DEMO $\rightarrow$ Operación Real y Vista Principal del Almacén Físico
