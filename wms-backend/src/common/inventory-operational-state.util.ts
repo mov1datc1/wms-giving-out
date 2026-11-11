@@ -94,6 +94,172 @@ export function isExpired(
   return expDayStr < bizDayStr;
 }
 
+export interface TraceabilityRequirement {
+  requiereLote: boolean;
+  requiereCaducidad: boolean;
+  isGiroRegulado: boolean;
+}
+
+export interface TraceabilityValidationInput {
+  cliente?: any;
+  sku?: any;
+  lote?: string | null;
+  fechaVencimiento?: Date | string | null;
+  itemLabel?: string;
+  businessDate?: Date;
+}
+
+export interface TraceabilityValidationResult {
+  valid: boolean;
+  requiereLote: boolean;
+  requiereCaducidad: boolean;
+  loteNormalizado: string | null;
+  fechaVencimientoDate: Date | null;
+  errorCode:
+    | 'LOTE_OBLIGATORIO'
+    | 'CADUCIDAD_OBLIGATORIA'
+    | 'FECHA_CADUCIDAD_INVALIDA'
+    | 'PRODUCTO_CADUCADO'
+    | null;
+  errorMessage: string | null;
+  isExpiredDate: boolean;
+}
+
+/**
+ * Determina las reglas obligatorias de lote y caducidad combinando
+ * las banderas del depositante, su giro regulado y las banderas del SKU.
+ */
+export function resolveTraceabilityRequirements(cliente?: any, sku?: any): TraceabilityRequirement {
+  const isGiroRegulado = cliente?.giro === 'COMIDA' || cliente?.giro === 'FARMACEUTICO';
+  return {
+    isGiroRegulado,
+    requiereLote: Boolean(cliente?.requiereLote || isGiroRegulado || sku?.requiereLote),
+    requiereCaducidad: Boolean(cliente?.requiereCaducidad || isGiroRegulado || sku?.requiereCaducidad),
+  };
+}
+
+/**
+ * Detecta lotes ausentes, en blanco o centinelas genéricos no trazables.
+ */
+export function isMissingLotValue(lote: string | null | undefined): boolean {
+  const clean = String(lote || '').trim();
+  if (!clean) return true;
+  return ['S/LOTE', 'S/L', 'SIN LOTE', 'N/A', 'NA', 'NULL', 'UNDEFINED'].includes(clean.toUpperCase());
+}
+
+/**
+ * Parsea fechas calendario YYYY-MM-DD o ISO válidas verificando que el calendario no se desborde.
+ */
+export function parseStrictCalendarDate(raw: Date | string | null | undefined): Date | null {
+  if (!raw) return null;
+  if (raw instanceof Date) {
+    return isNaN(raw.getTime()) ? null : raw;
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(s);
+  if (!match) return null;
+
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  const utcCheck = new Date(Date.UTC(y, m - 1, d));
+  if (
+    utcCheck.getUTCFullYear() !== y ||
+    utcCheck.getUTCMonth() !== m - 1 ||
+    utcCheck.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  if (!s.includes('T')) {
+    return utcCheck;
+  }
+  const full = new Date(s);
+  return isNaN(full.getTime()) ? null : full;
+}
+
+/**
+ * Valida trazabilidad sanitaria y operativa obligatoria (Lote y Fecha de Caducidad)
+ * antes de conciliar andén, generar etiquetas HU o confirmar Putaway comercial.
+ */
+export function validateMandatoryLotAndExpiry(
+  input: TraceabilityValidationInput,
+): TraceabilityValidationResult {
+  const { requiereLote, requiereCaducidad } = resolveTraceabilityRequirements(input.cliente, input.sku);
+  const label = input.itemLabel || input.sku?.codigo || 'la partida';
+  const cleanLot = String(input.lote || '').trim();
+  const lotMissing = isMissingLotValue(cleanLot);
+
+  if (requiereLote && lotMissing) {
+    return {
+      valid: false,
+      requiereLote,
+      requiereCaducidad,
+      loteNormalizado: null,
+      fechaVencimientoDate: null,
+      errorCode: 'LOTE_OBLIGATORIO',
+      errorMessage: `Trazabilidad obligatoria: La partida "${label}" exige LOTE válido (no puede estar vacío ni ser genérico).`,
+      isExpiredDate: false,
+    };
+  }
+
+  const rawExp = input.fechaVencimiento;
+  const hasRawExp = rawExp !== undefined && rawExp !== null && String(rawExp).trim() !== '';
+
+  if (requiereCaducidad && !hasRawExp) {
+    return {
+      valid: false,
+      requiereLote,
+      requiereCaducidad,
+      loteNormalizado: lotMissing ? null : cleanLot,
+      fechaVencimientoDate: null,
+      errorCode: 'CADUCIDAD_OBLIGATORIA',
+      errorMessage: `Trazabilidad obligatoria: La partida "${label}" exige FECHA DE CADUCIDAD obligatoria.`,
+      isExpiredDate: false,
+    };
+  }
+
+  const parsedExp = hasRawExp ? parseStrictCalendarDate(rawExp) : null;
+  if (hasRawExp && !parsedExp) {
+    return {
+      valid: false,
+      requiereLote,
+      requiereCaducidad,
+      loteNormalizado: lotMissing ? null : cleanLot,
+      fechaVencimientoDate: null,
+      errorCode: 'FECHA_CADUCIDAD_INVALIDA',
+      errorMessage: `Fecha de caducidad inválida para "${label}" (recibido: "${String(rawExp)}"). Utilice el formato YYYY-MM-DD.`,
+      isExpiredDate: false,
+    };
+  }
+
+  const businessDate = input.businessDate || new Date();
+  const expired = parsedExp ? isExpired(parsedExp, businessDate, true) : false;
+  if (expired) {
+    return {
+      valid: false,
+      requiereLote,
+      requiereCaducidad,
+      loteNormalizado: lotMissing ? null : cleanLot,
+      fechaVencimientoDate: parsedExp,
+      errorCode: 'PRODUCTO_CADUCADO',
+      errorMessage: `Rechazo Sanitario: La partida "${label}" presenta fecha de caducidad vencida (${toCalendarDayString(parsedExp)}). No se permite ingresar o alojar comercialmente mercancía caducada.`,
+      isExpiredDate: true,
+    };
+  }
+
+  return {
+    valid: true,
+    requiereLote,
+    requiereCaducidad,
+    loteNormalizado: lotMissing ? null : cleanLot,
+    fechaVencimientoDate: parsedExp,
+    errorCode: null,
+    errorMessage: null,
+    isExpiredDate: false,
+  };
+}
+
 /**
  * Evalúa el estado operativo de una partida de inventario aplicando
  * la precedencia estricta y segregando saldos cuantitativos.

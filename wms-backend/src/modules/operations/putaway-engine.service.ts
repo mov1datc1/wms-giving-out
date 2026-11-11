@@ -47,6 +47,8 @@ export interface EnrichedLocation {
   depositantesPresentes: string[];
   skusPresentes: string[];
   lotesPresentes: string[];
+  palletsPresentes?: string[];
+  husPresentesIds?: string[];
 }
 
 export interface RankedLocationCandidate {
@@ -56,15 +58,20 @@ export interface RankedLocationCandidate {
   rack: string;
   nivel: string;
   tipoNivel: 'PICKING' | 'RESERVA' | 'MIXTO';
+  tipoUbicacion?: string;
+  isFloorPallet?: boolean;
+  isSamePalletConsolidation?: boolean;
   zonaNombre: string;
   score: number;
-  capacidadDisponibleUnidades: number;
+  capacidadLibre?: number | null;
+  capacidadDisponibleUnidades?: number | null;
   capacidadDisponibleBultos: number | null;
   capacidadBultosEstado: 'CONFIGURADA' | 'NO_CONFIGURADA';
+  capacidadTexto?: string;
   ocupacionUnidadesActual: number;
   ocupacionBultosActual: number;
   unidadesDespuesDeAlojar: number;
-  capacidadRestanteDespues: number;
+  capacidadRestanteDespues?: number | null;
   bultosDespuesDeAlojar: number;
   capacidadBultosRestanteDespues: number | null;
   razonesFavorables: string[];
@@ -76,6 +83,7 @@ export interface PutawayItemInput {
   huId: string | null;
   huCodigo: string;
   tipoHu: string;
+  parentHuId?: string | null;
   skuId: string;
   skuCodigo: string;
   skuDescripcion: string;
@@ -95,6 +103,7 @@ export type CompatibilitySource =
   | 'MATRIZ_PRODUCTO_ZONA'
   | 'RESTRICCION_TERMICA'
   | 'POLITICA_DEPOSITANTE'
+  | 'ZONA_ALMACENAMIENTO_GENERAL'
   | 'SIN_CONFIGURACION';
 
 export interface CompatibilityEvaluation {
@@ -122,7 +131,48 @@ export interface DiscardDiagnostics {
 
 @Injectable()
 export class PutawayEngineService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
+
+  private isFloorPalletLocation(loc: any, esAlmacenableOverride?: boolean): boolean {
+    const tipoUpper = String(loc?.tipoUbicacion || '').toUpperCase().trim();
+    const codeUpper = String(loc?.codigo || '').toUpperCase().trim();
+    const isAlmacenable = esAlmacenableOverride ?? loc?.esAlmacenable ?? this.classifyLocation(loc).esAlmacenable;
+    return Boolean(
+      isAlmacenable &&
+      (tipoUpper === 'TARIMA_PISO' || tipoUpper === 'PISO' || codeUpper.startsWith('G')),
+    );
+  }
+
+  private getPhysicalPalletKey(hu: { id: string; parentHuId?: string | null }): string {
+    return hu.parentHuId || hu.id;
+  }
+
+  private isSamePalletOccupyingLocation(loc: EnrichedLocation, item?: PutawayItemInput): boolean {
+    if (!item) return false;
+    const palletsInLoc = loc.palletsPresentes || [];
+    if (palletsInLoc.length !== 1) return false;
+    if (item.parentHuId && palletsInLoc[0] === item.parentHuId) {
+      return true;
+    }
+    if (item.huId && (loc.husPresentesIds || []).includes(item.huId)) {
+      return true;
+    }
+    return false;
+  }
+
+  private isGeneralCommercialStorageZone(loc: any, classification: LocationClassification): boolean {
+    if (!classification.esAlmacenable) return false;
+    const zonaTipo = String(loc?.zona?.tipoZona || '').toUpperCase().trim();
+    const zonaCode = String(loc?.zona?.codigo || '').toUpperCase().trim();
+    return (
+      zonaTipo === 'ALMACENAMIENTO' ||
+      zonaTipo === 'PICKING' ||
+      zonaCode === 'INTERIOR' ||
+      zonaCode === 'EXTERIOR_TECHADO' ||
+      zonaCode.startsWith('ALM-') ||
+      !loc?.zona
+    );
+  }
 
   /**
    * Clasifica una ubicación según su rol operativo físico vs especial/transitorio
@@ -149,21 +199,27 @@ export class PutawayEngineService {
       };
     }
 
-    // 2. Virtual / No Conforme (Mermas DEV-01, Excesos NC-EXCESO-01, Cuarentenas)
+    // 2. Virtual / No Conforme (Mermas DEV-01, Excesos NC-EXCESO-01, Cuarentenas, PNC)
     if (
       code === 'DEV-01' ||
       code === 'NC-EXCESO-01' ||
       code.includes('DEV') ||
       code.includes('CUARENTENA') ||
+      (code.includes('PNC') && !code.startsWith('G')) ||
       tipo === 'CUARENTENA' ||
+      tipo === 'DEVOLUCION' ||
+      tipo === 'PNC' ||
       zonaTipo === 'CUARENTENA' ||
       zonaTipo === 'DEVOLUCION' ||
-      zonaCode === 'DEVOLUCION'
+      zonaTipo === 'PNC' ||
+      zonaCode === 'DEVOLUCION' ||
+      zonaCode === 'CUARENTENA' ||
+      zonaCode === 'PNC'
     ) {
       return {
         categoriaUbicacion: 'VIRTUAL_NO_CONFORME',
         esAlmacenable: false,
-        categoriaDescripcion: 'Almacén Virtual / No Conforme',
+        categoriaDescripcion: 'Almacén Virtual / No Conforme (PNC)',
       };
     }
 
@@ -182,8 +238,49 @@ export class PutawayEngineService {
       };
     }
 
-    // 4. Especiales de piso no vinculadas a rack de almacenamiento
-    if (tipo === 'PISO' && (!loc.rack || loc.rack === 'PISO' || loc.pasillo === 'PISO')) {
+    // 4. Áreas de trabajo y elementos estructurales no inventariables (mesas, baños)
+    if (
+      tipo === 'TRABAJO' ||
+      tipo === 'ESTRUCTURAL' ||
+      tipo === 'MESA_TRABAJO' ||
+      code.startsWith('MESA') ||
+      code.startsWith('BAÑO') ||
+      code.startsWith('BANIO')
+    ) {
+      return {
+        categoriaUbicacion: 'ESPECIAL_OTRAS',
+        esAlmacenable: false,
+        categoriaDescripcion: 'Área Especial / No Inventariable',
+      };
+    }
+
+    // 5. Posiciones físicas de estiba en piso:
+    // Si la celda es de piso (PISO o TARIMA_PISO), evaluar su contexto estructural de zona.
+    // Si pertenece a una zona de almacenamiento comercial o picking, es FISICA_ALMACENABLE.
+    const esZonaAlmacenable =
+      zonaTipo === 'ALMACENAMIENTO' ||
+      zonaTipo === 'PICKING' ||
+      zonaCode.startsWith('ALM-') ||
+      zonaCode === 'INTERIOR' ||
+      zonaCode === 'EXTERIOR_TECHADO' ||
+      zonaCode.includes('EXTERIOR');
+
+    if (tipo === 'TARIMA_PISO' && esZonaAlmacenable) {
+      return {
+        categoriaUbicacion: 'FISICA_ALMACENABLE',
+        esAlmacenable: true,
+        categoriaDescripcion: 'Posición de Tarima en Piso',
+      };
+    }
+
+    if (tipo === 'PISO') {
+      if (esZonaAlmacenable) {
+        return {
+          categoriaUbicacion: 'FISICA_ALMACENABLE',
+          esAlmacenable: true,
+          categoriaDescripcion: 'Posición de Tarima en Piso',
+        };
+      }
       return {
         categoriaUbicacion: 'ESPECIAL_OTRAS',
         esAlmacenable: false,
@@ -191,7 +288,7 @@ export class PutawayEngineService {
       };
     }
 
-    // 5. Celdas físicas de almacenamiento (Rack / Estantería)
+    // 6. Celdas físicas de almacenamiento (Rack / Estantería)
     return {
       categoriaUbicacion: 'FISICA_ALMACENABLE',
       esAlmacenable: true,
@@ -249,6 +346,8 @@ export class PutawayEngineService {
         select: {
           id: true,
           codigo: true,
+          tipoHu: true,
+          parentHuId: true,
           ubicacionActual: true,
           clienteId: true,
           skuCodigo: true,
@@ -259,7 +358,7 @@ export class PutawayEngineService {
       this.prisma.auditLog.findMany({
         where: {
           entidad: 'HandlingUnit',
-          accion: 'PUTAWAY_DUAL_SCAN_VALIDADO',
+          accion: { in: ['PUTAWAY_DUAL_SCAN_VALIDADO', 'PUTAWAY_HU_RESET'] },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -267,31 +366,48 @@ export class PutawayEngineService {
 
     // Indexar auditorías de validación más recientes por HU para asegurar que HUs confirmadas
     // reflejen su rack validado aunque su campo ubicacionActual esté en tránsito
-    const validatedRackByHuId = new Map<string, string>();
+    const validatedRackByHuId = new Map<string, string | null>();
     for (const audit of recentDualScanAudits) {
       if (audit.entidadId && !validatedRackByHuId.has(audit.entidadId)) {
-        const match = audit.detalle?.match(/en rack físico ([A-Z0-9-]+)/i);
-        if (match && match[1]) {
-          validatedRackByHuId.set(audit.entidadId, match[1].toUpperCase());
+        if (audit.accion === 'PUTAWAY_HU_RESET') {
+          validatedRackByHuId.set(audit.entidadId, null);
+        } else {
+          const match = audit.detalle?.match(/en rack físico ([A-Z0-9-]+)/i);
+          if (match && match[1]) {
+            validatedRackByHuId.set(audit.entidadId, match[1].toUpperCase());
+          }
         }
       }
     }
 
-    // Indexar HUs activas por ubicación
+    // Indexar HUs activas por ubicación agrupando cajas hijas bajo su tarima física master
     const huCountByLoc: Record<string, number> = {};
     const husByLoc: Record<string, any[]> = {};
+    const distinctPalletsByLoc: Record<string, Set<string>> = {};
+
     for (const hu of allActiveHus) {
       let effectiveLoc = hu.ubicacionActual;
       const isRampa = !effectiveLoc || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'STAGING', 'ANDEN'].includes(effectiveLoc);
       if (isRampa && validatedRackByHuId.has(hu.id)) {
-        effectiveLoc = validatedRackByHuId.get(hu.id)!;
+        const auditedRack = validatedRackByHuId.get(hu.id);
+        if (auditedRack) {
+          effectiveLoc = auditedRack;
+        }
       }
 
       if (effectiveLoc && !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'STAGING', 'ANDEN'].includes(effectiveLoc)) {
-        huCountByLoc[effectiveLoc] = (huCountByLoc[effectiveLoc] || 0) + 1;
         if (!husByLoc[effectiveLoc]) husByLoc[effectiveLoc] = [];
         husByLoc[effectiveLoc].push({ ...hu, ubicacionActual: effectiveLoc });
+
+        if (!distinctPalletsByLoc[effectiveLoc]) distinctPalletsByLoc[effectiveLoc] = new Set<string>();
+        // Si la caja pertenece a una tarima master (parentHuId), cuenta como parte de dicha tarima
+        // Si es una tarima independiente o HU raíz, cuenta su propio ID
+        distinctPalletsByLoc[effectiveLoc].add(this.getPhysicalPalletKey(hu));
       }
+    }
+
+    for (const locKey of Object.keys(distinctPalletsByLoc)) {
+      huCountByLoc[locKey] = distinctPalletsByLoc[locKey].size;
     }
 
     return locations.map((loc) => {
@@ -301,44 +417,68 @@ export class PutawayEngineService {
       const capUnits = (loc as any).capacidadUnits || 100;
 
       // Ocupación de piezas: suma de LotInventory (disponible + bloqueada)
-      // combinada con HandlingUnits activas alojadas físicamente en el rack
+      // combinada con HandlingUnits activas de contenido (CAJA / PIEZA) alojadas físicamente en el rack.
+      // La Tarima Master (PALLET/TARIMA) es únicamente contenedor físico y nunca suma piezas al inventario.
       const sumDisp = loc.lotes.reduce((sum, l) => sum + (l.cantidadDisponible || 0), 0);
       const sumBloq = loc.lotes.reduce((sum, l) => sum + (l.cantidadBloqueada || 0), 0);
-      const huUnits = (husByLoc[loc.codigo] || []).reduce((sum, h) => sum + (h.cantidad || 0), 0);
+      const activeHusHere = husByLoc[loc.codigo] || husByLoc[loc.id] || [];
+      const huUnits = activeHusHere
+        .filter((h) => h.tipoHu !== 'PALLET' && h.tipoHu !== 'TARIMA')
+        .reduce((sum, h) => sum + (h.cantidad || 0), 0);
       const ocupUnidades = Math.max(sumDisp + sumBloq, huUnits);
 
       // Tipo funcional del nivel: Configurable en Location / Layout (con fallback temporal aislado)
       // Describe únicamente la función operativa para surtido/FEFO, NUNCA la capacidad física de bultos.
       const tipoNivel = this.resolveFuncionNivel(loc);
 
-      // Capacidad física de bultos: Exclusivamente proveniente de configuración física real de cada Location.
-      // Si no existe fuente física real en la entidad Location, se tipifica estrictamente como NO_CONFIGURADA (null).
-      // Prohibido inventar 5, 1 ni basarse en la función operativa (PICKING/RESERVA/MIXTO).
+      const isFloorPallet = this.isFloorPalletLocation(loc, classification.esAlmacenable);
+
+      // Capacidad física de bultos:
+      // Para posiciones de tarima en piso (incluyendo nomenclatura G0001+), la capacidad canónica
+      // es exactamente de 1 tarima física (confirmado operativamente por Alejandra).
+      // Para celdas de rack tradicionales, proviene de configuración física real de cada Location.
       const hasConfiguredCapBultos =
-        typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0;
-      const capBultos: number | null = hasConfiguredCapBultos ? (loc as any).capacidadBultos : null;
+        isFloorPallet ||
+        (typeof (loc as any).capacidadBultos === 'number' && (loc as any).capacidadBultos > 0);
+      const capBultos: number | null = isFloorPallet
+        ? 1
+        : hasConfiguredCapBultos
+          ? (loc as any).capacidadBultos
+          : null;
       const capacidadBultosEstado: 'CONFIGURADA' | 'NO_CONFIGURADA' = hasConfiguredCapBultos
         ? 'CONFIGURADA'
         : 'NO_CONFIGURADA';
 
-      // Ocupación de bultos: conteo estricto de HandlingUnits activas (dato informativo real)
+      // Ocupación de bultos: conteo estricto de HandlingUnits activas o existencia física de tarima
       const bultosLoc = huCountByLoc[loc.codigo] || huCountByLoc[loc.id] || 0;
-      const ocupBultos = bultosLoc;
+      const ocupBultos = isFloorPallet
+        ? (bultosLoc > 0 ? bultosLoc : (ocupUnidades > 0 ? 1 : 0))
+        : bultosLoc;
 
-      // Capacidades disponibles derivadas
-      const capDispUnidades = Math.max(0, capUnits - ocupUnidades);
+      // Capacidades disponibles derivadas:
+      // En posiciones de tarima en piso, una posición vacía admite una tarima completa entrante (capUnits disponible).
+      // Si la posición ya tiene una tarima alojada, no admite más bultos ni piezas adicionales.
       const capDispBultos = hasConfiguredCapBultos && capBultos !== null
         ? Math.max(0, capBultos - ocupBultos)
         : null;
+      const capDispUnidades = isFloorPallet
+        ? (ocupBultos >= 1 ? 0 : capUnits)
+        : Math.max(0, capUnits - ocupUnidades);
 
       // Estado de capacidad canónico:
-      // Cuando la capacidad de bultos es NO_CONFIGURADA, la decisión temporal se apoya
-      // exclusivamente en la capacidad real de piezas + estado físico de la celda.
       let estadoCapacidad: 'LIBRE' | 'PARCIAL' | 'LLENO' | 'SOBRECAPACIDAD' | 'BLOQUEADO' | 'NO_APLICA' = 'LIBRE';
       if (!classification.esAlmacenable) {
         estadoCapacidad = 'NO_APLICA';
       } else if (loc.estado === 'BLOQUEADO') {
         estadoCapacidad = 'BLOQUEADO';
+      } else if (isFloorPallet) {
+        if (ocupBultos > 1) {
+          estadoCapacidad = 'SOBRECAPACIDAD';
+        } else if (ocupBultos >= 1 || ocupUnidades > 0) {
+          estadoCapacidad = 'LLENO';
+        } else {
+          estadoCapacidad = 'LIBRE';
+        }
       } else if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
         estadoCapacidad = 'SOBRECAPACIDAD';
       } else if (ocupUnidades >= capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos >= capBultos)) {
@@ -369,6 +509,11 @@ export class PutawayEngineService {
           ...(husByLoc[loc.codigo] || []).map((h) => h.loteTexto).filter(Boolean),
         ]),
       ];
+
+      const palletsPresentes = [
+        ...(distinctPalletsByLoc[loc.codigo] || distinctPalletsByLoc[loc.id] || []),
+      ];
+      const husPresentesIds = activeHusHere.map((h) => h.id).filter(Boolean);
 
       return {
         id: loc.id,
@@ -401,32 +546,57 @@ export class PutawayEngineService {
         depositantesPresentes,
         skusPresentes,
         lotesPresentes,
+        palletsPresentes,
+        husPresentesIds,
       };
     });
   }
 
   /**
    * Determina la función operativa del nivel (PICKING, RESERVA o MIXTO).
-   * 1. Prioridad: Atributo formal configurable (loc.funcionNivel o loc.tipoNivel).
-   * 2. Fallback temporal aislado para demo hasta recibir el layout oficial de Alejandra.
+   * 1. Prioridad: Atributo formal configurable (loc.funcionOperativa, loc.funcionNivel o loc.tipoNivel).
+   * 2. Contexto de zona: Si la zona es exclusivamente de PICKING, adopta 'PICKING'.
+   * 3. Fallback retrocompatible con ubicaciones históricas N1/N2/N3 y nuevas posiciones de piso.
+   *
+   * [PUNTO DE EXTENSIÓN ARQUITECTÓNICO]:
+   * Al confirmar Alejandra la asignación definitiva de cada posición de piso (ej. si alguna tarima
+   * específica funge como reserva vs picking suelto), se persistirá el atributo formal funcionOperativa
+   * en la entidad Location sin requerir heurísticas ni tocar el motor.
    */
   resolveFuncionNivel(loc: any): 'PICKING' | 'RESERVA' | 'MIXTO' {
-    if (loc.funcionNivel && ['PICKING', 'RESERVA', 'MIXTO'].includes(loc.funcionNivel)) {
-      return loc.funcionNivel;
+    const funcionConfigurada = loc.funcionOperativa || loc.funcionNivel || loc.tipoNivel;
+    if (funcionConfigurada && ['PICKING', 'RESERVA', 'MIXTO'].includes(funcionConfigurada)) {
+      return funcionConfigurada;
     }
-    if (loc.tipoNivel && ['PICKING', 'RESERVA', 'MIXTO'].includes(loc.tipoNivel)) {
-      return loc.tipoNivel;
+    const zonaTipo = (loc.zona?.tipoZona || '').toUpperCase();
+    if (zonaTipo === 'PICKING') {
+      return 'PICKING';
     }
     return this.fallbackTemporalNivelFuncionDemo(loc);
   }
 
   /**
-   * @deprecated FALLBACK TEMPORAL DE COMPATIBILIDAD (DEMO PREVIA AL LAYOUT OFICIAL)
-   * Aislado exclusivamente para compatibilidad demo hasta recibir el Layout físico oficial de Alejandra.
-   * Al poblar la columna funcionNivel en Location, este método queda obsoleto sin tocar el motor.
+   * Fallback retrocompatible para determinar la función del nivel sin forzar migraciones DDL:
+   * - Posiciones físicas de tarima en piso (incluyendo G0001+): 'MIXTO' (accesibilidad universal a nivel de piso;
+   *   la reserva y surtido son procesos operativos virtuales, no restricciones físicas de la posición).
+   * - Ubicaciones históricas N1 o '1' -> 'PICKING' (suelo de rack para surtido rápido)
+   * - Ubicaciones históricas N2, N3 -> 'RESERVA' (niveles altos de rack)
+   * - Demás posiciones por defecto -> 'RESERVA'
    */
-  private fallbackTemporalNivelFuncionDemo(loc: any): 'PICKING' | 'RESERVA' {
-    return loc.nivel === 'N1' ? 'PICKING' : 'RESERVA';
+  private fallbackTemporalNivelFuncionDemo(loc: any): 'PICKING' | 'RESERVA' | 'MIXTO' {
+    const tipoUpper = String(loc.tipoUbicacion || '').toUpperCase().trim();
+    const codeUpper = String(loc.codigo || '').toUpperCase().trim();
+    if (tipoUpper === 'TARIMA_PISO' || (tipoUpper === 'PISO' && loc.esAlmacenable !== false) || codeUpper.startsWith('G')) {
+      return 'MIXTO';
+    }
+    const nivelUpper = String(loc.nivel || '').toUpperCase().trim();
+    if (nivelUpper === 'N1' || nivelUpper === '1') {
+      return 'PICKING';
+    }
+    if (nivelUpper === 'N2' || nivelUpper === 'N3' || nivelUpper === '2' || nivelUpper === '3') {
+      return 'RESERVA';
+    }
+    return 'RESERVA';
   }
 
   /**
@@ -454,8 +624,18 @@ export class PutawayEngineService {
       };
     }
 
-    const skuTemp = item.skuTemperatura || 'AMBIENTE';
-    const locTemp = loc.temperatura || loc.zona?.temperatura || 'AMBIENTE';
+    const classification = this.classifyLocation(loc);
+    if (!classification.esAlmacenable || classification.categoriaUbicacion !== 'FISICA_ALMACENABLE') {
+      return {
+        status: 'INCOMPATIBLE',
+        fuente: 'MATRIZ_PRODUCTO_ZONA',
+        motivo: `Ubicación ${loc.codigo} (${classification.categoriaDescripcion}) no está habilitada para almacenamiento comercial`,
+        esCritica: true,
+      };
+    }
+
+    const skuTemp = (item.skuTemperatura || 'AMBIENTE').toUpperCase();
+    const locTemp = (loc.temperatura || loc.zona?.temperatura || 'AMBIENTE').toUpperCase();
 
     // 1. RESTRICCIÓN FÍSICA ESTRICTA: Control térmico
     if (skuTemp !== 'AMBIENTE' && locTemp !== skuTemp) {
@@ -467,60 +647,92 @@ export class PutawayEngineService {
       };
     }
 
-    // 2. MATRIZ FORMAL DE CATEGORÍAS EN ZONA O UBICACIÓN (Máxima prioridad cuando exista configuración real)
-    const categoriasPermitidasZona: string[] | null = (loc.zona as any)?.categoriasPermitidas || null;
-    const categoriasExcluidasZona: string[] | null = (loc.zona as any)?.categoriasExcluidas || null;
+    const skuCat = (item.skuCategoria || '').toUpperCase();
 
-    if (item.skuCategoria && categoriasExcluidasZona && categoriasExcluidasZona.includes(item.skuCategoria)) {
+    // 2. MATRIZ FORMAL DE CATEGORÍAS EN ZONA O UBICACIÓN (Máxima prioridad cuando exista configuración real)
+    const categoriasPermitidasZona: string[] | null =
+      (loc as any)?.categoriasPermitidas || (loc.zona as any)?.categoriasPermitidas || null;
+    const categoriasExcluidasZona: string[] | null =
+      (loc as any)?.categoriasExcluidas || (loc.zona as any)?.categoriasExcluidas || null;
+
+    if (skuCat && categoriasExcluidasZona && categoriasExcluidasZona.includes(skuCat)) {
       return {
         status: 'INCOMPATIBLE',
         fuente: 'MATRIZ_PRODUCTO_ZONA',
-        motivo: `Categoría ${item.skuCategoria} restringida explícitamente en la matriz de la zona ${loc.zona?.nombre}`,
+        motivo: `Categoría ${skuCat} restringida explícitamente en la matriz de la zona ${loc.zona?.nombre || loc.zona?.codigo}`,
         esCritica: true,
       };
     }
 
-    if (item.skuCategoria && categoriasPermitidasZona) {
-      if (categoriasPermitidasZona.includes(item.skuCategoria)) {
+    if (skuCat && categoriasPermitidasZona) {
+      if (categoriasPermitidasZona.includes(skuCat)) {
         return {
           status: 'COMPATIBLE',
           fuente: 'MATRIZ_PRODUCTO_ZONA',
-          motivo: `Categoría ${item.skuCategoria} admitida formalmente en la matriz de la zona ${loc.zona?.nombre}`,
+          motivo: `Categoría ${skuCat} admitida formalmente en la matriz de la zona ${loc.zona?.nombre || loc.zona?.codigo}`,
           esCritica: false,
         };
       } else {
         return {
           status: 'INCOMPATIBLE',
           fuente: 'MATRIZ_PRODUCTO_ZONA',
-          motivo: `Categoría ${item.skuCategoria} no admitida en la matriz de la zona ${loc.zona?.nombre}`,
+          motivo: `Categoría ${skuCat} no admitida en la matriz de la zona ${loc.zona?.nombre || loc.zona?.codigo}`,
           esCritica: true,
         };
       }
     }
 
-    // 3. ASIGNACIÓN CONTRACTUAL DE ZONA AL DEPOSITANTE (Fallback Temporal de Demo)
-    // cliente.zonaAsignadaId representa la preferencia/asignación contractual del depositante.
-    // Mientras no exista matriz formal producto-zona, se admite como fallback temporal demo
-    // identificándolo explícitamente para no asumir universalidad de SKU sin matriz.
-    const clienteId = client?.id || item.clienteId;
+    // 3. SEGREGACIÓN FUNCIONAL EXPRESA (solo si la zona está dedicada explícitamente a otro rubro exclusivo)
+    const zonaTexto = `${loc.zona?.codigo || ''} ${loc.zona?.nombre || ''}`.toUpperCase();
+    const esZonaSoloTextil = zonaTexto.includes('TEXTIL') || zonaTexto.includes('ROPA');
+    const esZonaSoloAlimento = zonaTexto.includes('ALIMENTO');
+    const esSkuAlimento = skuCat === 'ALIMENTO' || skuCat === 'PERECEDERO' || skuCat === 'BEBIDA';
+    const esSkuTextil = skuCat === 'PRENDA' || skuCat === 'TEXTIL';
+
+    if (esSkuAlimento && esZonaSoloTextil) {
+      return {
+        status: 'INCOMPATIBLE',
+        fuente: 'MATRIZ_PRODUCTO_ZONA',
+        motivo: `Zona dedicada funcionalmente a Textil (${loc.zona?.nombre || loc.zona?.codigo}); incompatible con ${skuCat}`,
+        esCritica: true,
+      };
+    }
+    if (esSkuTextil && esZonaSoloAlimento) {
+      return {
+        status: 'INCOMPATIBLE',
+        fuente: 'MATRIZ_PRODUCTO_ZONA',
+        motivo: `Zona dedicada funcionalmente a Alimentos (${loc.zona?.nombre || loc.zona?.codigo}); incompatible con ${skuCat}`,
+        esCritica: true,
+      };
+    }
+
+    // 4. ASIGNACIÓN CONTRACTUAL DE ZONA AL DEPOSITANTE
     const clientAssignedZoneId = client?.zonaAsignadaId;
-    const isAssignedZone = clientAssignedZoneId && loc.zonaId === clientAssignedZoneId;
+    const isAssignedZone = Boolean(clientAssignedZoneId && loc.zonaId === clientAssignedZoneId);
 
     if (isAssignedZone) {
       return {
         status: 'COMPATIBLE',
         fuente: 'POLITICA_DEPOSITANTE',
-        motivo: `Zona ${loc.zona?.nombre || loc.zona?.codigo} asignada contractualmente al depositante (autorización operativa provisional / fallback temporal demo; pendiente matriz formal producto-zona)`,
+        motivo: `Zona ${loc.zona?.nombre || loc.zona?.codigo} asignada contractualmente al depositante`,
         esCritica: false,
-        esFallbackDemo: true,
       };
     }
 
-    // 4. SIN CONFIGURACIÓN FORMAL (Estado actual de la BD para zonas externas no asignadas)
-    // El motor NO debe asumir silenciosamente que una zona externa es compatible sólo por ser AMBIENTE.
-    const esCategoriaCritica = ['ALIMENTO', 'PERECEDERO', 'FARMACEUTICO', 'QUIMICO', 'PELIGROSO'].includes(
-      (item.skuCategoria || '').toUpperCase(),
-    );
+    // 5. ÁREAS FÍSICAS COMERCIALES GENERALES (INTERIOR, EXTERIOR_TECHADO, ALMACENAMIENTO / PICKING)
+    // En el layout físico real sin matriz restrictiva ni incompatibilidad térmica/funcional,
+    // las zonas comerciales generales admiten el almacenamiento conforme sin depender de ALM-A / ALM-B.
+    if (this.isGeneralCommercialStorageZone(loc, classification)) {
+      return {
+        status: 'COMPATIBLE',
+        fuente: 'ZONA_ALMACENAMIENTO_GENERAL',
+        motivo: `Zona comercial general (${loc.zona?.nombre || loc.zona?.codigo || 'Almacén'}) habilitada para almacenamiento (${locTemp})`,
+        esCritica: false,
+      };
+    }
+
+    // 6. SIN CONFIGURACIÓN FORMAL (zonas no generales sin matriz configurada)
+    const esCategoriaCritica = ['ALIMENTO', 'PERECEDERO', 'FARMACEUTICO', 'QUIMICO', 'PELIGROSO'].includes(skuCat);
 
     return {
       status: 'NO_CONFIGURADO',
@@ -563,6 +775,13 @@ export class PutawayEngineService {
       client?.zonaExclusiva === true ||
       client?.politicaZona === 'EXCLUSIVA' ||
       client?.politicaZona === 'OBLIGATORIA';
+
+    // Verificar si la zona asignada al cliente tiene posiciones almacenables activas en el layout vigente;
+    // si apunta a una zona histórica sin posiciones activas (ej. ALM-A/ALM-B), no bloquea el layout actual.
+    const hasActiveAssignedZone = Boolean(
+      client?.zonaAsignadaId &&
+      allLocations.some((l) => l.activo && l.esAlmacenable && l.zonaId === client.zonaAsignadaId),
+    );
 
     const clienteId = client?.id;
 
@@ -608,31 +827,37 @@ export class PutawayEngineService {
         continue;
       }
 
-      // 4. Excluir llenas
-      if (loc.estadoCapacidad === 'LLENO') {
+      const isSamePalletReuse = this.isSamePalletOccupyingLocation(loc, item);
+      const isHuAlreadyHere = Boolean(item?.huId && (loc.husPresentesIds || []).includes(item.huId));
+
+      // 4. Excluir llenas (salvo consolidación de cajas hermanas de la misma tarima física padre)
+      if (loc.estadoCapacidad === 'LLENO' && !isSamePalletReuse) {
         discardedFull++;
         continue;
       }
 
       // 5. Excluir falta de capacidad en piezas para la HU entrante
-      if (loc.capacidadDisponibleUnidades < huCantidad) {
+      // En posiciones de tarima en piso (capacidad = 1 tarima física), una posición libre (o ocupada por la misma tarima padre)
+      // admite la tarima completa independientemente del conteo de piezas. Para racks se valida capacidad en piezas.
+      const isFloorPallet = this.isFloorPalletLocation(loc, loc.esAlmacenable);
+
+      if (!isFloorPallet && !isHuAlreadyHere && loc.capacidadDisponibleUnidades < huCantidad) {
         discardedInsufficientUnits++;
         continue;
       }
 
       // 6. Capacidad física en bultos (HUs):
       // Si existe una capacidad real/configurada de bultos para la Location, validarla estrictamente.
-      // Si no existe fuente real en BD (capacidadBultos === null / NO_CONFIGURADA), NO inventar valores
-      // (5 ni 1) ni descartar por bultos ficticios; la decisión temporal se apoya en capacidad real de piezas + estado físico.
+      // Para posiciones de piso (capacidad = 1 tarima), solo permite reuso cuando la ocupación pertenece al mismo parentHuId.
       if (loc.capacidadBultos !== null && loc.capacidadDisponibleBultos !== null) {
-        if (loc.capacidadDisponibleBultos < 1) {
+        if (loc.capacidadDisponibleBultos < 1 && !isSamePalletReuse) {
           discardedInsufficientBultos++;
           continue;
         }
       }
 
-      // 7. Filtro estricto de Zona Exclusiva / Obligatoria (cuando esté configurada para el depositante)
-      if (isStrictZone && client?.zonaAsignadaId && loc.zonaId !== client.zonaAsignadaId) {
+      // 7. Filtro estricto de Zona Exclusiva / Obligatoria (cuando esté configurada en una zona vigente)
+      if (isStrictZone && hasActiveAssignedZone && client?.zonaAsignadaId && loc.zonaId !== client.zonaAsignadaId) {
         discardedIncompatibleZoneOrClient++;
         continue;
       }
@@ -658,8 +883,8 @@ export class PutawayEngineService {
 
       const hasOtherSkuInLoc = Boolean(
         item?.skuCodigo &&
-          loc.skusPresentes.length > 0 &&
-          !loc.skusPresentes.includes(item.skuCodigo),
+        loc.skusPresentes.length > 0 &&
+        !loc.skusPresentes.includes(item.skuCodigo),
       );
       if (isSingleSkuEnforced && hasOtherSkuInLoc) {
         discardedProductIncompatibility++;
@@ -731,6 +956,7 @@ export class PutawayEngineService {
     candidates: EnrichedLocation[],
     item: PutawayItemInput,
     client: any,
+    options?: { clientHasActiveAssignedZone?: boolean },
   ): RankedLocationCandidate[] {
     const scoredList: RankedLocationCandidate[] = [];
 
@@ -753,33 +979,50 @@ export class PutawayEngineService {
 
     const clienteId = client?.id || item.clienteId;
     const clientAssignedZoneId = client?.zonaAsignadaId;
+    const clientHasActiveAssignedZone =
+      options?.clientHasActiveAssignedZone ??
+      Boolean(clientAssignedZoneId && candidates.some((c) => c.zonaId === clientAssignedZoneId));
 
     for (const loc of candidates) {
       let score = 50; // Base inicial para ubicación disponible y almacenable
       const razonesFavorables: string[] = [];
       const advertencias: string[] = [];
 
+      const isSamePalletReuse = this.isSamePalletOccupyingLocation(loc, item);
+
       // =======================================================================
-      // 1. COMPATIBILIDAD 3PL / DEPOSITANTE (Regla 4)
+      // 1. COMPATIBILIDAD 3PL / DEPOSITANTE Y RESGUARDO FÍSICO (Regla 4)
       // =======================================================================
       const isZoneAssigned = clientAssignedZoneId && loc.zonaId === clientAssignedZoneId;
       if (isZoneAssigned) {
         score += 30;
         razonesFavorables.push(`Zona preferente asignada al depositante (${loc.zona?.nombre || loc.zona?.codigo})`);
-      } else if (!clientAssignedZoneId) {
+      } else if (!clientAssignedZoneId || !clientHasActiveAssignedZone) {
         score += 10;
-        razonesFavorables.push(`Zona de almacenamiento comercial (${loc.zona?.nombre || loc.zona?.codigo})`);
+        razonesFavorables.push(`Zona de almacenamiento comercial (${loc.zona?.nombre || loc.zona?.codigo || 'General'})`);
       } else {
-        // La zona no es la preferente asignada al depositante
+        // La zona no es la preferente activa asignada al depositante
         score -= 25;
         advertencias.push(`Zona secundaria (${loc.zona?.nombre || loc.zona?.codigo}), fuera de zona preferente`);
       }
 
+      // Prioridad operativa al área interior cubierta respecto a exterior techado cuando ambas están disponibles
+      const zonaCodigoUpper = String(loc.zona?.codigo || '').toUpperCase().trim();
+      if (zonaCodigoUpper === 'INTERIOR') {
+        score += 5;
+        razonesFavorables.push('Área Interior: resguardo físico cubierto prioritario');
+      }
+
       // =======================================================================
-      // 2. CONSOLIDACIÓN DE SKU Y LOTE vs CELDA VACÍA vs MULTI-SKU (Reglas 1, 2, 3, 4, 5)
-      // Orden conceptual esperado:
-      // Mismo SKU compatible -> Celda vacía compatible -> Multi-SKU permitido -> resto
+      // 2. CONSOLIDACIÓN DE TARIMA / SKU / LOTE vs CELDA VACÍA vs MULTI-SKU
       // =======================================================================
+      if (isSamePalletReuse) {
+        score += 60;
+        razonesFavorables.unshift(
+          'Consolidación de misma tarima física en curso (mantiene cajas hermanas juntas en 1/1 tarima)',
+        );
+      }
+
       const hasSameClient = Boolean(clienteId && loc.depositantesPresentes.includes(clienteId));
       const hasOtherClient = loc.depositantesPresentes.some((cid) => cid !== clienteId);
       const isCellEmpty = loc.depositantesPresentes.length === 0;
@@ -870,6 +1113,9 @@ export class PutawayEngineService {
         if (isPicking) {
           score += 15;
           razonesFavorables.push('Nivel Picking: Fácil acceso operativo para surtido');
+        } else if (isMixto) {
+          score += 15;
+          razonesFavorables.push('Posición física en piso: Accesibilidad directa a nivel de suelo para tarima');
         } else {
           score += 12;
           razonesFavorables.push('Nivel Reserva: Almacenaje estandarizado en estantería alta');
@@ -879,9 +1125,11 @@ export class PutawayEngineService {
       // =======================================================================
       // 5. ESPACIO FÍSICO Y CAPACIDAD DESPUÉS DE ALOJAR (Regla 3)
       // =======================================================================
+      const isFloorPallet = this.isFloorPalletLocation(loc, loc.esAlmacenable);
+
       const unidadesDespues = loc.ocupacionUnidades + item.cantidad;
       const capacidadRestanteDespues = Math.max(0, loc.capacidadUnits - unidadesDespues);
-      const bultosDespues = loc.ocupacionBultos + 1;
+      const bultosDespues = isSamePalletReuse ? Math.max(1, loc.ocupacionBultos) : (loc.ocupacionBultos + 1);
       const hasCapBultos = loc.capacidadBultos !== null && loc.capacidadBultos !== undefined;
       const capBultosRestanteDespues = hasCapBultos
         ? Math.max(0, (loc.capacidadBultos as number) - bultosDespues)
@@ -893,11 +1141,20 @@ export class PutawayEngineService {
         ? ` y ${capBultosRestanteDespues} bultos disponibles`
         : ` · Actualmente: ${formatBultosAlojad(loc.ocupacionBultos)} (después del acomodo: ${formatBultosAlojad(bultosDespues)} · límite no configurado)`;
 
-      razonesFavorables.push(
-        `Espacio verificado: Capacidad para alojar ${item.cantidad} piezas (quedarán ${capacidadRestanteDespues} pzas${bultosTexto})`,
-      );
+      if (isFloorPallet) {
+        const estadoOcupacionTexto = isSamePalletReuse
+          ? 'Misma Tarima Master en curso (1/1 tarima)'
+          : (loc.ocupacionBultos === 0 ? '0/1 tarimas ocupadas (Libre)' : `${loc.ocupacionBultos}/1 tarimas ocupadas`);
+        razonesFavorables.push(
+          `Posición física en piso: Capacidad disponible 1 tarima (${estadoOcupacionTexto}) · 1/1 tarimas tras acomodo`,
+        );
+      } else {
+        razonesFavorables.push(
+          `Espacio verificado: Capacidad para alojar ${item.cantidad} piezas (quedarán ${capacidadRestanteDespues} pzas${bultosTexto})`,
+        );
+      }
 
-      if (capacidadRestanteDespues >= 10 && (!hasCapBultos || (capBultosRestanteDespues ?? 0) >= 1)) {
+      if (isFloorPallet ? (capBultosRestanteDespues ?? 1) >= 0 : (capacidadRestanteDespues >= 10 && (!hasCapBultos || (capBultosRestanteDespues ?? 0) >= 1))) {
         score += 5;
       }
 
@@ -912,16 +1169,22 @@ export class PutawayEngineService {
         rack: loc.rack,
         nivel: loc.nivel,
         tipoNivel: loc.tipoNivel,
+        tipoUbicacion: loc.tipoUbicacion,
+        isFloorPallet,
+        isSamePalletConsolidation: isSamePalletReuse,
         zonaNombre: loc.zona?.nombre || loc.zona?.codigo || 'Almacenamiento General',
         score: normalizedScore,
         rawScore,
-        capacidadDisponibleUnidades: loc.capacidadDisponibleUnidades,
+        capacidadDisponibleUnidades: isFloorPallet ? null : loc.capacidadDisponibleUnidades,
         capacidadDisponibleBultos: loc.capacidadDisponibleBultos,
         capacidadBultosEstado: loc.capacidadBultosEstado,
+        capacidadTexto: isFloorPallet
+          ? (isSamePalletReuse ? '1/1 tarima (Misma Tarima Master en curso)' : (loc.ocupacionBultos >= 1 ? '1/1 tarimas ocupadas' : 'Capacidad disponible: 1 tarima'))
+          : `${loc.capacidadDisponibleUnidades} pzas libres`,
         ocupacionUnidadesActual: loc.ocupacionUnidades,
         ocupacionBultosActual: loc.ocupacionBultos,
         unidadesDespuesDeAlojar: unidadesDespues,
-        capacidadRestanteDespues,
+        capacidadRestanteDespues: isFloorPallet ? null : capacidadRestanteDespues,
         bultosDespuesDeAlojar: bultosDespues,
         capacidadBultosRestanteDespues: capBultosRestanteDespues,
         razonesFavorables,
@@ -931,13 +1194,15 @@ export class PutawayEngineService {
     }
 
     // Ordenar de mayor a menor score real, luego penalizar advertencias, y por pasillo/rack/nivel como desempate natural
+    // y desempate alfanumérico natural por código (G0001, G0002, G0010, A01-R01-N1)
     scoredList.sort((a: any, b: any) => {
       if (b.rawScore !== a.rawScore) return b.rawScore - a.rawScore;
       if (a.advertencias.length !== b.advertencias.length) return a.advertencias.length - b.advertencias.length;
       if (b.score !== a.score) return b.score - a.score;
       if (a.pasillo !== b.pasillo) return a.pasillo.localeCompare(b.pasillo);
       if (a.rack !== b.rack) return a.rack.localeCompare(b.rack);
-      return a.nivel.localeCompare(b.nivel);
+      if (a.nivel !== b.nivel) return a.nivel.localeCompare(b.nivel);
+      return a.codigo.localeCompare(b.codigo, undefined, { numeric: true, sensitivity: 'base' });
     });
 
     return scoredList;
@@ -954,6 +1219,7 @@ export class PutawayEngineService {
       include: {
         cliente: true,
         lineas: { include: { sku: true } },
+        inspecciones: true,
         handlingUnits: {
           where: { estadoHu: 'ACTIVO' },
           include: { lote: true },
@@ -966,15 +1232,29 @@ export class PutawayEngineService {
       throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);
     }
 
-    const canProceed = receipt.etiquetasEstado === 'COLOCADAS';
-    const lockMessage = !canProceed
-      ? receipt.etiquetasEstado === 'IMPRESAS'
+    const totalDanadaLineas = receipt.lineas?.reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0) || 0;
+    const hasDamagedUnits = (receipt.bultosDanados || 0) > 0 || totalDanadaLineas > 0;
+    const isQualityLiberated =
+      receipt.inspeccionCalidadEstado === 'COMPLETADA' ||
+      (receipt.inspecciones && receipt.inspecciones.length > 0) ||
+      (!hasDamagedUnits && (receipt.estado === 'CONCILIADO' || receipt.conteoAndenEstado === 'COMPLETADO'));
+
+    const canProceed = receipt.etiquetasEstado === 'COLOCADAS' && isQualityLiberated;
+    let lockMessage: string | null = null;
+    if (!isQualityLiberated) {
+      lockMessage = 'La recepción no cuenta con dictamen de calidad LIBERADO. Se requiere completar la verificación y liberación en andén antes de alojar en racks.';
+    } else if (receipt.etiquetasEstado !== 'COLOCADAS') {
+      lockMessage = receipt.etiquetasEstado === 'IMPRESAS'
         ? 'Las etiquetas Giving Out ya están impresas pero aún no se ha confirmado su pegado físico en las cajas/tarimas. Confirma la colocación antes de trasladar a racks.'
-        : 'Las etiquetas Giving Out aún no han sido impresas ni colocadas. Debe completarse la Fase 3 (Doble Etiquetado) antes de iniciar el alojamiento.'
-      : null;
+        : 'Las etiquetas Giving Out aún no han sido impresas ni colocadas. Debe completarse la Fase 3 (Doble Etiquetado) antes de iniciar el alojamiento.';
+    }
 
     // Obtener layout enriquecido con ocupación real de BD
     const allLocations = await this.getEnrichedWarehouseLayout();
+    const clientHasActiveAssignedZone = Boolean(
+      receipt.cliente?.zonaAsignadaId &&
+      allLocations.some((l) => l.activo && l.esAlmacenable && l.zonaId === receipt.cliente.zonaAsignadaId),
+    );
 
     // Identificar las cajas a ubicar
     const activeBoxes = receipt.handlingUnits.filter((h) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO');
@@ -982,11 +1262,14 @@ export class PutawayEngineService {
 
     if (activeBoxes.length > 0) {
       activeBoxes.forEach((box) => {
-        const line = receipt.lineas.find((l) => l.sku?.codigo === box.skuCodigo);
+        const line =
+          receipt.lineas.find((l) => l.id === box.receiptLineId) ||
+          receipt.lineas.find((l) => l.sku?.codigo === box.skuCodigo);
         itemsToProcess.push({
           huId: box.id,
           huCodigo: box.codigo,
           tipoHu: 'CAJA',
+          parentHuId: box.parentHuId || null,
           skuId: box.lote?.skuId || line?.skuId || '',
           skuCodigo: box.skuCodigo || 'SKU',
           skuDescripcion: box.skuDescripcion || line?.sku?.descripcion || 'Caja de producto',
@@ -1009,6 +1292,7 @@ export class PutawayEngineService {
           huId: null,
           huCodigo: `PARTIDA-${l.sku?.codigo}`,
           tipoHu: 'PARTIDA',
+          parentHuId: null,
           skuId: l.skuId,
           skuCodigo: l.sku?.codigo || 'SKU',
           skuDescripcion: l.sku?.descripcion || 'Partida de recibo',
@@ -1030,6 +1314,39 @@ export class PutawayEngineService {
     const reglaRotacion = receipt.cliente?.reglaInventario || (receipt.cliente?.requiereCaducidad ? 'FEFO' : 'FIFO');
 
     let totalDiagnostics: DiscardDiagnostics | null = null;
+
+    const toSuggestionLocationDto = (candidate: RankedLocationCandidate) => {
+      const isFloor = Boolean(candidate.isFloorPallet ?? this.isFloorPalletLocation(candidate, true));
+      return {
+        id: candidate.id,
+        codigo: candidate.codigo,
+        pasillo: candidate.pasillo,
+        rack: candidate.rack,
+        nivel: candidate.nivel,
+        tipoNivel: candidate.tipoNivel,
+        tipoUbicacion: candidate.tipoUbicacion,
+        isFloorPallet: isFloor,
+        isSamePalletConsolidation: Boolean(candidate.isSamePalletConsolidation),
+        zonaNombre: candidate.zonaNombre,
+        score: candidate.score,
+        capacidadLibre: isFloor
+          ? (candidate.capacidadDisponibleBultos ?? (candidate.ocupacionBultosActual >= 1 ? 0 : 1))
+          : candidate.capacidadDisponibleUnidades,
+        capacidadDisponibleUnidades: isFloor ? null : candidate.capacidadDisponibleUnidades,
+        capacidadDisponibleBultos: candidate.capacidadDisponibleBultos,
+        capacidadTexto:
+          candidate.capacidadTexto ||
+          (candidate.ocupacionBultosActual >= 1 ? '1/1 tarimas ocupadas' : 'Capacidad disponible: 1 tarima'),
+        ocupacionUnidadesActual: candidate.ocupacionUnidadesActual,
+        ocupacionBultosActual: candidate.ocupacionBultosActual,
+        unidadesDespuesDeAlojar: candidate.unidadesDespuesDeAlojar,
+        capacidadRestanteDespues: isFloor ? null : candidate.capacidadRestanteDespues,
+        bultosDespuesDeAlojar: candidate.bultosDespuesDeAlojar,
+        capacidadBultosRestanteDespues: candidate.capacidadBultosRestanteDespues,
+        razonesFavorables: candidate.razonesFavorables,
+        advertencias: candidate.advertencias,
+      };
+    };
 
     const suggestions = itemsToProcess.map((item) => {
       const now = new Date();
@@ -1055,7 +1372,9 @@ export class PutawayEngineService {
       if (!totalDiagnostics) totalDiagnostics = diagnostics;
 
       // 2. Evaluar y rankear candidatos
-      const rankedCandidates = this.rankCandidatesForItem(candidates, item, receipt.cliente);
+      const rankedCandidates = this.rankCandidatesForItem(candidates, item, receipt.cliente, {
+        clientHasActiveAssignedZone,
+      });
 
       const topCandidate = rankedCandidates[0] || null;
       const alternatives = rankedCandidates.slice(1, 4); // Top 3 alternativas
@@ -1072,50 +1391,8 @@ export class PutawayEngineService {
         advertencias: hasValidCandidate
           ? topCandidate.advertencias
           : [canonicalNoCandidateMsg, ...(diagnostics.motivoAgotamiento ? [diagnostics.motivoAgotamiento] : [])],
-        suggestedLocation: topCandidate
-          ? {
-              id: topCandidate.id,
-              codigo: topCandidate.codigo,
-              pasillo: topCandidate.pasillo,
-              rack: topCandidate.rack,
-              nivel: topCandidate.nivel,
-              tipoNivel: topCandidate.tipoNivel,
-              zonaNombre: topCandidate.zonaNombre,
-              score: topCandidate.score,
-              capacidadLibre: topCandidate.capacidadDisponibleUnidades,
-              capacidadDisponibleUnidades: topCandidate.capacidadDisponibleUnidades,
-              capacidadDisponibleBultos: topCandidate.capacidadDisponibleBultos,
-              ocupacionUnidadesActual: topCandidate.ocupacionUnidadesActual,
-              ocupacionBultosActual: topCandidate.ocupacionBultosActual,
-              unidadesDespuesDeAlojar: topCandidate.unidadesDespuesDeAlojar,
-              capacidadRestanteDespues: topCandidate.capacidadRestanteDespues,
-              bultosDespuesDeAlojar: topCandidate.bultosDespuesDeAlojar,
-              capacidadBultosRestanteDespues: topCandidate.capacidadBultosRestanteDespues,
-              razonesFavorables: topCandidate.razonesFavorables,
-              advertencias: topCandidate.advertencias,
-            }
-          : null,
-        alternativeLocations: alternatives.map((alt) => ({
-          id: alt.id,
-          codigo: alt.codigo,
-          pasillo: alt.pasillo,
-          rack: alt.rack,
-          nivel: alt.nivel,
-          tipoNivel: alt.tipoNivel,
-          zonaNombre: alt.zonaNombre,
-          score: alt.score,
-          capacidadLibre: alt.capacidadDisponibleUnidades,
-          capacidadDisponibleUnidades: alt.capacidadDisponibleUnidades,
-          capacidadDisponibleBultos: alt.capacidadDisponibleBultos,
-          ocupacionUnidadesActual: alt.ocupacionUnidadesActual,
-          ocupacionBultosActual: alt.ocupacionBultosActual,
-          unidadesDespuesDeAlojar: alt.unidadesDespuesDeAlojar,
-          capacidadRestanteDespues: alt.capacidadRestanteDespues,
-          bultosDespuesDeAlojar: alt.bultosDespuesDeAlojar,
-          capacidadBultosRestanteDespues: alt.capacidadBultosRestanteDespues,
-          razonesFavorables: alt.razonesFavorables,
-          advertencias: alt.advertencias,
-        })),
+        suggestedLocation: topCandidate ? toSuggestionLocationDto(topCandidate) : null,
+        alternativeLocations: alternatives.map(toSuggestionLocationDto),
       };
     });
 
@@ -1217,8 +1494,8 @@ export class PutawayEngineService {
         const motivo = isDeadlock
           ? 'PostgreSQL Deadlock (40P01)'
           : isLockTimeout
-          ? 'PostgreSQL Lock Timeout (55P03)'
-          : (error?.message || 'Error transaccional');
+            ? 'PostgreSQL Lock Timeout (55P03)'
+            : (error?.message || 'Error transaccional');
 
         if ((isDeadlock || isLockTimeout) && attempt <= maxRetries) {
           const backoffMs = 50 * attempt + Math.floor(Math.random() * 50);
@@ -1266,6 +1543,9 @@ export class PutawayEngineService {
       huBultos?: number;
       client?: any;
       item?: PutawayItemInput;
+      incomingHuIds?: string[];
+      incomingParentHuIds?: string[];
+      incomingPalletKeys?: string[];
     },
   ): Promise<{ valid: boolean; error?: string; location?: any }> {
     const db = tx || this.prisma;
@@ -1325,13 +1605,58 @@ export class PutawayEngineService {
       };
     }
 
-    // 3. Conteo de bultos actuales en tiempo real dentro de la transacción
-    const activeHusCount = await db.handlingUnit.count({
-      where: {
-        OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
-        estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
-      },
-    });
+    // 3. Conteo de tarimas físicas actuales en tiempo real dentro de la transacción
+    // Agrupa cajas hijas (parentHuId) bajo su tarima física master para permitir cajas hermanas
+    // de la misma tarima padre y rechazar cualquier segunda tarima física distinta.
+    const incomingHuIds = new Set<string>(
+      [...(options?.incomingHuIds || []), ...(options?.item?.huId ? [options.item.huId] : [])].filter(Boolean),
+    );
+    const incomingPalletKeys = new Set<string>(
+      [
+        ...(options?.incomingPalletKeys || []),
+        ...(options?.incomingParentHuIds || []),
+        ...(options?.item?.parentHuId
+          ? [options.item.parentHuId]
+          : options?.item?.huId
+            ? [options.item.huId]
+            : []),
+      ].filter(Boolean),
+    );
+
+    let activeHusCount = 0;
+    const existingOtherPallets = new Set<string>();
+    const samePalletLotIds = new Set<string>();
+    if (typeof db.handlingUnit?.findMany === 'function') {
+      const activeHusInLoc = await db.handlingUnit.findMany({
+        where: {
+          OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
+          estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
+        },
+        select: { id: true, parentHuId: true, tipoHu: true, lotId: true },
+      });
+      const distinctPallets = new Set<string>();
+      for (const h of activeHusInLoc) {
+        const palletKey = this.getPhysicalPalletKey(h);
+        distinctPallets.add(palletKey);
+        const belongsToIncomingPallet = incomingPalletKeys.has(palletKey) || incomingHuIds.has(h.id);
+        if (belongsToIncomingPallet) {
+          if (h.lotId) samePalletLotIds.add(h.lotId);
+        } else {
+          existingOtherPallets.add(palletKey);
+        }
+      }
+      activeHusCount = distinctPallets.size;
+    } else if (typeof db.handlingUnit?.count === 'function') {
+      activeHusCount = await db.handlingUnit.count({
+        where: {
+          OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
+          estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
+        },
+      });
+      if (activeHusCount > 0 && incomingPalletKeys.size === 0) {
+        existingOtherPallets.add('__COUNT_OCCUPIED__');
+      }
+    }
 
     const capUnits = (loc as any).capacidadUnits || 100;
     const hasConfiguredCapBultos =
@@ -1343,34 +1668,68 @@ export class PutawayEngineService {
     const ocupUnidades = sumDisp + sumBloq;
     const ocupBultos = activeHusCount;
 
+    const hasForeignLotInventory = loc.lotes.some(
+      (l: any) => ((l.cantidadDisponible || 0) + (l.cantidadBloqueada || 0)) > 0 && !samePalletLotIds.has(l.id),
+    );
+
     const capDispUnidades = Math.max(0, capUnits - ocupUnidades);
     const capDispBultos = hasConfiguredCapBultos && capBultos !== null
-      ? Math.max(0, capBultos - ocupBultos)
+      ? Math.max(0, capBultos - existingOtherPallets.size)
       : null;
 
-    // 4. Verificación de sobrecapacidad actual
-    if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
-      return {
-        valid: false,
-        error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y se encuentra en sobrecapacidad (${ocupUnidades}/${capUnits} piezas${hasConfiguredCapBultos ? `, ${ocupBultos}/${capBultos} bultos` : ''}). Solicite una nueva ubicación.`,
-      };
-    }
+    const isFloorPallet = this.isFloorPalletLocation(loc, classification.esAlmacenable);
 
-    // 5. Verificación de capacidad restante en piezas (Mensaje operativo canónico de Regla 7)
-    if (capDispUnidades < huCantidad) {
-      return {
-        valid: false,
-        error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene capacidad suficiente. Solicite una nueva ubicación.`,
-      };
-    }
+    const incomingPalletCount =
+      options?.huBultos === 0 && incomingPalletKeys.size === 0
+        ? 0
+        : incomingPalletKeys.size > 0
+          ? incomingPalletKeys.size
+          : (options?.huBultos ?? 1);
 
-    // 6. Verificación de capacidad restante en bultos (SOLO si existe configuración física real en BD)
-    const requiredBultos = options?.huBultos || 1;
-    if (hasConfiguredCapBultos && capDispBultos !== null && capDispBultos < requiredBultos) {
-      return {
-        valid: false,
-        error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene espacio para bultos adicionales (${ocupBultos}/${capBultos} bultos ocupados). Solicite una nueva ubicación.`,
-      };
+    // Regla Canónica de Capacidad para Posiciones de Tarima en Piso:
+    // Cada ubicación física de piso admite exactamente UNA sola tarima física (parentHuId || id).
+    if (isFloorPallet) {
+      if (incomingPalletCount > 1) {
+        return {
+          valid: false,
+          error: `La ubicación física ${loc.codigo} admite máximo 1 tarima física por posición, pero se intentaron alojar ${incomingPalletCount} tarimas distintas.`,
+        };
+      }
+      if (
+        existingOtherPallets.size > 0 ||
+        (incomingPalletCount > 0 && hasForeignLotInventory) ||
+        (incomingPalletCount === 0 && (sumDisp + sumBloq) > 0)
+      ) {
+        const occupiedCount = Math.max(existingOtherPallets.size, activeHusCount, 1);
+        return {
+          valid: false,
+          error: `La ubicación física ${loc.codigo} ya contiene una tarima alojada (${occupiedCount}/1 tarimas). No es posible estibar una segunda tarima.`,
+        };
+      }
+    } else {
+      // 4. Verificación de sobrecapacidad actual
+      if (ocupUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupBultos > capBultos)) {
+        return {
+          valid: false,
+          error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y se encuentra en sobrecapacidad (${ocupUnidades}/${capUnits} piezas${hasConfiguredCapBultos ? `, ${ocupBultos}/${capBultos} bultos` : ''}). Solicite una nueva ubicación.`,
+        };
+      }
+
+      // 5. Verificación de capacidad restante en piezas (Mensaje operativo canónico de Regla 7)
+      if (capDispUnidades < huCantidad) {
+        return {
+          valid: false,
+          error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene capacidad suficiente. Solicite una nueva ubicación.`,
+        };
+      }
+
+      // 6. Verificación de capacidad restante en bultos (SOLO si existe configuración física real en BD)
+      if (hasConfiguredCapBultos && capBultos !== null && (existingOtherPallets.size + incomingPalletCount) > capBultos) {
+        return {
+          valid: false,
+          error: `La ubicación ${loc.codigo} cambió desde que fue sugerida y ya no tiene espacio para bultos adicionales (${ocupBultos}/${capBultos} bultos ocupados). Solicite una nueva ubicación.`,
+        };
+      }
     }
 
     // 7. Compatibilidad producto-zona dentro de la transacción (si se suministra item)
@@ -1458,9 +1817,19 @@ export class PutawayEngineService {
       0,
     );
 
-    // Ocupación canónica de bultos derivada estrictamente de HandlingUnit activas
+    // Ocupación canónica de bultos/tarimas físicas derivada de HandlingUnit activas
     let ocupacionBultos = 0;
-    if (typeof tx.handlingUnit?.count === 'function') {
+    if (typeof tx.handlingUnit?.findMany === 'function') {
+      const activeHus = await tx.handlingUnit.findMany({
+        where: {
+          ubicacionActual: loc.codigo,
+          estadoHu: 'ACTIVO',
+        },
+        select: { id: true, parentHuId: true, tipoHu: true },
+      });
+      const distinctPallets = new Set(activeHus.map((h: any) => h.parentHuId || h.id));
+      ocupacionBultos = distinctPallets.size;
+    } else if (typeof tx.handlingUnit?.count === 'function') {
       ocupacionBultos = await tx.handlingUnit.count({
         where: {
           ubicacionActual: loc.codigo,
@@ -1487,12 +1856,28 @@ export class PutawayEngineService {
       };
     }
 
+    const isFloorPallet =
+      loc.tipoUbicacion === 'TARIMA_PISO' ||
+      (loc.tipoUbicacion === 'PISO' && classification.esAlmacenable) ||
+      (loc.codigo && loc.codigo.toUpperCase().startsWith('G'));
+
+    const effectiveCapBultos = isFloorPallet ? 1 : capBultos;
+    const hasCapBultos = isFloorPallet || hasConfiguredCapBultos;
+
     let nuevoEstado = 'LIBRE';
-    if (ocupacionUnidades === 0 && ocupacionBultos === 0) {
+    if (isFloorPallet) {
+      if (ocupacionBultos > 1) {
+        nuevoEstado = 'SOBRECAPACIDAD';
+      } else if (ocupacionBultos >= 1 || ocupacionUnidades > 0) {
+        nuevoEstado = 'LLENO';
+      } else {
+        nuevoEstado = 'LIBRE';
+      }
+    } else if (ocupacionUnidades === 0 && ocupacionBultos === 0) {
       nuevoEstado = 'LIBRE';
-    } else if (ocupacionUnidades > capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupacionBultos > capBultos)) {
+    } else if (ocupacionUnidades > capUnits || (hasCapBultos && effectiveCapBultos !== null && ocupacionBultos > effectiveCapBultos)) {
       nuevoEstado = 'SOBRECAPACIDAD';
-    } else if (ocupacionUnidades >= capUnits || (hasConfiguredCapBultos && capBultos !== null && ocupacionBultos >= capBultos)) {
+    } else if (ocupacionUnidades >= capUnits || (hasCapBultos && effectiveCapBultos !== null && ocupacionBultos >= effectiveCapBultos)) {
       nuevoEstado = 'LLENO';
     } else {
       nuevoEstado = 'PARCIAL';

@@ -8,6 +8,12 @@ import {
 import JsBarcode from 'jsbarcode';
 import { API } from '../config/api';
 import { formatCalendarDate, formatDateTime } from '../utils/dateUtils';
+import {
+  classifyQualityOutcome,
+  hasDetailsDamageEvidence,
+  isActiveRescuedBox,
+  parseQualityDetalles,
+} from '../utils/qualityReportClassification';
 
 export interface ReceiptReportModalProps {
   receipt: any;
@@ -350,8 +356,15 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
 
   // 2. Identificar la caja destino del rescate (reacondicionada, activa y conforme en inventario)
   // Regla general: Excluir estrictamente la caja dañada de origen, merma y cualquier HU inactiva o con sufijo DANO.
+  const qiDetallesParsed = parseQualityDetalles(qiRecord);
+  const hasDamageContextForPartialFallback = Boolean(
+    originDamagedBox ||
+      bultosDanados > 0 ||
+      qiRecord?.cajaOrigenCodigo ||
+      hasDetailsDamageEvidence(qiDetallesParsed),
+  );
   const reconditionedBox = boxHus.find((b: any) => {
-    if (isHuMerma(b) || isHuQuarantine(b)) return false;
+    if (isHuMerma(b) || isHuQuarantine(b) || isHuSegregatedOther(b)) return false;
     if (originDamagedBox && b.id === originDamagedBox.id) return false;
     if (typeof b.codigo === 'string' && b.codigo.includes('DANO')) return false;
     if (b.estadoHu === 'INACTIVO' || b.estadoHu === 'DAÑADO') return false;
@@ -366,10 +379,12 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
     // Prioridad 3: Marcada como reacondicionada y activa
     if (b.reacondicionada && b.estadoHu === 'ACTIVO') return true;
 
-    // Prioridad 4: Caja activa con cantidad menor a capacidad de empaque
-    const lineMatchB = receipt?.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo || l.skuId === b.lote?.skuId);
-    const skuFactor = b.lote?.sku?.capacidadEmpaque || b.piezasPorCaja || lineMatchB?.sku?.capacidadEmpaque || lineMatchB?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
-    if (b.estadoHu === 'ACTIVO' && Number(b.cantidad) < skuFactor) return true;
+    // Prioridad 4: Caja activa con cantidad menor a capacidad de empaque (solo si existe contexto de daño/rescate)
+    if (hasDamageContextForPartialFallback) {
+      const lineMatchB = receipt?.lineas?.find((l: any) => l.sku?.codigo === b.skuCodigo || l.skuId === b.lote?.skuId);
+      const skuFactor = b.lote?.sku?.capacidadEmpaque || b.piezasPorCaja || lineMatchB?.sku?.capacidadEmpaque || lineMatchB?.piezasPorCaja || (receipt?.piezasPorCajaEsperadas || 1);
+      if (b.estadoHu === 'ACTIVO' && Number(b.cantidad) < skuFactor) return true;
+    }
 
     return false;
   });
@@ -411,24 +426,39 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
     motivoNoAplica: 'No aplica — sin unidades de manejo (HUs) ni tarimas registradas',
   };
 
-  // Anexo B — Inspección, Calidad y Rescate (100% Condicional)
+  // Anexo B — Calidad, Liberación Conforme, Inspección y Rescate (100% Condicional)
   const hasQualityInspection = Boolean(qiRecord || inspectionData?.inspeccion);
   const hasDamagedBoxes = bultosDanados > 0 || boxHus.some((b: any) => isHuInactive(b) || (typeof b.codigo === 'string' && b.codigo.includes('DANO')));
-  const hasRescue = boxHus.some((b: any) => b.reacondicionada || Boolean(b.cajaOrigenId));
+  const hasRescue = boxHus.some((b: any) => isActiveRescuedBox(b));
   const hasMerma = totalMermaPiezas > 0 || husMermaBloqueadas > 0 || boxHus.some((b: any) => isHuMerma(b));
   const hasQuarantine = husCuarentenaBloqueadas > 0 || boxHus.some((b: any) => isHuQuarantine(b) || isHuSegregatedOther(b));
+
+  const qualitySummary = classifyQualityOutcome({
+    qiRecord,
+    bultosDanados,
+    bultosRecibidos,
+    totalConformePiezas,
+    totalMermaPiezas,
+    boxHus,
+    hasDamagedBoxes,
+    hasMerma,
+    hasQuarantine,
+    originDamagedBox,
+    reconditionedBox,
+  });
+
   const hasAnnexBContent = Boolean(hasQualityInspection || hasDamagedBoxes || hasRescue || hasMerma || hasQuarantine);
 
   const annexB = {
     id: 'ANNEX_B' as const,
     code: 'B' as const,
-    titulo: 'Inspección y Rescate',
+    titulo: qualitySummary.anexoBTituloChecklist,
     aplica: hasAnnexBContent,
     seleccionable: hasAnnexBContent,
     seleccionado: hasAnnexBContent && Boolean(userSelectedAnnexes.ANNEX_B),
     tieneContenido: hasAnnexBContent,
     cantidadRegistros: qiRecord?.detalles?.length || (hasAnnexBContent ? 1 : 0),
-    motivoNoAplica: 'No aplica — sin inspección, daño exterior ni rescate registrado',
+    motivoNoAplica: 'No aplica — sin inspección, liberación de calidad ni daño exterior registrado',
   };
 
   // Anexo C — Salidas y Existencia Actual
@@ -855,7 +885,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                     onChange={(e) => setUserSelectedAnnexes(prev => ({ ...prev, ANNEX_B: e.target.checked }))}
                   />
                   <span>
-                    <strong>Anexo B:</strong> Inspección y Rescate {qiRecord ? `(${qiRecord.folio})` : (totalMermaPiezas > 0 ? `(${totalMermaPiezas} pz merma)` : '(Calidad/Daño)')}
+                    <strong>Anexo B:</strong> {qualitySummary.anexoBTituloChecklist} {qiRecord ? `(${qiRecord.folio})` : (totalMermaPiezas > 0 ? `(${totalMermaPiezas} pz merma)` : '(Calidad/Daño)')}
                   </span>
                 </label>
               ) : (
@@ -1225,7 +1255,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                           ? 'Recepción cerrada con reservas por discrepancia física de rampa.'
                           : 'Recepción en pre-cierre con reservas por discrepancia física de rampa.'}
                         {bultosDanados > 0 && qiRecord && (
-                          <span> Daño exterior registrado en {bultosDanados} bulto ({originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || 'bulto dañado')}), inspeccionado bajo folio {qiRecord.folio} con resultado de {qiRecord.totalPiezasRescatadas} piezas conformes rescatadas en {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || 'caja de rescate')} y {qiRecord.totalPiezasMerma} piezas de merma dictaminada (no aptas por daño físico).</span>
+                          <span> Daño exterior registrado en {bultosDanados} bulto ({originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || 'bulto dañado')}), inspeccionado bajo folio {qiRecord.folio} con resultado de {qualitySummary.piezasRescatadas} piezas conformes rescatadas en {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || 'caja de rescate')} y {qualitySummary.piezasMerma} piezas de merma dictaminada (no aptas por daño físico).</span>
                         )}
                         {bultosDanados > 0 && !qiRecord && (
                           <span> Daño exterior registrado en {bultosDanados} {bultosDanados === 1 ? 'bulto retenido en rampa (dictamen e inspección técnica de calidad pendiente)' : 'bultos retenidos en rampa (dictamen e inspección técnica de calidad pendiente)'}.</span>
@@ -1287,11 +1317,13 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                     {qiRecord && (
                       <div style={{ border: '1px solid #CBD5E1', borderRadius: 4, padding: '6px 8px', textAlign: 'center', backgroundColor: '#F8FAFC' }}>
                         <div style={{ fontSize: 8.5, fontWeight: 800, color: '#334155', textTransform: 'uppercase', marginBottom: 4 }}>
-                          2. Inspección Técnica y Rescate (Calidad)
+                          {qualitySummary.firma2Titulo}
                         </div>
                         <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 2 }}>
                           <span style={{ fontSize: 8.5, color: '#0F172A', fontWeight: 800, border: '1px solid #64748B', padding: '1px 6px', borderRadius: 3, backgroundColor: '#FFFFFF' }}>
-                            DICTAMEN TÉCNICO REGISTRADO · {qiRecord.folio}
+                            {qualitySummary.isConformingCleanLiberation
+                              ? `LIBERACIÓN CONFORME REGISTRADA · ${qiRecord.folio}`
+                              : `DICTAMEN TÉCNICO REGISTRADO · ${qiRecord.folio}`}
                           </span>
                         </div>
                         <div style={{ borderBottom: '1.5px solid #0F172A', width: '85%', margin: '0 auto 4px auto' }}></div>
@@ -1299,10 +1331,12 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                           {qiRecord.inspectorNombre || qiRecord.firmadoPor || 'Inspector de Calidad'}
                         </div>
                         <div style={{ fontSize: 8.5, color: '#475569' }}>
-                          Inspección: {fechaInspeccionCalidad || '—'}
+                          {qualitySummary.isConformingCleanLiberation ? 'Liberación' : 'Inspección'}: {fechaInspeccionCalidad || '—'}
                         </div>
                         <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700, marginTop: 2 }}>
-                          * Acredita dictamen técnico, {qiRecord.totalPiezasRescatadas} pz rescate y {qiRecord.totalPiezasMerma} pz merma
+                          {qualitySummary.isConformingCleanLiberation
+                            ? `* Acredita liberación conforme en andén (${qualitySummary.piezasConformesAnden} pz sanas, ${qualitySummary.piezasMerma} pz merma)`
+                            : `* Acredita dictamen técnico, ${qualitySummary.piezasRescatadas} pz rescate y ${qualitySummary.piezasMerma} pz merma`}
                         </div>
                       </div>
                     )}
@@ -1637,7 +1671,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                                         Desglose técnico:
                                       </div>
                                       <div style={{ color: '#991B1B', fontSize: 7.5, fontWeight: 700, lineHeight: 1.25 }}>
-                                        {qiRecord ? `${standardCap} originales / ${qiRecord.totalPiezasRescatadas ?? 0} rescatadas / ${qiRecord.totalPiezasMerma ?? 0} merma` : `${standardCap} originales / Inactiva por dictamen técnico`}
+                                        {qiRecord ? `${standardCap} originales / ${qualitySummary.piezasRescatadas} rescatadas / ${qualitySummary.piezasMerma} merma` : `${standardCap} originales / Inactiva por dictamen técnico`}
                                       </div>
                                     </div>
                                   ) : isDespachado ? (
@@ -1891,11 +1925,15 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0F172A', paddingBottom: 6, marginBottom: 8 }}>
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 900, color: '#0F172A', textTransform: 'uppercase' }}>
-                          ANEXO B · {qiRecord ? 'BITÁCORA TÉCNICA DE INSPECCIÓN Y RESCATE' : 'DOCUMENTACIÓN OPERATIVA DE CALIDAD Y NO CONFORMIDAD'}
+                          ANEXO B · {qualitySummary.anexoBTituloDocumento}
                         </div>
                         <div style={{ fontSize: 9.5, color: '#64748B' }}>
                           {qiRecord ? (
-                            <>Folio Inspección: <strong>{qiRecord.folio}</strong> · Recepción: <strong>{folioTransporte}</strong></>
+                            qualitySummary.isConformingCleanLiberation ? (
+                              <>Dictamen de Calidad: <strong>{qiRecord.folio}</strong> · Recepción: <strong>{folioTransporte}</strong></>
+                            ) : (
+                              <>Folio Inspección: <strong>{qiRecord.folio}</strong> · Recepción: <strong>{folioTransporte}</strong></>
+                            )
                           ) : (
                             <>Registro de Control de Calidad y Discrepancias · Recepción: <strong>{folioTransporte}</strong></>
                           )}
@@ -1903,7 +1941,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                       </div>
                       <div style={{ textAlign: 'right', fontSize: 9.5, color: '#0F172A', fontWeight: 700 }}>
                         {qiRecord ? (
-                          <>Fecha: {fechaInspeccionCalidad || '—'} · Inspector: <strong>{qiRecord.inspectorNombre || qiRecord.firmadoPor || 'Inspector de Calidad'}</strong></>
+                          <>Fecha: {fechaInspeccionCalidad || '—'} · {qualitySummary.isConformingCleanLiberation ? 'Responsable' : 'Inspector'}: <strong>{qiRecord.inspectorNombre || qiRecord.firmadoPor || 'Inspector de Calidad'}</strong></>
                         ) : (
                           <>Fecha dictamen: {fechaCierreRecepcion || fechaEmisionReporte} · Responsable: <strong>{responsableCierreNombre}</strong></>
                         )}
@@ -1911,46 +1949,91 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
                     </div>
 
                     {qiRecord ? (
-                      <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
-                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Origen Dañada</div>
-                            <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#DC2626' }}>
-                              {originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || '—')}
+                      qualitySummary.isConformingCleanLiberation ? (
+                        <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Piezas Inspeccionadas</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
+                                {qualitySummary.piezasInspeccionadas} piezas
+                              </div>
+                              <div style={{ fontSize: 8, color: '#64748B' }}>
+                                {qiRecord.totalCajasInspeccionadas || bultosRecibidos || boxHus.length} bultos verificados en andén
+                              </div>
                             </div>
-                            <div style={{ fontSize: 8, color: '#64748B' }}>
-                              Contenido inspeccionado: {qiRecord.totalPiezasInspeccionadas || ((qiRecord.totalPiezasRescatadas || 0) + (qiRecord.totalPiezasMerma || 0)) || '—'} piezas
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Conformes en Andén</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, color: '#15803D' }}>
+                                {qualitySummary.piezasConformesAnden} piezas
+                              </div>
+                              <div style={{ fontSize: 8, color: '#475569', fontWeight: 600 }}>
+                                Rescatadas: {qualitySummary.piezasRescatadas} (sin daño ni reacondicionamiento)
+                              </div>
+                            </div>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Merma Dictaminada</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, color: '#15803D' }}>
+                                {qualitySummary.piezasMerma} piezas
+                              </div>
+                              <div style={{ fontSize: 8, color: '#64748B' }}>Sin daño físico ni segregación</div>
+                            </div>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Dictamen Operativo</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, color: '#15803D' }}>
+                                {qualitySummary.dictamenOperativo}
+                              </div>
+                              <div style={{ fontSize: 8, color: '#64748B' }}>
+                                Aprobado para Putaway comercial
+                              </div>
                             </div>
                           </div>
-                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Destino Rescate</div>
-                            <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#15803D' }}>
-                              {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || '—')}
-                            </div>
-                            <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700 }}>{qiRecord.totalPiezasRescatadas || 0} piezas conformes rescatadas</div>
-                          </div>
-                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Merma Dictaminada</div>
-                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
-                              {qiRecord.totalPiezasMerma || totalMermaPiezas} piezas
-                            </div>
-                            <div style={{ fontSize: 8, color: '#DC2626' }}>Envases no aptos / daño físico</div>
-                          </div>
-                          <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
-                            <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Dictamen Operativo</div>
-                            <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
-                              {qiRecord.dictamen || (reconditionedBox ? 'REACONDICIONADO' : 'INSPECCIONADO')}
-                            </div>
-                            <div style={{ fontSize: 8, color: '#64748B' }}>
-                              Horas maquila: {qiRecord.horasMaquila && Number(qiRecord.horasMaquila) > 0 ? `${qiRecord.horasMaquila} hrs` : 'No registrado'}
-                            </div>
-                          </div>
-                        </div>
 
-                        <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
-                          <strong>Observaciones de la Inspección Técnica:</strong> {qiRecord.observaciones || 'Inspección interna pieza por pieza y reacondicionamiento conforme a protocolo Giving Out 3PL.'}
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
+                            <strong>Observaciones del Dictamen de Calidad:</strong> {qiRecord.observaciones || 'Producto verificado al 100% en condiciones conformes en andén. Sin daño exterior, rescate ni merma.'}
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Origen Dañada</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#DC2626' }}>
+                                {originDamagedBoxCodigo !== '—' ? originDamagedBoxCodigo : (qiRecord.cajaOrigenCodigo || '—')}
+                              </div>
+                              <div style={{ fontSize: 8, color: '#64748B' }}>
+                                Contenido inspeccionado: {qualitySummary.piezasInspeccionadas || '—'} piezas
+                              </div>
+                            </div>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Caja Destino Rescate</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, fontFamily: 'monospace', color: '#15803D' }}>
+                                {reconditionedBoxCodigo !== '—' ? reconditionedBoxCodigo : (qiRecord.cajaDestinoCodigo || (qualitySummary.hasRealRescue ? '—' : 'Sin rescate'))}
+                              </div>
+                              <div style={{ fontSize: 8, color: '#15803D', fontWeight: 700 }}>{qualitySummary.piezasRescatadas} piezas conformes rescatadas</div>
+                            </div>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Merma Dictaminada</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, color: '#DC2626' }}>
+                                {qualitySummary.piezasMerma} piezas
+                              </div>
+                              <div style={{ fontSize: 8, color: '#DC2626' }}>Envases no aptos / daño físico</div>
+                            </div>
+                            <div style={{ backgroundColor: '#FFFFFF', padding: '6px 8px', borderRadius: 4, border: '1px solid #CBD5E1' }}>
+                              <div style={{ fontSize: 8.5, color: '#475569', fontWeight: 700 }}>Dictamen Operativo</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 800, color: '#0F172A' }}>
+                                {qualitySummary.dictamenOperativo}
+                              </div>
+                              <div style={{ fontSize: 8, color: '#64748B' }}>
+                                Horas maquila: {qiRecord.horasMaquila && Number(qiRecord.horasMaquila) > 0 ? `${qiRecord.horasMaquila} hrs` : 'No registrado'}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 4, border: '1px solid #CBD5E1', lineHeight: 1.4 }}>
+                            <strong>Observaciones de la Inspección Técnica:</strong> {qiRecord.observaciones || 'Inspección interna pieza por pieza y reacondicionamiento conforme a protocolo Giving Out 3PL.'}
+                          </div>
+                        </div>
+                      )
                     ) : (
                       <div className="border-box" style={{ border: '1.5px solid #0F172A', borderRadius: 4, padding: '10px 12px', fontSize: 9.5, backgroundColor: '#FAFAFA' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 8 }}>

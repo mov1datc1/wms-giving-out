@@ -1012,7 +1012,7 @@ export function DualLabelModal({
               <div><strong>Tipo Tarima:</strong> ${esMonoSku ? 'MONO-SKU ESTÁNDAR' : 'MIXTA MULTI-SKU'}</div>
               <div><strong>SKUs en Tarima:</strong> ${totalSkusUnicos} SKU${totalSkusUnicos !== 1 ? 's' : ''} (${skusResumenTexto}) • ${totalPartidasLote} partidas-lote</div>
               <div><strong>Lotes en Tarima:</strong> ${totalLotes} Lote${totalLotes !== 1 ? 's' : ''} diferenciado${totalLotes !== 1 ? 's' : ''} (${lotesResumenTexto})</div>
-              <div><strong>Rampa Descarga:</strong> ${receipt.rampaAsignada || 'Rampa 1'}</div>
+              <div><strong>Rampa / Andén Descarga:</strong> ${receipt.andenAsignado || labelsData?.andenAsignado || receipt.rampaAsignada || 'Sin asignar'}</div>
               <div><strong>Estado Físico:</strong> RECIBIDO EN ANDÉN</div>
               <div style="font-size: 5.8pt; color: #475569; margin-top: 0.6mm;">
                 * Escaneo del QR despliega el manifiesto digital unificado de bultos unitarios vinculados.

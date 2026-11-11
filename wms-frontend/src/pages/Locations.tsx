@@ -1,12 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   MapPin, Search, RefreshCw, Grid3X3, Layers, X,
   Package, Calendar, CheckCircle2, AlertTriangle, ShieldCheck, Box,
-  Warehouse, Lock, Eye, Info, Users, UserCheck, ChevronDown, ChevronRight
+  Warehouse, Lock, Eye, Info, Users, UserCheck, ChevronDown, ChevronRight,
+  ZoomIn, ZoomOut, Maximize2, Tag, ArrowRightLeft, Sparkles, Archive
 } from 'lucide-react';
 import { formatCalendarDate } from '../utils/dateUtils';
+import {
+  getLocationHuRowPresentation,
+  summarizeLocationHus,
+} from '../utils/locationHuDisplay';
+import {
+  REAL_WAREHOUSE_POSITIONS,
+  SPATIAL_LANDMARKS,
+  WAREHOUSE_CANVAS_DIMENSIONS,
+  WarehouseLocationConfig,
+  SpatialLandmark
+} from '../config/warehouse-layout.config';
 
 const CALIDAD_TOOLTIP = 'Resultado de inspección de calidad. No determina por sí solo la disponibilidad comercial; también aplican caducidad, ubicación y restricciones operativas.';
 
@@ -22,7 +34,7 @@ function getFriendlyCategory(categoria?: string): string {
     case 'ESPECIAL_OTRAS':
       return 'Área especial';
     case 'FISICA_ALMACENABLE':
-      return 'Celda de Rack';
+      return 'Celda / Posición Comercial';
     default:
       return 'Área especial';
   }
@@ -105,7 +117,19 @@ export function Locations() {
   const [locations, setLocations] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  // Vista predeterminada: 1. Plano Físico 2D — Operación (Fase 3B-B)
+  const [viewMode, setViewMode] = useState<'spatial' | 'operational' | 'layout'>('spatial');
+
+  // Estados de búsqueda independientes por vista (spatial, operational, layout) — Fase 3B-B Fix
+  const [searchByView, setSearchByView] = useState<Record<'spatial' | 'operational' | 'layout', string>>({
+    spatial: '',
+    operational: '',
+    layout: '',
+  });
+  const search = searchByView[viewMode];
+  const setSearch = (val: string) => {
+    setSearchByView(prev => ({ ...prev, [viewMode]: val }));
+  };
   
   // Filtros principales
   const [filterCliente, setFilterCliente] = useState<string>('');
@@ -113,7 +137,6 @@ export function Locations() {
   const [filterZona, setFilterZona] = useState('');
   const [filterPasillo, setFilterPasillo] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
-  const [viewMode, setViewMode] = useState<'layout' | 'operational'>('layout');
 
   // Pasillos colapsables / expandibles (Punto 1)
   const [collapsedAisles, setCollapsedAisles] = useState<Record<string, boolean>>({});
@@ -260,9 +283,142 @@ export function Locations() {
     setCollapsedAisles(allAisles);
   };
 
+  // ==========================================================================
+  // MODELO DE CAPACIDAD Y MÉTRICAS DEL ALMACÉN REAL (G0001–G0045) — FASE 3B-B
+  // ==========================================================================
+  // Posiciones físicas oficiales del almacén real
+  const realWarehouseLocs = useMemo(() => {
+    return locations.filter((l: any) => l.codigo && l.codigo.toUpperCase().startsWith('G'));
+  }, [locations]);
+
+  const totalPosicionesFisicas = 45;
+  const capacidadTarimasTotal = 45;
+
+  // Conteo de tarimas físicas alojadas (ocupación física 1/1 por posición de tarima)
+  // Cada posición con ocupación (bultos >= 1 o unidades > 0) cuenta como exactamente 1 tarima alojada
+  const tarimasAlojadas = realWarehouseLocs.filter((l: any) => {
+    return (typeof l.ocupacionBultos === 'number' && l.ocupacionBultos >= 1) ||
+           (typeof l.ocupacionUnidades === 'number' && l.ocupacionUnidades > 0) ||
+           l.estadoCapacidad === 'LLENO';
+  }).length;
+
+  // Posiciones comerciales ocupadas
+  const ocupadasComerciales = realWarehouseLocs.filter((l: any) => {
+    const isPnc = l.tipoUbicacion === 'PNC' || l.categoriaUbicacion === 'VIRTUAL_NO_CONFORME';
+    const isOcc = (typeof l.ocupacionBultos === 'number' && l.ocupacionBultos >= 1) ||
+                  (typeof l.ocupacionUnidades === 'number' && l.ocupacionUnidades > 0) ||
+                  l.estadoCapacidad === 'LLENO';
+    return !isPnc && isOcc;
+  }).length;
+
+  // Posiciones PNC designadas
+  const pncDesignadas = realWarehouseLocs.filter((l: any) => {
+    return l.tipoUbicacion === 'PNC' || l.categoriaUbicacion === 'VIRTUAL_NO_CONFORME';
+  }).length || REAL_WAREHOUSE_POSITIONS.filter(p => p.esPncSugerido).length;
+
+  // Posiciones físicas libres (capacidad física disponible = 1 tarima)
+  // Las posiciones PNC vacías son físicamente libres pero reservadas operativamente para no conforme
+  const posicionesLibres = Math.max(0, totalPosicionesFisicas - tarimasAlojadas);
+  const comercialesLibres = Math.max(0, (totalPosicionesFisicas - pncDesignadas) - ocupadasComerciales);
+
+  // Porcentaje de ocupación física real: tarimasAlojadas / 45 * 100%
+  const pctOcupacionFisica = totalPosicionesFisicas > 0 ? Math.round((tarimasAlojadas / totalPosicionesFisicas) * 100) : 0;
+
   // Separación nítida de ubicaciones físicas de almacenamiento vs. ubicaciones especiales
-  const almacenableLocs = filtered.filter(l => l.esAlmacenable !== false && l.categoriaUbicacion === 'FISICA_ALMACENABLE');
-  const specialLocs = filtered.filter(l => l.esAlmacenable === false || l.categoriaUbicacion !== 'FISICA_ALMACENABLE');
+  // Las 45 posiciones físicas G (incluyendo las designadas para PNC) pertenecen exclusivamente al almacén físico
+  // Las 6 áreas especiales corresponden estrictamente a maniobra: REC-01, REC-02, STG-01, STG-02, DEV-01, NC-EXCESO-01
+  const isPhysicalWarehousePos = (l: any) => l.codigo && l.codigo.toUpperCase().startsWith('G');
+  const almacenableLocs = filtered.filter(l => isPhysicalWarehousePos(l) || (l.esAlmacenable !== false && l.categoriaUbicacion === 'FISICA_ALMACENABLE'));
+  const specialLocs = filtered.filter(l => !isPhysicalWarehousePos(l) && (l.esAlmacenable === false || l.categoriaUbicacion !== 'FISICA_ALMACENABLE'));
+
+  // Conteo estructural fijo de áreas especiales de maniobra (Catálogo canónico: REC-01, REC-02, STG-01, STG-02, DEV-01, NC-EXCESO-01)
+  // No cambia ante búsquedas ni cambios de tab
+  const totalSpecialLocsCount = useMemo(() => {
+    const canonicalSpecialCodes = new Set(['REC-01', 'REC-02', 'STG-01', 'STG-02', 'DEV-01', 'NC-EXCESO-01']);
+    const count = locations.filter((l: any) => {
+      const c = (l.codigo || '').toUpperCase();
+      return l.activo !== false && (
+        canonicalSpecialCodes.has(c) ||
+        (!c.startsWith('G') && !c.startsWith('A') && !c.startsWith('B') && (l.esAlmacenable === false || l.categoriaUbicacion !== 'FISICA_ALMACENABLE'))
+      );
+    }).length;
+    return count > 0 ? count : 6;
+  }, [locations]);
+
+  // ==========================================================================
+  // DATASET EXCLUSIVO PARA HISTÓRICO — RACKS ANTERIORES (Axx/Bxx)
+  // ==========================================================================
+  // Regla estricta: Solo entran celdas con activo = false y código Axx o Bxx (exactamente 48)
+  // NINGUNA posición G0001–G0045 ni área especial puede ingresar a este conjunto
+  const isHistoricalRackLoc = (l: any) => {
+    const code = (l.codigo || '').toUpperCase();
+    const isAB = code.startsWith('A') || code.startsWith('B');
+    return l.activo === false && isAB;
+  };
+
+  const historicalLocs = useMemo(() => {
+    return locations.filter(isHistoricalRackLoc);
+  }, [locations]);
+
+  const filteredHistoricalLocs = useMemo(() => {
+    const q = (searchByView.layout || '').toLowerCase().trim();
+    return historicalLocs.filter(l => {
+      if (!q) return true;
+      return (
+        l.codigo?.toLowerCase().includes(q) ||
+        l.pasillo?.toLowerCase().includes(q) ||
+        l.rack?.toLowerCase().includes(q) ||
+        l.nivel?.toLowerCase().includes(q) ||
+        l.zona?.nombre?.toLowerCase().includes(q)
+      );
+    });
+  }, [historicalLocs, searchByView.layout]);
+
+  const historicalHierarchy = useMemo(() => {
+    const hier: Record<string, HierarchyZona> = {};
+    for (const loc of filteredHistoricalLocs) {
+      const zKey = loc.zona?.codigo || loc.zonaId || 'ZONA_HISTORICA';
+      const zNombre = loc.zona?.nombre || 'Almacenamiento Histórico';
+      const pKey = loc.pasillo || 'P01';
+      const rKey = loc.rack || 'R01';
+      const nKey = loc.nivel || 'N1';
+
+      if (!hier[zKey]) {
+        hier[zKey] = {
+          zonaNombre: zNombre,
+          zonaCodigo: zKey,
+          pasillos: {}
+        };
+      }
+      if (!hier[zKey].pasillos[pKey]) {
+        hier[zKey].pasillos[pKey] = {
+          pasilloCodigo: pKey,
+          racks: {}
+        };
+      }
+      if (!hier[zKey].pasillos[pKey].racks[rKey]) {
+        hier[zKey].pasillos[pKey].racks[rKey] = {
+          rackCodigo: rKey,
+          totalPiezas: 0,
+          capacidadPiezas: 0,
+          totalBultos: 0,
+          capacidadBultos: 0,
+          niveles: {}
+        };
+      }
+      const rackObj = hier[zKey].pasillos[pKey].racks[rKey];
+      rackObj.totalPiezas += (loc.ocupacionUnidades || 0);
+      rackObj.capacidadPiezas += (loc.capacidadUnits || 100);
+      rackObj.totalBultos += (loc.ocupacionBultos || 0);
+      rackObj.capacidadBultos += (loc.capacidadBultos || 1);
+
+      if (!rackObj.niveles[nKey]) {
+        rackObj.niveles[nKey] = [];
+      }
+      rackObj.niveles[nKey].push(loc);
+    }
+    return hier;
+  }, [filteredHistoricalLocs]);
 
   // Indicadores de capacidad sobre celdas almacenables
   const totalLibres = almacenableLocs.filter(l => l.estadoCapacidad === 'LIBRE').length;
@@ -369,6 +525,27 @@ export function Locations() {
     byZone[zn].push(loc);
   }
 
+  // Ordenamiento canónico de zonas para Fase 3B-B:
+  // 1. Zonas operativas reales: Área Interior (35) y Exterior Techado (10)
+  // 2. Zonas especiales de maniobra: Recibo (2), Staging (2), Devolución/Merma (2)
+  // 3. Zonas históricas inactivas: ALM-A (36), ALM-B (12)
+  const sortedZoneEntries = useMemo(() => {
+    return Object.entries(byZone).sort(([aName, aLocs], [bName, bLocs]) => {
+      const getPriority = (name: string, locs: any[]) => {
+        const u = name.toUpperCase();
+        if (u.includes('INTERIOR')) return 1;
+        if (u.includes('EXTERIOR')) return 2;
+        if (u.includes('RECIBO')) return 10;
+        if (u.includes('STAGING')) return 11;
+        if (u.includes('DEVOLUCI') || u.includes('MERMA') || u.includes('RETENCI')) return 12;
+        if (u.includes('ALM-A') || u.includes('TEXTIL')) return 20;
+        if (u.includes('ALM-B') || u.includes('ALIMENTO')) return 21;
+        return 15;
+      };
+      return getPriority(aName, aLocs) - getPriority(bName, bLocs);
+    });
+  }, [byZone]);
+
   // Conjunto de IDs de ubicaciones agrupadas en zonas para evitar duplicados en Vista por Zonas (Punto 1)
   const renderedZoneLocIds = new Set<string>();
   Object.values(byZone).forEach(locList => {
@@ -418,29 +595,40 @@ export function Locations() {
           <p className="page-subtitle" style={{ marginTop: 4 }}>
             {filterCliente
               ? `${relatedPositionsCount} ubicaciones relacionadas con ${selectedClientName} · ${clientPositionsCount} con existencia física · ${compatiblePositionsCount} disponibles para depositante`
-              : `${almacenableLocs.length} celdas en racks · ${totalLibres} libres · ${totalParciales} parciales · ${totalSobrecapacidad} sobre capacidad · ${totalLlenas} llenas · ${specialLocs.length} áreas especiales/tránsito`
+              : `Almacén Físico Oficial: 45 posiciones de tarima en piso · 35 Interior · 10 Exterior Techado · 3 designadas PNC · ${totalSpecialLocsCount} áreas especiales de maniobra`
             }
           </p>
         </div>
 
-        {/* Selector de Vistas: Mapa del Almacén vs. Vista por Zonas */}
+        {/* Selector de Vistas: 1. Plano Físico 2D (Default) -> 2. Vista por Zonas -> 3. Histórico Racks */}
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <div className="btn-group" style={{ background: 'var(--bg-secondary)', padding: 3, borderRadius: 8, border: '1px solid var(--border)' }}>
             <button
               type="button"
-              className={`btn btn-sm ${viewMode === 'layout' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setViewMode('layout')}
+              className={`btn btn-sm ${viewMode === 'spatial' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setViewMode('spatial')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+              title="Plano arquitectónico interactivo de las 45 posiciones físicas oficiales en piso"
             >
-              <Layers size={15} /> Mapa del Almacén
+              <MapPin size={15} /> Plano Físico 2D — Operación
             </button>
             <button
               type="button"
               className={`btn btn-sm ${viewMode === 'operational' ? 'btn-primary' : 'btn-ghost'}`}
               onClick={() => setViewMode('operational')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+              title="Distribución operativa agrupada por Área Interior y Exterior Techado"
             >
               <Grid3X3 size={15} /> Vista por Zonas
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${viewMode === 'layout' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setViewMode('layout')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
+              title="Ubicaciones históricas en racks Axx/Bxx (conservadas solo para consulta y auditoría)"
+            >
+              <Archive size={15} /> Histórico — Racks anteriores
             </button>
           </div>
           <button className="btn btn-secondary" onClick={loadData}>
@@ -449,62 +637,76 @@ export function Locations() {
         </div>
       </div>
 
-      {/* Franja Ejecutiva de Capacidad y Estado: Global vs. Depositante 3PL Contextualizado */}
+      {/* Franja Ejecutiva de Capacidad y Estado: Métricas Exclusivas de G0001–G0045 */}
       {!filterCliente ? (
-        /* ===== KPIs GLOBALES ===== */
-        <div className="stats-grid" style={{ marginBottom: 12 }}>
-          {/* Card 1: Celdas de Almacén */}
-          <div className="stat-card">
-            <div className="stat-icon" style={{ background: 'var(--teal-bg)', color: 'var(--teal)' }}><Warehouse size={22}/></div>
-            <div className="stat-info">
-              <span className="stat-value">{almacenableLocs.length}</span>
-              <span className="stat-label">Celdas en racks ({totalLibres} libres)</span>
+        /* ===== KPIs OFICIALES DEL ALMACÉN REAL (G0001–G0045) ===== */
+        <div className="stats-grid" style={{ marginBottom: 16 }}>
+          {/* Card 1: Posiciones Físicas */}
+          <div className="stat-card" style={{ borderColor: 'rgba(13, 148, 136, 0.3)' }}>
+            <div className="stat-icon" style={{ background: 'var(--teal-bg)', color: 'var(--teal)' }}>
+              <Warehouse size={22}/>
             </div>
-          </div>
-
-          {/* Card 2: Capacidad Global Piezas */}
-          <div className="stat-card">
-            <div className="stat-icon" style={{ background: 'rgba(16,185,129,0.15)', color: 'var(--emerald)' }}><Package size={22}/></div>
             <div className="stat-info">
-              <span className="stat-value">{pctPiezas}% ocupado en piezas</span>
-              <span className="stat-label" style={{ color: totalSobrecapacidad > 0 ? '#DC2626' : 'var(--text-secondary)', fontWeight: totalSobrecapacidad > 0 ? 700 : 500 }}>
-                {totalSobrecapacidad > 0 ? `${totalSobrecapacidad} ubicaciones requieren revisión` : `${totalPiezasAlojadas.toLocaleString()} de ${totalCapacidadPiezas.toLocaleString()} piezas`}
+              <span className="stat-value">{totalPosicionesFisicas}</span>
+              <span className="stat-label">Posiciones físicas en piso</span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                Capacidad total: {capacidadTarimasTotal} tarimas
               </span>
             </div>
           </div>
 
-          {/* Card 3: Capacidad en Bultos */}
-          <div className="stat-card">
-            <div className="stat-icon" style={{ background: 'rgba(2,132,199,0.15)', color: '#0284C7' }}><Box size={22}/></div>
+          {/* Card 2: Posiciones Libres */}
+          <div className="stat-card" style={{ borderColor: 'rgba(16, 185, 129, 0.3)' }}>
+            <div className="stat-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--emerald)' }}>
+              <CheckCircle2 size={22}/>
+            </div>
             <div className="stat-info">
-              {hayCapacidadBultosGlobal ? (
-                <>
-                  <span className="stat-value">{pctBultos}% ocupado en bultos</span>
-                  <span className="stat-label">{totalBultosAlojados} de {totalCapacidadBultos} bultos en racks</span>
-                </>
-              ) : (
-                <>
-                  <span className="stat-value">{totalBultosAlojados} bultos alojados</span>
-                  <span className="stat-label">Límite de bultos por rack no configurado</span>
-                </>
-              )}
+              <span className="stat-value" style={{ color: 'var(--emerald)' }}>{posicionesLibres}</span>
+              <span className="stat-label">Posiciones libres ({posicionesLibres}/45)</span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                {comercialesLibres} comerciales · {pncDesignadas} PNC vacías
+              </span>
             </div>
           </div>
 
-          {/* Card 4: Alerta de Sobrecapacidad */}
-          <div className="stat-card" style={{ borderColor: totalSobrecapacidad > 0 ? 'rgba(239,68,68,0.4)' : 'var(--border)' }}>
-            <div className="stat-icon" style={{
-              background: totalSobrecapacidad > 0 ? 'rgba(239,68,68,0.15)' : 'rgba(249,115,22,0.15)',
-              color: totalSobrecapacidad > 0 ? '#DC2626' : 'var(--orange)'
-            }}>
-              {totalSobrecapacidad > 0 ? <AlertTriangle size={22} /> : <Layers size={22}/>}
+          {/* Card 3: Tarimas Alojadas */}
+          <div className="stat-card" style={{ borderColor: 'rgba(2, 132, 199, 0.3)' }}>
+            <div className="stat-icon" style={{ background: 'rgba(2, 132, 199, 0.15)', color: '#0284C7' }}>
+              <Box size={22}/>
             </div>
             <div className="stat-info">
-              <span className="stat-value" style={{ color: totalSobrecapacidad > 0 ? '#DC2626' : 'inherit', fontSize: 16 }}>
-                {totalSobrecapacidad > 0 ? `${totalSobrecapacidad} ubicaciones sobre capacidad` : `${totalLlenas} ubicaciones al 100%`}
+              <span className="stat-value">{tarimasAlojadas}</span>
+              <span className="stat-label">Tarimas físicas alojadas</span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                Ocupadas comerciales: {ocupadasComerciales}
               </span>
-              <span className="stat-label" style={{ color: totalSobrecapacidad > 0 ? '#DC2626' : 'var(--text-secondary)' }}>
-                {totalSobrecapacidad > 0 ? 'Requieren revisión o redistribución' : `${totalParciales} con espacio disponible`}
+            </div>
+          </div>
+
+          {/* Card 4: Designadas PNC */}
+          <div className="stat-card" style={{ borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+            <div className="stat-icon" style={{ background: 'rgba(239, 68, 68, 0.12)', color: '#DC2626' }}>
+              <AlertTriangle size={22}/>
+            </div>
+            <div className="stat-info">
+              <span className="stat-value" style={{ color: '#DC2626' }}>{pncDesignadas}</span>
+              <span className="stat-label">Posiciones designadas PNC</span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                G0036, G0041, G0042 (Ext. Techado)
+              </span>
+            </div>
+          </div>
+
+          {/* Card 5: Ocupación Física Real */}
+          <div className="stat-card" style={{ borderColor: 'rgba(99, 102, 241, 0.3)' }}>
+            <div className="stat-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#6366F1' }}>
+              <Layers size={22}/>
+            </div>
+            <div className="stat-info">
+              <span className="stat-value" style={{ color: '#6366F1' }}>{pctOcupacionFisica}%</span>
+              <span className="stat-label">Ocupación física real</span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                {tarimasAlojadas} de {capacidadTarimasTotal} tarimas estibadas
               </span>
             </div>
           </div>
@@ -662,7 +864,13 @@ export function Locations() {
             <div className="search-box" style={{ flex: 1, minWidth: 240 }}>
               <Search size={15}/>
               <input
-                placeholder="Buscar código (ej. B01-R01-N1), pasillo, rack, zona o área especial..."
+                placeholder={
+                  viewMode === 'spatial'
+                    ? "Buscar en plano 2D (ej. G0001, Interior, PNC)..."
+                    : viewMode === 'layout'
+                    ? "Buscar en histórico de racks (ej. A01, B01-R01-N1), pasillo o nivel..."
+                    : "Buscar código (ej. G0001), zona o estado…"
+                }
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 style={{ fontSize: 13 }}
@@ -787,12 +995,67 @@ export function Locations() {
         <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-secondary)' }}>
           <RefreshCw className="animate-spin" size={24}/> Cargando mapa y ubicaciones...
         </div>
+      ) : viewMode === 'spatial' ? (
+        /* ========================================================
+           VISTA 3: PLANO FÍSICO 2D INTERACTIVO (FASE 3A)
+           Renderizado fiel de las 45 posiciones físicas de tarima
+           derivadas del plano arquitectónico confirmado por Alejandra
+           ======================================================== */
+        <PhysicalWarehouseMap
+          locations={locations}
+          specialLocs={specialLocs}
+          filterCliente={filterCliente}
+          selectedClientName={selectedClientName}
+          searchTerm={searchByView.spatial}
+          onRefresh={loadData}
+        />
       ) : viewMode === 'layout' ? (
         /* ========================================================
-           VISTA 1: MAPA DEL ALMACÉN (PASILLOS COLAPSABLES) - Punto 1
+           VISTA HISTÓRICA: RACKS ANTERIORES (SOLO CONSULTA / TRAZABILIDAD)
            ======================================================== */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {Object.entries(hierarchy).map(([zonaKey, zData]) => (
+          {/* Banner Informativo de Trazabilidad Histórica */}
+          <div style={{
+            padding: '16px 20px',
+            borderRadius: 12,
+            backgroundColor: '#FFFBEB',
+            border: '1px solid #FCD34D',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 14,
+            boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+          }}>
+            <div style={{ color: '#D97706', marginTop: 2, flexShrink: 0 }}>
+              <AlertTriangle size={24} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#92400E' }}>
+                  Ubicaciones históricas del modelo anterior (Racks Axx/Bxx) — Solo Trazabilidad y Consulta
+                </h4>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  backgroundColor: '#FEE2E2',
+                  color: '#991B1B',
+                  border: '1px solid #FCA5A5'
+                }}>
+                  100% Inactivas en BD
+                </span>
+              </div>
+              <p style={{ margin: '6px 0 0', fontSize: 13, color: '#78350F', lineHeight: 1.5 }}>
+                Estas 48 celdas de estantería pertenecieron al modelo previo de desarrollo y demostraciones y se encuentran <strong>completamente inactivas</strong> (<code>activo = false, estado = LIBRE</code>). Se conservan en base de datos para preservar la trazabilidad documental histórica sin eliminar referencias.
+              </p>
+              <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: '#92400E', lineHeight: 1.6 }}>
+                <li><strong>No representan el almacén físico actual:</strong> La operación real se realiza en nave abierta sin racks elevados.</li>
+                <li><strong>Excluidas de algoritmos WMS:</strong> No participan en el motor de alojamiento (Putaway), surtido (Picking), ni en rotación FEFO/FIFO.</li>
+                <li><strong>Operación activa:</strong> Toda la estiba y surtido se gestiona en las <strong>45 posiciones físicas oficiales de tarima en piso (G0001–G0045)</strong> en la pestaña <em>Plano Físico 2D</em>.</li>
+              </ul>
+            </div>
+          </div>
+          {Object.entries(historicalHierarchy).map(([zonaKey, zData]) => (
             <div key={zonaKey} className="card animate-fade-in" style={{ overflow: 'hidden' }}>
               {/* Encabezado de Zona */}
               <div style={{
@@ -950,25 +1213,25 @@ export function Locations() {
                                         gap: 8,
                                         alignItems: 'stretch'
                                       }}>
-                                        {/* Indicador de Nivel Operativo Claro */}
+                                        {/* Indicador de Nivel Histórico */}
                                         <div style={{
-                                          width: 74,
-                                          minWidth: 74,
+                                          width: 78,
+                                          minWidth: 78,
                                           borderRadius: 6,
                                           display: 'flex',
                                           flexDirection: 'column',
                                           alignItems: 'center',
                                           justifyContent: 'center',
                                           padding: '4px 2px',
-                                          backgroundColor: isPicking ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-secondary)',
-                                          color: isPicking ? '#0369A1' : 'var(--text-secondary)',
-                                          border: isPicking ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid var(--border)',
+                                          backgroundColor: '#F1F5F9',
+                                          color: '#64748B',
+                                          border: '1px solid #CBD5E1',
                                           flexShrink: 0,
                                           textAlign: 'center'
-                                        }} title={nivelInfo.description}>
-                                          <span style={{ fontSize: 11, fontWeight: 800 }}>{nivelInfo.code}</span>
-                                          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02em', opacity: 0.9 }}>
-                                            {nivelInfo.role}
+                                        }} title={`Nivel previo: ${nivelInfo.code} (${nivelInfo.role}) — Conservado para consulta y auditoría`}>
+                                          <span style={{ fontSize: 11, fontWeight: 800, color: '#334155' }}>{nivelInfo.code}</span>
+                                          <span style={{ fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02em', color: '#64748B' }}>
+                                            HISTÓRICO
                                           </span>
                                         </div>
 
@@ -986,53 +1249,43 @@ export function Locations() {
                                             const isComp = filterCliente ? isLocationCompatibleWithClient(loc, selectedClient, clientStats?.hasStock || false) : false;
                                             const isClientHoldingStock = clientStats?.hasStock || false;
 
-                                            // Prioridad Visual Estricta (Punto 5):
-                                            // 1. Riesgo Operativo (SOBRECAPACIDAD / BLOQUEADO) NUNCA se oculta
-                                            // 2. Existencia del cliente
-                                            // 3. Disponible compatible
-                                            let cellBorder = '1px solid rgba(16, 185, 129, 0.35)';
-                                            let cellBg = 'rgba(16, 185, 129, 0.08)';
-                                            let badgeBg = '#059669';
-                                            let badgeText = loc.estadoCapacidad;
-                                            let badgeColor = '#FFFFFF';
+                                            // En este tab histórico, atenuar visualmente las celdas y reemplazar el verde "LIBRE" por "INACTIVO"
+                                            let cellBorder = '1px solid #CBD5E1';
+                                            let cellBg = '#F8FAFC';
+                                            let badgeBg = '#E2E8F0';
+                                            let badgeText = 'INACTIVO';
+                                            let badgeColor = '#475569';
 
                                             if (isOver) {
                                               cellBorder = '2px solid #EF4444';
-                                              cellBg = 'rgba(239, 68, 68, 0.12)';
+                                              cellBg = 'rgba(239, 68, 68, 0.08)';
                                               badgeBg = '#DC2626';
                                               badgeText = 'SOBRECAP.';
+                                              badgeColor = '#FFFFFF';
                                             } else if (isBlock) {
                                               cellBorder = '1px solid rgba(148, 163, 184, 0.5)';
                                               cellBg = 'rgba(148, 163, 184, 0.1)';
                                               badgeBg = '#64748B';
                                               badgeText = 'BLOQUEADO';
+                                              badgeColor = '#FFFFFF';
                                             } else if (filterCliente && isClientHoldingStock) {
                                               cellBorder = '2px solid #2563EB';
-                                              cellBg = 'rgba(37, 99, 235, 0.09)';
+                                              cellBg = 'rgba(37, 99, 235, 0.06)';
                                               badgeBg = isFull ? '#EF4444' : isPart ? '#D97706' : '#2563EB';
                                               badgeText = loc.estadoCapacidad;
+                                              badgeColor = '#FFFFFF';
                                             } else if (filterCliente && isComp && !isClientHoldingStock) {
-                                              cellBorder = '1.5px dashed #0284C7';
-                                              cellBg = 'rgba(2, 132, 199, 0.05)';
-                                              badgeBg = 'rgba(2, 132, 199, 0.15)';
-                                              badgeText = 'DISPONIBLE';
-                                              badgeColor = '#0284C7';
-                                            } else if (isFull) {
-                                              cellBorder = '1px solid rgba(239, 68, 68, 0.4)';
-                                              cellBg = 'rgba(239, 68, 68, 0.08)';
-                                              badgeBg = '#EF4444';
-                                            } else if (isPart) {
-                                              cellBorder = '1px solid rgba(245, 158, 11, 0.4)';
-                                              cellBg = 'rgba(245, 158, 11, 0.08)';
-                                              badgeBg = '#D97706';
+                                              cellBorder = '1.5px dashed #94A3B8';
+                                              cellBg = '#F1F5F9';
+                                              badgeBg = '#E2E8F0';
+                                              badgeText = 'INACTIVO';
+                                              badgeColor = '#64748B';
                                             }
 
                                             const hasLocBultos = typeof loc.capacidadBultos === 'number' && loc.capacidadBultos > 0;
                                             const tooltipText = isOver
-                                              ? `Celda ${loc.codigo} · ¡SOBRECAPACIDAD! La existencia física supera la capacidad configurada (${loc.ocupacionUnidades}/${loc.capacidadUnits} piezas · ${loc.ocupacionBultos || 0} ${hasLocBultos ? `de ${loc.capacidadBultos} bultos` : 'bultos [límite no conf.]'})`
-                                              : (filterCliente && isComp && !isClientHoldingStock)
-                                              ? `Celda ${loc.codigo} · Disponible preliminarmente para ${selectedClientName} (${loc.ocupacionUnidades ?? 0}/${loc.capacidadUnits} pzas). La compatibilidad final de producto se valida al asignar el SKU/HU en Putaway.`
-                                              : `Celda ${loc.codigo} · ${loc.ocupacionUnidades || 0} de ${loc.capacidadUnits} piezas · ${hasLocBultos ? `${loc.ocupacionBultos || 0} de ${loc.capacidadBultos} bultos` : `${loc.ocupacionBultos || 0} bultos`} (${loc.estadoCapacidad})`;
+                                              ? `Celda histórica ${loc.codigo} · ¡SOBRECAPACIDAD! (${loc.ocupacionUnidades}/${loc.capacidadUnits} piezas)`
+                                              : `Celda histórica ${loc.codigo} · Inactiva en BD · Conservada para trazabilidad y auditoría (${loc.ocupacionUnidades || 0} de ${loc.capacidadUnits} piezas configuradas)`;
 
                                             return (
                                               <div
@@ -1049,14 +1302,26 @@ export function Locations() {
                                                   display: 'flex',
                                                   flexDirection: 'column',
                                                   justifyContent: 'space-between',
-                                                  minHeight: 64
+                                                  minHeight: 64,
+                                                  opacity: 0.82
                                                 }}
                                               >
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                  <span style={{ fontSize: 11, fontWeight: 800, color: '#0F172A' }}>
+                                                  <span style={{ fontSize: 11, fontWeight: 800, color: '#334155' }}>
                                                     {loc.codigo}
                                                   </span>
                                                   <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                                                    <span style={{
+                                                      fontSize: 8,
+                                                      fontWeight: 800,
+                                                      padding: '1px 4px',
+                                                      borderRadius: 3,
+                                                      backgroundColor: '#FEF3C7',
+                                                      color: '#92400E',
+                                                      border: '1px solid #FCD34D'
+                                                    }}>
+                                                      HISTÓRICO
+                                                    </span>
                                                     {filterCliente && clientStats?.isShared && (
                                                       <span
                                                         title="Esta ubicación contiene mercancía de más de un depositante."
@@ -1085,30 +1350,26 @@ export function Locations() {
                                                 </div>
 
                                                 {/* Ocupación en piezas clara */}
-                                                <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-primary)', marginTop: 2 }}>
+                                                <div style={{ fontSize: 10, fontWeight: 600, color: '#64748B', marginTop: 2 }}>
                                                   {filterCliente && isClientHoldingStock ? (
                                                     <span style={{ color: '#1E40AF' }}>
                                                       {clientStats?.pieces} pzs de {selectedClientName}
                                                     </span>
                                                   ) : isFree ? (
-                                                    <span style={{ color: '#059669' }}>0 de {loc.capacidadUnits} piezas</span>
+                                                    <span>0 piezas · Sin saldo</span>
                                                   ) : (
                                                     <span>{loc.ocupacionUnidades ?? 0} <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>de {loc.capacidadUnits} piezas</span></span>
                                                   )}
                                                 </div>
 
-                                                {/* Bultos e indicador de compatibilidad 3PL */}
+                                                {/* Bultos e indicador de estatus inactivo */}
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-                                                  <span style={{ fontSize: 9.5, color: 'var(--text-tertiary)' }}>
+                                                  <span style={{ fontSize: 9.5, color: '#94A3B8' }}>
                                                     {filterCliente && isClientHoldingStock
                                                       ? `${clientStats?.bultos || 0} bultos`
-                                                      : (loc.capacidadBultos !== null && loc.capacidadBultos !== undefined && loc.capacidadBultos !== 'NO_CONFIGURADA'
-                                                          ? `${loc.ocupacionBultos ?? 0} de ${loc.capacidadBultos} bultos`
-                                                          : `${loc.ocupacionBultos ?? 0} bultos alojados · límite no configurado`
-                                                        )
+                                                      : 'Rack inactivo'
                                                     }
                                                   </span>
-                                                  
                                                   <span style={{
                                                     fontSize: 8.5,
                                                     fontWeight: 800,
@@ -1116,7 +1377,7 @@ export function Locations() {
                                                     borderRadius: 3,
                                                     backgroundColor: badgeBg,
                                                     color: badgeColor,
-                                                    border: badgeText === 'DISPONIBLE' ? '1px dashed #0284C7' : 'none'
+                                                    border: '1px solid #CBD5E1'
                                                   }}>
                                                     {badgeText}
                                                   </span>
@@ -1141,247 +1402,236 @@ export function Locations() {
             </div>
           ))}
 
-          {almacenableLocs.length === 0 && (
-            filterCliente && clientViewMode === 'compatibles' && compatiblePositionsCount === 0 ? (
-              <div className="card" style={{ padding: '36px 24px', textAlign: 'center', backgroundColor: 'var(--bg-secondary)', border: '1px dashed var(--border)', borderRadius: 10 }}>
-                <CheckCircle2 size={36} style={{ color: '#0284C7', opacity: 0.8, marginBottom: 10 }} />
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: 'var(--text-primary)' }}>
-                  No hay ubicaciones disponibles para {selectedClientName}
-                </h3>
-                <p style={{ margin: '8px auto 16px', maxWidth: 540, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Actualmente no existen celdas libres o parciales con capacidad disponible dentro de las zonas habilitadas para este depositante.
-                </p>
-                {(filterZona || filterPasillo || filterEstado) && (
-                  <p style={{ margin: '-8px auto 16px', fontSize: 12, color: 'var(--orange)', fontWeight: 600 }}>
-                    Revise también los filtros de zona, pasillo o estado.
-                  </p>
-                )}
-                <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
-                  <button className="btn btn-primary btn-sm" onClick={() => setClientViewMode('existencia')}>
-                    Ver posiciones con existencia
-                  </button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => setFilterCliente('')}>
-                    Quitar filtro de depositante
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
-                No se encontraron celdas de rack almacenables con los filtros seleccionados.
-              </div>
-            )
-          )}
-
-          {/* ========================================================
-             SECCIÓN MEJORADA: ÁREAS ESPECIALES Y DE TRÁNSITO
-             ======================================================== */}
-          {specialLocs.length > 0 && (
-            <div className="card animate-fade-in" style={{ border: '1px solid rgba(245, 158, 11, 0.35)', overflow: 'hidden' }}>
-              <div style={{
-                padding: '16px 20px',
-                borderBottom: '1px solid var(--border)',
-                backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: 10
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <Warehouse size={18} style={{ color: '#D97706' }} />
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>Áreas especiales y de tránsito ({specialLocs.length})</h3>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                      Estas áreas no participan en la asignación automática de racks.
-                    </div>
-                  </div>
-                </div>
-                <span style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  padding: '3px 9px',
-                  borderRadius: 6,
-                  backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                  color: '#B45309',
-                  border: '1px solid rgba(245, 158, 11, 0.3)'
-                }}>
-                  Capacidad de rack no aplica
-                </span>
-              </div>
-
-              {/* Grid simplificado de tarjetas limpias */}
-              <div style={{ padding: 20, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 14 }}>
-                {specialLocs.map((loc: any) => {
-                  const clientStats = filterCliente ? getLocationClientStats(loc, filterCliente) : null;
-                  
-                  return (
-                    <div
-                      key={loc.id}
-                      onClick={() => handleOpenLocationDetail(loc)}
-                      style={{
-                        padding: '16px 18px',
-                        borderRadius: 10,
-                        border: filterCliente && clientStats?.hasStock ? '2px solid #2563EB' : '1px solid var(--border)',
-                        backgroundColor: 'var(--bg-secondary)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'space-between',
-                        gap: 12,
-                        transition: 'all 0.15s ease-in-out',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.03)'
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div>
-                          <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)' }}>{loc.codigo}</div>
-                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2, fontWeight: 500 }}>
-                            {getFriendlyCategory(loc.categoriaUbicacion)}
-                          </div>
-                        </div>
-                        {filterCliente && clientStats?.isShared && (
-                          <span
-                            title="Esta ubicación contiene mercancía de más de un depositante."
-                            style={{
-                              fontSize: 10,
-                              padding: '2px 7px',
-                              borderRadius: 4,
-                              backgroundColor: 'rgba(99, 102, 241, 0.15)',
-                              color: '#4F46E5',
-                              fontWeight: 700,
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 3
-                            }}
-                          >
-                            <Users size={11} /> Compartida
-                          </span>
-                        )}
-                      </div>
-
-                      <div style={{
-                        padding: '10px 12px',
-                        borderRadius: 6,
-                        backgroundColor: 'var(--bg-primary)',
-                        border: '1px solid var(--border)',
-                        fontSize: 13,
-                        fontWeight: 700,
-                        color: 'var(--text-primary)'
-                      }}>
-                        {filterCliente && clientStats?.hasStock ? (
-                          <span style={{ color: '#1E40AF' }}>
-                            {clientStats.pieces.toLocaleString()} piezas · {clientStats.bultos} {clientStats.bultos === 1 ? 'bulto' : 'bultos'} de {selectedClientName}
-                          </span>
-                        ) : (
-                          <span>{(loc.ocupacionUnidades ?? 0).toLocaleString()} piezas · {loc.ocupacionBultos ?? 0} bultos</span>
-                        )}
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--text-tertiary)' }}>
-                        <span style={{ fontStyle: 'italic' }}>Sin límite de rack</span>
-                        <span style={{ color: 'var(--primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <Eye size={13} /> Consultar
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+          {filteredHistoricalLocs.length === 0 && (
+            <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
+              No se encontraron celdas de rack históricas con la búsqueda seleccionada.
             </div>
           )}
+
+
         </div>
       ) : (
         /* ========================================================
            VISTA 2: VISTA POR ZONAS
            ======================================================== */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {Object.entries(byZone).map(([zoneName, locs]) => (
-            <div key={zoneName} className="card animate-fade-in" style={{ marginBottom: 16 }}>
-              <div className="card-header">
-                <h3><MapPin size={16}/> {zoneName} <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-tertiary)' }}>({locs.length} posiciones)</span></h3>
-              </div>
-              <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
-                {locs.map((loc: any) => {
-                  const isBlocked = loc.estado === 'BLOQUEADO' || loc.estadoCapacidad === 'BLOQUEADO';
-                  const isOver = loc.estadoCapacidad === 'SOBRECAPACIDAD';
-                  const isFull = loc.estadoCapacidad === 'LLENO';
-                  const isPartial = loc.estadoCapacidad === 'PARCIAL';
-                  const isFree = loc.estadoCapacidad === 'LIBRE';
-                  
-                  const clientStats = filterCliente ? getLocationClientStats(loc, filterCliente) : null;
-                  const isClientHoldingStock = clientStats?.hasStock || false;
+          {sortedZoneEntries.map(([zoneName, locs]) => {
+            const znUpper = zoneName.toUpperCase();
+            const isPrincipal = znUpper.includes('INTERIOR') || znUpper.includes('EXTERIOR');
+            const isHistorical = znUpper.includes('ALM-A') || znUpper.includes('ALM-B') || znUpper.includes('TEXTIL') || znUpper.includes('ALIMENTO');
+            const isSpecial = znUpper.includes('RECIBO') || znUpper.includes('STAGING') || znUpper.includes('DEVOLUCI') || znUpper.includes('MERMA');
 
-                  return (
-                    <div
-                      key={loc.id}
-                      onClick={() => handleOpenLocationDetail(loc)}
-                      title={`Ver existencias y bultos en ${loc.codigo}`}
-                      style={{
-                        padding: '12px 10px',
-                        borderRadius: 8,
-                        textAlign: 'center',
-                        cursor: 'pointer',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        border: isOver
-                          ? '2px solid #EF4444'
-                          : filterCliente && isClientHoldingStock
-                          ? '2px solid #2563EB'
-                          : isFull
-                          ? '1px solid rgba(239,68,68,0.4)'
-                          : isPartial
-                          ? '1px solid rgba(245,158,11,0.4)'
-                          : isBlocked
-                          ? '1px solid rgba(148,163,184,0.4)'
-                          : '1px solid rgba(16,185,129,0.3)',
-                        transition: 'all 0.2s',
-                        background: isOver
-                          ? 'rgba(239,68,68,0.12)'
-                          : filterCliente && isClientHoldingStock
-                          ? 'rgba(37,99,235,0.1)'
-                          : isFull
-                          ? 'rgba(239,68,68,0.08)'
-                          : isPartial
-                          ? 'rgba(245,158,11,0.08)'
-                          : isBlocked
-                          ? 'rgba(148,163,184,0.08)'
-                          : 'rgba(16,185,129,0.08)',
-                        color: isOver || isFull
-                          ? '#DC2626'
-                          : filterCliente && isClientHoldingStock
-                          ? '#1E40AF'
-                          : isPartial
-                          ? '#D97706'
-                          : isBlocked
-                          ? '#64748B'
-                          : '#059669',
-                      }}
-                    >
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>{loc.codigo}</div>
-                      <div style={{ fontSize: 11, fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>
-                        {filterCliente && isClientHoldingStock ? (
-                          <span style={{ color: '#1E40AF' }}>{clientStats?.pieces} piezas</span>
-                        ) : isFree ? (
-                          <span style={{ color: '#059669' }}>Libre</span>
-                        ) : (
-                          <span>{loc.ocupacionUnidades ?? 0} piezas</span>
+            return (
+              <div
+                key={zoneName}
+                className="card animate-fade-in"
+                style={{
+                  marginBottom: 16,
+                  border: isPrincipal
+                    ? '1.5px solid #86EFAC'
+                    : isHistorical
+                    ? '1px dashed #FCD34D'
+                    : '1px solid var(--border)',
+                  opacity: isHistorical ? 0.88 : 1
+                }}
+              >
+                <div className="card-header" style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  backgroundColor: isPrincipal ? '#F0FDF4' : isHistorical ? '#FFFBEB' : 'var(--bg-secondary)',
+                  padding: '12px 18px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <MapPin size={18} color={isPrincipal ? '#16A34A' : isHistorical ? '#D97706' : '#2563EB'} />
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: isPrincipal ? '#166534' : isHistorical ? '#92400E' : 'var(--text-primary)' }}>
+                      {zoneName}
+                    </h3>
+                    <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-tertiary)' }}>
+                      ({locs.length} posiciones)
+                    </span>
+                  </div>
+
+                  <div>
+                    {isPrincipal && (
+                      <span style={{
+                        fontSize: 11,
+                        fontWeight: 800,
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        backgroundColor: '#DCFCE7',
+                        color: '#166534',
+                        border: '1px solid #86EFAC'
+                      }}>
+                        Almacén Operativo Principal
+                      </span>
+                    )}
+                    {isSpecial && (
+                      <span style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        backgroundColor: '#EFF6FF',
+                        color: '#1E40AF',
+                        border: '1px solid #BFDBFE'
+                      }}>
+                        Áreas Especiales y Maniobra
+                      </span>
+                    )}
+                    {isHistorical && (
+                      <span style={{
+                        fontSize: 11,
+                        fontWeight: 800,
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        backgroundColor: '#FEE2E2',
+                        color: '#991B1B',
+                        border: '1px solid #FCA5A5'
+                      }}>
+                        Histórico · Racks Inactivos
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {isHistorical && (
+                  <div style={{
+                    padding: '8px 18px',
+                    backgroundColor: '#FEF3C7',
+                    borderBottom: '1px solid #FCD34D',
+                    fontSize: 11,
+                    color: '#92400E',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6
+                  }}>
+                    <AlertTriangle size={14} color="#D97706" />
+                    <span>Racks inactivos (activo = false) conservados únicamente para trazabilidad documental. No participan en alojamiento ni surtido.</span>
+                  </div>
+                )}
+
+                <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+                  {locs.map((loc: any) => {
+                    const isBlocked = loc.estado === 'BLOQUEADO' || loc.estadoCapacidad === 'BLOQUEADO';
+                    const isOver = loc.estadoCapacidad === 'SOBRECAPACIDAD';
+                    const isFull = loc.estadoCapacidad === 'LLENO';
+                    const isPartial = loc.estadoCapacidad === 'PARCIAL';
+                    const isFree = loc.estadoCapacidad === 'LIBRE' || (!loc.ocupacionBultos && !loc.ocupacionUnidades);
+                    const isPnc = loc.tipoUbicacion === 'PNC' || loc.categoriaUbicacion === 'VIRTUAL_NO_CONFORME';
+                    const isFloorPallet = loc.codigo && loc.codigo.toUpperCase().startsWith('G');
+                    const isInactive = loc.activo === false;
+
+                    const clientStats = filterCliente ? getLocationClientStats(loc, filterCliente) : null;
+                    const isClientHoldingStock = clientStats?.hasStock || false;
+
+                    return (
+                      <div
+                        key={loc.id}
+                        onClick={() => handleOpenLocationDetail(loc)}
+                        title={`Ver existencias y bultos en ${loc.codigo}`}
+                        style={{
+                          padding: '12px 10px',
+                          borderRadius: 8,
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          position: 'relative',
+                          border: isOver
+                            ? '2px solid #EF4444'
+                            : filterCliente && isClientHoldingStock
+                            ? '2px solid #2563EB'
+                            : isPnc
+                            ? '1.5px solid #FCA5A5'
+                            : isFull
+                            ? '1px solid rgba(239,68,68,0.4)'
+                            : isPartial
+                            ? '1px solid rgba(245,158,11,0.4)'
+                            : isBlocked || isInactive
+                            ? '1px solid rgba(148,163,184,0.4)'
+                            : '1px solid rgba(16,185,129,0.3)',
+                          transition: 'all 0.2s',
+                          background: isOver
+                            ? 'rgba(239,68,68,0.12)'
+                            : filterCliente && isClientHoldingStock
+                            ? 'rgba(37,99,235,0.1)'
+                            : isPnc
+                            ? '#FEF2F2'
+                            : isFull
+                            ? 'rgba(239,68,68,0.08)'
+                            : isPartial
+                            ? 'rgba(245,158,11,0.08)'
+                            : isBlocked || isInactive
+                            ? '#F8FAFC'
+                            : 'rgba(16,185,129,0.08)',
+                          color: isOver || isFull
+                            ? '#DC2626'
+                            : filterCliente && isClientHoldingStock
+                            ? '#1E40AF'
+                            : isPartial
+                            ? '#D97706'
+                            : isBlocked || isInactive
+                            ? '#64748B'
+                            : '#059669',
+                          opacity: isInactive ? 0.75 : 1
+                        }}
+                      >
+                        {isPnc && (
+                          <div style={{
+                            position: 'absolute',
+                            top: 4,
+                            right: 4,
+                            fontSize: 9,
+                            fontWeight: 800,
+                            padding: '1px 4px',
+                            borderRadius: 3,
+                            backgroundColor: '#FEE2E2',
+                            color: '#991B1B',
+                            border: '1px solid #FCA5A5'
+                          }}>
+                            PNC
+                          </div>
                         )}
+                        <div style={{ fontSize: 13, fontWeight: 700, color: isInactive ? '#64748B' : 'inherit' }}>
+                          {loc.codigo}
+                        </div>
+                        <div style={{ fontSize: 11, fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>
+                          {filterCliente && isClientHoldingStock ? (
+                            <span style={{ color: '#1E40AF' }}>{clientStats?.pieces} piezas</span>
+                          ) : isFloorPallet ? (
+                            isFree ? (
+                              <span style={{ color: '#059669' }}>Libre (1 tarima)</span>
+                            ) : (
+                              <span>{loc.ocupacionBultos || 1}/1 tarima</span>
+                            )
+                          ) : isFree ? (
+                            <span style={{ color: '#059669' }}>Libre</span>
+                          ) : (
+                            <span>{loc.ocupacionUnidades ?? 0} piezas</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 2 }}>
+                          {isFloorPallet ? (
+                            <span>Cap: 1 tarima</span>
+                          ) : isInactive ? (
+                            <span style={{ color: '#94A3B8' }}>Inactivo · Trazabilidad</span>
+                          ) : filterCliente && isClientHoldingStock ? (
+                            `${clientStats?.bultos} ${clientStats?.bultos === 1 ? 'bulto' : 'bultos'}`
+                          ) : (
+                            `${loc.ocupacionBultos ?? 0} ${(loc.ocupacionBultos ?? 0) === 1 ? 'bulto' : 'bultos'}`
+                          )}
+                        </div>
+                        <div style={{ fontSize: 9.5, fontWeight: 700, marginTop: 4 }}>
+                          {isInactive ? 'INACTIVO' : loc.estadoCapacidad === 'NO_APLICA' ? 'Especial' : loc.estadoCapacidad}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 2 }}>
-                        {filterCliente && isClientHoldingStock
-                          ? `${clientStats?.bultos} ${clientStats?.bultos === 1 ? 'bulto' : 'bultos'}`
-                          : `${loc.ocupacionBultos ?? 0} ${(loc.ocupacionBultos ?? 0) === 1 ? 'bulto' : 'bultos'}`
-                        }
-                      </div>
-                      <div style={{ fontSize: 9.5, fontWeight: 700, marginTop: 4 }}>
-                        {loc.estadoCapacidad === 'NO_APLICA' ? 'Especial' : loc.estadoCapacidad}
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Sección de áreas especiales únicamente para aquellas que no pertenezcan a ninguna zona renderizada arriba (Punto 1) */}
           {unassignedSpecialLocs.length > 0 && (
@@ -1507,6 +1757,17 @@ export function Locations() {
                   // Datos a mostrar según toggle de usuario (Punto 7)
                   const displayLots = (filterCliente && showOnlyFilterClientInModal) ? clientLotsInModal : allLots;
                   const displayHus = (filterCliente && showOnlyFilterClientInModal) ? clientHusInModal : allHus;
+                  const clientHuSummary = summarizeLocationHus({
+                    lots: clientLotsInModal,
+                    hus: clientHusInModal,
+                    allHusInPosition: allHus,
+                  });
+                  const clientPhysicalBultosCount = clientHuSummary.physicalPalletsCount;
+                  const displayHuSummary = summarizeLocationHus({
+                    lots: displayLots,
+                    hus: displayHus,
+                    allHusInPosition: allHus,
+                  });
 
                   return (
                     <>
@@ -1674,7 +1935,7 @@ export function Locations() {
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
                               {filterCliente && showOnlyFilterClientInModal
-                                ? `${clientHusInModal.length} ${clientHusInModal.length === 1 ? 'bulto' : 'bultos'} de ${selectedClientName}`
+                                ? `${clientPhysicalBultosCount} ${clientPhysicalBultosCount === 1 ? 'bulto' : 'bultos'} de ${selectedClientName}`
                                 : `${locDetailData?.ocupacionBultos ?? locDetailData?.handlingUnits?.length ?? 0} ${(locDetailData?.ocupacionBultos ?? locDetailData?.handlingUnits?.length ?? 0) === 1 ? 'bulto total' : 'bultos totales'}`}
                             </div>
                           </div>
@@ -1703,45 +1964,72 @@ export function Locations() {
                         /* Desglose de Capacidad Física para Celdas de Rack */
                         <>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-                            {/* Tarjeta Capacidad Piezas */}
-                            <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                                <span style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <Package size={15} style={{ color: 'var(--emerald)' }} /> Capacidad en Piezas
-                                </span>
-                                <span style={{ fontSize: 11.5, fontWeight: 700, color: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : 'var(--emerald)' }}>
-                                  Uso de capacidad: {locDetailData?.porcentajeOcupacionUnidades ?? 0}%
-                                </span>
+                            {/* Tarjeta Capacidad (Adaptativa Piso 1 Tarima vs Racks) */}
+                            {Boolean(locDetailData?.codigo && locDetailData.codigo.toUpperCase().startsWith('G')) ? (
+                              <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <Box size={15} style={{ color: 'var(--emerald)' }} /> Capacidad Física de Tarima
+                                  </span>
+                                  <span style={{ fontSize: 11.5, fontWeight: 700, color: (locDetailData?.ocupacionBultos ?? 0) >= 1 ? '#DC2626' : 'var(--emerald)' }}>
+                                    {(locDetailData?.ocupacionBultos ?? 0) >= 1 ? '100% (Ocupada)' : '0% (Libre)'}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
+                                  {(locDetailData?.ocupacionBultos ?? 0)} / 1 tarimas ocupadas
+                                </div>
+                                <div style={{ height: 6, width: '100%', background: 'rgba(0,0,0,0.06)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
+                                  <div style={{
+                                    height: '100%',
+                                    width: `${Math.min(100, (locDetailData?.ocupacionBultos ?? 0) * 100)}%`,
+                                    background: (locDetailData?.ocupacionBultos ?? 0) >= 1 ? '#0284C7' : '#10B981'
+                                  }} />
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+                                  <span>Capacidad disponible: <strong>{(locDetailData?.ocupacionBultos ?? 0) >= 1 ? 0 : 1} tarima</strong></span>
+                                  {(locDetailData?.ocupacionUnidades ?? 0) > 0 && <span>Contenido: {locDetailData.ocupacionUnidades} piezas</span>}
+                                </div>
                               </div>
-                              <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
-                                {filterCliente && showOnlyFilterClientInModal ? (
-                                  <>
-                                    <span>{clientPiecesInModal.toLocaleString()}</span>{' '}
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                      piezas de {selectedClientName} (Total celda: {locDetailData?.ocupacionUnidades ?? 0}/{locDetailData?.capacidadUnits || 100})
-                                    </span>
-                                  </>
-                                ) : (
-                                  <>
-                                    {locDetailData?.ocupacionUnidades ?? locDetailData?.totalFisico ?? 0}{' '}
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                      de {locDetailData?.capacidadUnits || 100} piezas
-                                    </span>
-                                  </>
-                                )}
+                            ) : (
+                              <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <Package size={15} style={{ color: 'var(--emerald)' }} /> Capacidad en Piezas
+                                  </span>
+                                  <span style={{ fontSize: 11.5, fontWeight: 700, color: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : 'var(--emerald)' }}>
+                                    Uso de capacidad: {locDetailData?.porcentajeOcupacionUnidades ?? 0}%
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
+                                  {filterCliente && showOnlyFilterClientInModal ? (
+                                    <>
+                                      <span>{clientPiecesInModal.toLocaleString()}</span>{' '}
+                                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                                        piezas de {selectedClientName} (Total celda: {locDetailData?.ocupacionUnidades ?? 0}/{locDetailData?.capacidadUnits || 100})
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {locDetailData?.ocupacionUnidades ?? locDetailData?.totalFisico ?? 0}{' '}
+                                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                                        de {locDetailData?.capacidadUnits || 100} piezas
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                                <div style={{ height: 6, width: '100%', background: 'rgba(0,0,0,0.06)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
+                                  <div style={{
+                                    height: '100%',
+                                    width: `${Math.min(100, locDetailData?.porcentajeOcupacionUnidades ?? 0)}%`,
+                                    background: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : (locDetailData?.porcentajeOcupacionUnidades ?? 0) >= 100 ? '#EF4444' : '#10B981'
+                                  }} />
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+                                  <span>Espacio libre: <strong>{locDetailData?.capacidadDisponibleUnidades ?? 0} piezas</strong></span>
+                                  {locDetailData?.reservaUnidades > 0 && <span>Reserva: {locDetailData.reservaUnidades} piezas</span>}
+                                </div>
                               </div>
-                              <div style={{ height: 6, width: '100%', background: 'rgba(0,0,0,0.06)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
-                                <div style={{
-                                  height: '100%',
-                                  width: `${Math.min(100, locDetailData?.porcentajeOcupacionUnidades ?? 0)}%`,
-                                  background: locDetailData?.estadoCapacidad === 'SOBRECAPACIDAD' ? '#DC2626' : (locDetailData?.porcentajeOcupacionUnidades ?? 0) >= 100 ? '#EF4444' : '#10B981'
-                                }} />
-                              </div>
-                              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
-                                <span>Espacio libre: <strong>{locDetailData?.capacidadDisponibleUnidades ?? 0} piezas</strong></span>
-                                {locDetailData?.reservaUnidades > 0 && <span>Reserva: {locDetailData.reservaUnidades} piezas</span>}
-                              </div>
-                            </div>
+                            )}
 
                             {/* Tarjeta Capacidad Bultos */}
                             <div style={{ background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: 8, border: '1px solid var(--border)' }}>
@@ -1762,9 +2050,9 @@ export function Locations() {
                               <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
                                 {filterCliente && showOnlyFilterClientInModal ? (
                                   <>
-                                    <span>{clientHusInModal.length}</span>{' '}
+                                    <span>{clientPhysicalBultosCount}</span>{' '}
                                     <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                      {clientHusInModal.length === 1 ? 'bulto' : 'bultos'} de {selectedClientName} (Total: {locDetailData?.ocupacionBultos ?? 0}{' '}
+                                      {clientPhysicalBultosCount === 1 ? 'bulto' : 'bultos'} de {selectedClientName} (Total: {locDetailData?.ocupacionBultos ?? 0}{' '}
                                       {locDetailData?.capacidadBultos
                                         ? `/${locDetailData.capacidadBultos} bultos`
                                         : `${(locDetailData?.ocupacionBultos ?? 0) === 1 ? 'bulto alojado' : 'bultos alojados'} · límite no configurado`})
@@ -1983,10 +2271,16 @@ export function Locations() {
                       {/* Tabla 2: Unidades de Manejo (HUs) Físicas en Posición */}
                       {displayHus.length > 0 && (
                         <div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
                             <h4 style={{ fontSize: 13, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
                               <Layers size={15} color="var(--primary)" /> Unidades de Manejo (HUs) Físicas en Posición ({displayHus.length})
                             </h4>
+                            <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', fontWeight: 600 }}>
+                              {displayHuSummary.totalPiecesInInventariableHus.toLocaleString()} piezas inventariables en {displayHuSummary.inventariableHus.length} {displayHuSummary.inventariableHus.length === 1 ? 'caja' : 'cajas'}
+                              {displayHuSummary.containerHus.length > 0
+                                ? ` · ${displayHuSummary.containerHus.length} ${displayHuSummary.containerHus.length === 1 ? 'tarima master' : 'tarimas master'}`
+                                : ''}
+                            </span>
                           </div>
                           <div style={{ borderRadius: 8, overflowX: 'auto', border: '1px solid var(--border)', backgroundColor: 'var(--bg-primary)' }}>
                             <table className="data-table" style={{ fontSize: 12, width: '100%', borderCollapse: 'collapse' }}>
@@ -2001,54 +2295,97 @@ export function Locations() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {displayHus.map((h: any) => (
-                                  <tr key={h.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
-                                      <span style={{ fontFamily: 'monospace', fontWeight: 800, color: 'var(--primary)', fontSize: 12 }}>
-                                        {h.codigo}
-                                      </span>
-                                    </td>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle', textTransform: 'capitalize' }}>
-                                      {h.tipoHu?.toLowerCase() || 'caja'}
-                                    </td>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle', whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                                      <div style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: 12 }}>
-                                        {h.skuCodigo || h.lote?.sku?.codigo || '—'}
-                                      </div>
-                                      {h.lote?.sku?.descripcion && (
-                                        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                                          {h.lote.sku.descripcion}
+                                {displayHus.map((h: any) => {
+                                  const huRow = getLocationHuRowPresentation(h, allHus);
+                                  return (
+                                    <tr
+                                      key={h.id}
+                                      style={{
+                                        borderBottom: '1px solid var(--border)',
+                                        backgroundColor: huRow.isContainer ? 'rgba(15, 118, 110, 0.035)' : undefined,
+                                      }}
+                                    >
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
+                                        <span style={{ fontFamily: 'monospace', fontWeight: 800, color: huRow.isContainer ? '#0F766E' : 'var(--primary)', fontSize: 12 }}>
+                                          {h.codigo}
+                                        </span>
+                                        {huRow.isContainer ? (
+                                          <div style={{ fontSize: 10.5, color: '#0F766E', fontWeight: 700, marginTop: 2 }}>
+                                            Contenedor padre
+                                          </div>
+                                        ) : huRow.parentCodigo ? (
+                                          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                                            Tarima: <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{huRow.parentCodigo}</span>
+                                          </div>
+                                        ) : null}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle', textTransform: huRow.isContainer ? 'none' : 'capitalize' }}>
+                                        {huRow.isContainer ? (
+                                          <span
+                                            style={{
+                                              fontSize: 10.5,
+                                              fontWeight: 700,
+                                              padding: '2px 7px',
+                                              borderRadius: 4,
+                                              backgroundColor: 'rgba(15, 118, 110, 0.12)',
+                                              color: '#0F766E',
+                                              border: '1px solid rgba(15, 118, 110, 0.25)',
+                                              display: 'inline-block',
+                                            }}
+                                          >
+                                            {huRow.tipoLabel}
+                                          </span>
+                                        ) : (
+                                          huRow.tipoLabel
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle', whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                                        <div style={{ fontWeight: 700, fontFamily: huRow.isContainer ? 'inherit' : 'monospace', fontSize: 12, color: huRow.isContainer ? '#0F172A' : undefined }}>
+                                          {huRow.contenidoLabel}
                                         </div>
-                                      )}
-                                    </td>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
-                                      <span className="badge badge-default" style={{ fontFamily: 'monospace' }}>
-                                        {h.loteTexto || h.lote?.lote || '—'}
-                                      </span>
-                                    </td>
-                                    <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, verticalAlign: 'middle' }}>
-                                      {h.cantidad} piezas
-                                    </td>
-                                    <td style={{ padding: '10px 14px', textAlign: 'center', verticalAlign: 'middle' }}>
-                                      <span className="badge badge-success" style={{ fontSize: 10, fontWeight: 700 }}>
-                                        {h.estadoHu || 'ALMACENADA'}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
+                                        {huRow.contenidoSublabel && (
+                                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                            {huRow.contenidoSublabel}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
+                                        <span className="badge badge-default" style={{ fontFamily: 'monospace' }}>
+                                          {h.loteTexto || h.lote?.lote || '—'}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, verticalAlign: 'middle' }}>
+                                        <div>{huRow.cantidadLabel}</div>
+                                        {huRow.cantidadSublabel && (
+                                          <div style={{ fontSize: 11, fontWeight: 600, color: '#0F766E', marginTop: 2 }}>
+                                            {huRow.cantidadSublabel}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', textAlign: 'center', verticalAlign: 'middle' }}>
+                                        <span className="badge badge-success" style={{ fontSize: 10, fontWeight: 700 }}>
+                                          {h.estadoHu || 'ALMACENADA'}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
 
-                          {/* Nota de trazabilidad cuando el inventario físico difiere de la cantidad en HU (Punto 4) */}
+                          {/* Nota de trazabilidad cuando el inventario físico difiere de la cantidad en HUs inventariables */}
                           {(() => {
-                            const totalPiecesInLots = displayLots.reduce((s: number, l: any) => s + ((l.cantidadDisponible || 0) + (l.cantidadBloqueada || 0)), 0);
-                            const totalPiecesInHus = displayHus.reduce((s: number, h: any) => s + Number(h.cantidad || 0), 0);
-                            const hasHuDiscrepancy = displayHus.length > 0 && totalPiecesInLots !== totalPiecesInHus;
+                            const {
+                              inventariableHus,
+                              totalPiecesInLots,
+                              totalPiecesInInventariableHus,
+                              hasHuDiscrepancy,
+                            } = displayHuSummary;
 
                             if (!hasHuDiscrepancy) return null;
 
-                            const specificCause = displayHus.find((h: any) => h.motivoDano || h.notas)?.motivoDano || displayHus.find((h: any) => h.notas)?.notas;
+                            const specificCause = inventariableHus.find((h: any) => h.motivoDano || h.notas)?.motivoDano || inventariableHus.find((h: any) => h.notas)?.notas;
 
                             return (
                               <div style={{
@@ -2066,7 +2403,7 @@ export function Locations() {
                               }}>
                                 <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
                                 <span>
-                                  <strong>Nota de trazabilidad:</strong> El saldo físico actual registrado en inventario ({totalPiecesInLots.toLocaleString()} piezas) difiere de la cantidad registrada en {displayHus.length === 1 ? 'la HU' : 'las HUs'} ({totalPiecesInHus.toLocaleString()} piezas). {specificCause
+                                  <strong>Nota de trazabilidad:</strong> El saldo físico actual registrado en inventario ({totalPiecesInLots.toLocaleString()} piezas) difiere de la cantidad registrada en {inventariableHus.length === 1 ? 'la HU inventariable' : 'las HUs inventariables'} ({totalPiecesInInventariableHus.toLocaleString()} piezas). {specificCause
                                     ? `Causa documentada: ${specificCause}. Se recomienda revisar la trazabilidad de la HU.`
                                     : 'Esta diferencia puede estar asociada a movimientos parciales históricos, ajustes o movimientos realizados sin re-etiquetado/split físico de la unidad de manejo. Se recomienda revisar la trazabilidad de la HU.'
                                   }
@@ -2108,3 +2445,728 @@ const demoLocations = [
   { id: 'loc-4', codigo: 'A01-R01-N2', estado: 'LIBRE', ocupacionUnidades: 0, capacidadUnits: 40, ocupacionBultos: 0, capacidadBultos: 5, tipoUbicacion: 'ESTANTERIA', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'LIBRE', pasillo: 'A01', rack: 'R01', nivel: 'N2', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
   { id: 'loc-5', codigo: 'B01-R01-N1', estado: 'OCUPADO', ocupacionUnidades: 586, capacidadUnits: 40, ocupacionBultos: 4, capacidadBultos: 5, tipoUbicacion: 'RACK', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'SOBRECAPACIDAD', pasillo: 'B01', rack: 'R01', nivel: 'N1', zona: { codigo: 'ZONA-ALIM', nombre: 'Zona Almacenaje Alimentos (FEFO)' } }
 ];
+
+// ============================================================================
+// PLANO FÍSICO 2D INTERACTIVO (FASE 3A DE ADAPTACIÓN AL ALMACÉN REAL)
+// ============================================================================
+// Renderizado interactivo fiel de las 45 posiciones físicas de tarima derivadas
+// del plano arquitectónico compartido por Alejandra y verificado pixel a pixel.
+//
+// Reglas de negocio confirmadas por Alejandra:
+//  1. Cada espacio dibujado en el plano = 1 ubicación física independiente.
+//  2. Capacidad física estricta = exactamente UNA sola tarima (capacidadBultos = 1).
+//  3. Nomenclatura consecutiva G0001 a G0045.
+//  4. Sin restricciones de producto por zona.
+//  5. Reserva es virtual (LotInventory.cantidadReservada) y NO tipo de ubicación.
+//  6. Exterior Techado se usa operativamente para PNC (posiciones G0036+ dinámicas).
+// ============================================================================
+interface SpatialMapProps {
+  locations: any[];
+  specialLocs: any[];
+  filterCliente?: string;
+  selectedClientName?: string;
+  searchTerm?: string;
+  onRefresh?: () => void;
+}
+
+function PhysicalWarehouseMap({
+  locations,
+  specialLocs,
+  filterCliente,
+  selectedClientName,
+  searchTerm,
+  onRefresh
+}: SpatialMapProps) {
+  const [selectedPosition, setSelectedPosition] = useState<WarehouseLocationConfig | null>(null);
+  const [filterMode, setFilterMode] = useState<'ALL' | 'INTERIOR' | 'EXTERIOR_TECHADO' | 'PNC'>('ALL');
+  const [zoomScale, setZoomScale] = useState<number>(1);
+  const [hoveredCode, setHoveredCode] = useState<string | null>(null);
+  const [isTogglingPnc, setIsTogglingPnc] = useState<boolean>(false);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Mapeo indexado de ubicaciones de BD por código
+  const locationsByCode = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const loc of locations) {
+      if (loc.codigo) map.set(loc.codigo.toUpperCase(), loc);
+    }
+    return map;
+  }, [locations]);
+
+  // Posición seleccionada en BD si existe
+  const selectedLiveLocation = useMemo(() => {
+    if (!selectedPosition) return null;
+    return locationsByCode.get(selectedPosition.codigo.toUpperCase()) || null;
+  }, [selectedPosition, locationsByCode]);
+
+  // Conteo dinámico de métricas para las 45 posiciones oficiales (Fase 3B-B)
+  const stats = useMemo(() => {
+    let ocupadas = 0;
+    let libres = 0;
+    let pncCount = 0;
+    let enBdCount = 0;
+
+    for (const pos of REAL_WAREHOUSE_POSITIONS) {
+      const live = locationsByCode.get(pos.codigo.toUpperCase());
+      if (live) {
+        enBdCount++;
+        const isOccupied = (typeof live.ocupacionBultos === 'number' && live.ocupacionBultos >= 1) ||
+                           (typeof live.ocupacionUnidades === 'number' && live.ocupacionUnidades > 0) ||
+                           live.estadoCapacidad === 'LLENO';
+        const isPnc = live.tipoUbicacion === 'PNC' || live.categoriaUbicacion === 'VIRTUAL_NO_CONFORME';
+        if (isPnc) pncCount++;
+        if (isOccupied) ocupadas++;
+        else libres++;
+      } else {
+        if (pos.esPncSugerido) pncCount++;
+        libres++;
+      }
+    }
+
+    return {
+      total: REAL_WAREHOUSE_POSITIONS.length,
+      interior: REAL_WAREHOUSE_POSITIONS.filter(p => p.areaFisica === 'INTERIOR').length,
+      exterior: REAL_WAREHOUSE_POSITIONS.filter(p => p.areaFisica === 'EXTERIOR_TECHADO').length,
+      pncSugerido: pncCount,
+      ocupadas,
+      libres,
+      pncCount,
+      enBdCount
+    };
+  }, [locationsByCode]);
+
+  // Alternar designación PNC de una ubicación si ya está registrada en BD
+  const handleTogglePncDesignation = async (locId: string, currentIsPnc: boolean) => {
+    setIsTogglingPnc(true);
+    setActionFeedback(null);
+    try {
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch(`${API}/locations/${locId}/pnc-designation`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          usoPnc: !currentIsPnc,
+          motivo: currentIsPnc ? 'Restitución a Almacenamiento Comercial' : 'Designación de posición para PNC/Merma',
+          usuario: 'supervisor'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || 'Error al cambiar designación operativa');
+      }
+      setActionFeedback({
+        type: 'success',
+        message: data.message || 'Designación operativa actualizada exitosamente'
+      });
+      if (onRefresh) onRefresh();
+    } catch (err: any) {
+      setActionFeedback({
+        type: 'error',
+        message: err.message || 'Error al alternar designación PNC'
+      });
+    } finally {
+      setIsTogglingPnc(false);
+    }
+  };
+
+  return (
+    <div className="card animate-fade-in" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Barra de Encabezado y Métricas Arquitectónicas */}
+      <div style={{
+        padding: '16px 20px',
+        borderRadius: 12,
+        backgroundColor: 'rgba(37, 99, 235, 0.04)',
+        border: '1px solid rgba(37, 99, 235, 0.2)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{
+              width: 42,
+              height: 42,
+              borderRadius: 10,
+              backgroundColor: '#1E40AF',
+              color: '#FFFFFF',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 6px -1px rgba(30, 64, 175, 0.2)'
+            }}>
+              <Warehouse size={24} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1E3A8A' }}>
+                  Plano Físico Real del Almacén — 45 Posiciones Físicas de Tarima
+                </h3>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  backgroundColor: '#DCFCE7',
+                  color: '#166534',
+                  border: '1px solid #86EFAC'
+                }}>
+                  Fase 3B · Almacén Operativo Real
+                </span>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: 13, color: '#475569' }}>
+                Fuente de verdad arquitectónica confirmada por Alejandra · <strong>Capacidad canónica: 1 Tarima por Posición</strong> · Acceso directo a nivel de suelo
+              </p>
+            </div>
+          </div>
+
+          {/* Controles de Zoom */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', padding: 4, borderRadius: 8, border: '1px solid var(--border)' }}>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setZoomScale(z => Math.max(0.7, Number((z - 0.1).toFixed(2))))}
+              title="Alejar mapa"
+              style={{ padding: '4px 8px' }}
+            >
+              <ZoomOut size={14} />
+            </button>
+            <span style={{ fontSize: 11, fontWeight: 700, minWidth: 42, textAlign: 'center', color: '#1E293B' }}>
+              {Math.round(zoomScale * 100)}%
+            </span>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setZoomScale(z => Math.min(1.5, Number((z + 0.1).toFixed(2))))}
+              title="Acercar mapa"
+              style={{ padding: '4px 8px' }}
+            >
+              <ZoomIn size={14} />
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setZoomScale(1)}
+              title="Restablecer escala al 100%"
+              style={{ padding: '4px 8px', fontSize: 11 }}
+            >
+              100%
+            </button>
+          </div>
+        </div>
+
+        {/* Chips de Resumen Operativo */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>Total Posiciones:</span> <strong style={{ color: '#0F172A' }}>{stats.total} tarimas</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>Área Interior:</span> <strong style={{ color: '#1D4ED8' }}>{stats.interior} (G0001–G0035)</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>Exterior Techado:</span> <strong style={{ color: '#0D9488' }}>{stats.exterior} (G0036–G0045)</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', fontSize: 12 }}>
+            <span style={{ color: '#64748B' }}>PNC Designadas:</span> <strong style={{ color: '#DC2626' }}>{stats.pncSugerido} pos</strong>
+          </div>
+          <div style={{ padding: '6px 12px', borderRadius: 8, backgroundColor: '#DCFCE7', border: '1px solid #86EFAC', fontSize: 12, color: '#166534' }}>
+            <strong>Operación Real:</strong> 45 posiciones físicas oficiales (G0001–G0045) activas en base de datos
+          </div>
+        </div>
+
+        {/* Filtros Rápidos de Visualización */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingTop: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Filtrar vista:</span>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'ALL' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('ALL')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Todas ({stats.total})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'INTERIOR' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('INTERIOR')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Solo Interior ({stats.interior})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'EXTERIOR_TECHADO' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('EXTERIOR_TECHADO')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Solo Exterior Techado ({stats.exterior})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'PNC' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setFilterMode('PNC')}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            Posiciones PNC
+          </button>
+        </div>
+      </div>
+
+      {/* Contenedor Principal: Canvas SVG del Plano y Panel Lateral de Inspección */}
+      <div style={{ display: 'grid', gridTemplateColumns: selectedPosition ? 'minmax(0, 1fr) 340px' : '1fr', gap: 20 }}>
+        {/* Canvas SVG con Layout Real */}
+        <div style={{
+          backgroundColor: '#0F172A',
+          borderRadius: 12,
+          padding: 16,
+          overflow: 'auto',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+          border: '1px solid #334155',
+          boxShadow: 'inset 0 2px 4px 0 rgba(0, 0, 0, 0.4)',
+          minHeight: 520
+        }}>
+          <div style={{
+            transform: `scale(${zoomScale})`,
+            transformOrigin: 'top center',
+            transition: 'transform 0.15s ease-out',
+            width: 707,
+            height: 760
+          }}>
+            <svg
+              width="707"
+              height="760"
+              viewBox="0 0 707 760"
+              style={{ display: 'block', backgroundColor: '#FFFFFF', borderRadius: 8, boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}
+            >
+              <defs>
+                {/* Patrón de Tablones de Madera para Tarima */}
+                <pattern id="palletWoodSlatH" width="20" height="8" patternUnits="userSpaceOnUse">
+                  <rect width="20" height="6.5" fill="#FDE68A" stroke="#D97706" strokeWidth="0.5" />
+                  <line x1="0" y1="7" x2="20" y2="7" stroke="#92400E" strokeWidth="0.5" strokeOpacity="0.4" />
+                </pattern>
+                <pattern id="palletWoodSlatV" width="8" height="20" patternUnits="userSpaceOnUse">
+                  <rect width="6.5" height="20" fill="#FDE68A" stroke="#D97706" strokeWidth="0.5" />
+                  <line x1="7" y1="0" x2="7" y2="20" stroke="#92400E" strokeWidth="0.5" strokeOpacity="0.4" />
+                </pattern>
+                {/* Patrón de Escalera */}
+                <pattern id="stairSteps" width="10" height="8" patternUnits="userSpaceOnUse">
+                  <rect width="10" height="4" fill="#94A3B8" />
+                  <rect y="4" width="10" height="4" fill="#64748B" />
+                </pattern>
+              </defs>
+
+              {/* 1. Fondo de Nave Interior */}
+              <rect x="18" y="10" width="671" height="598" fill="#F8FAFC" stroke="#0F172A" strokeWidth="3" />
+
+              {/* 2. Fondo de Patio Exterior Techado */}
+              <rect x="18" y="608" width="671" height="142" fill="#F0FDFA" stroke="#0F172A" strokeWidth="3" />
+
+              {/* Muro Separador Estructural entre Interior y Exterior */}
+              <line x1="18" y1="608" x2="689" y2="608" stroke="#0F172A" strokeWidth="5" />
+
+              {/* Rótulo de Zonas Espaciales */}
+              <text x="490" y="555" fill="#CBD5E1" fontSize="28" fontWeight="900" letterSpacing="4">INTERIOR</text>
+              <text x="350" y="642" fill="#0D9488" fontSize="14" fontWeight="800" letterSpacing="2" textAnchor="middle">
+                EXTERIOR TECHADO (PNC / RECEPCIÓN)
+              </text>
+
+              {/* Muro Interior Tabicado (Recinto de Tarimas G0018-G0026) */}
+              <path
+                d="M 120 180 L 420 180 L 420 320"
+                fill="none"
+                stroke="#0F172A"
+                strokeWidth="4"
+              />
+              <line x1="130" y1="320" x2="315" y2="320" stroke="#0F172A" strokeWidth="4" />
+
+              {/* LANDMARKS ARQUITECTÓNICOS */}
+              {/* Baños */}
+              <g id="landmark-banios">
+                <rect x="515" y="135" width="165" height="130" fill="#F1F5F9" stroke="#0F172A" strokeWidth="2.5" rx="3" />
+                <text x="597" y="205" fill="#334155" fontSize="16" fontWeight="800" textAnchor="middle">Baños</text>
+                {/* Líneas de mamparas sanitarias */}
+                <line x1="517" y1="170" x2="540" y2="195" stroke="#3B82F6" strokeWidth="2" />
+                <line x1="517" y1="210" x2="540" y2="235" stroke="#3B82F6" strokeWidth="2" />
+              </g>
+
+              {/* Mesas de Trabajo Interior */}
+              <g id="landmark-mesas-trabajo">
+                <rect x="165" y="435" width="85" height="55" fill="#2563EB" stroke="#1D4ED8" strokeWidth="2" rx="4" />
+                <rect x="285" y="435" width="85" height="55" fill="#2563EB" stroke="#1D4ED8" strokeWidth="2" rx="4" />
+                <text x="267" y="425" fill="#1E3A8A" fontSize="12" fontWeight="800" textAnchor="middle">Mesas de trabajo</text>
+              </g>
+
+              {/* Tableros de Control Oriente */}
+              <g id="landmark-tableros">
+                <rect x="580" y="405" width="65" height="90" fill="#E2E8F0" stroke="#64748B" strokeWidth="2" rx="4" />
+                <rect x="580" y="510" width="65" height="90" fill="#E2E8F0" stroke="#64748B" strokeWidth="2" rx="4" />
+                <text x="612" y="455" fill="#64748B" fontSize="9" fontWeight="700" textAnchor="middle">Tablero</text>
+                <text x="612" y="560" fill="#64748B" fontSize="9" fontWeight="700" textAnchor="middle">Tablero</text>
+              </g>
+
+              {/* Escaleras Exterior Techado */}
+              <g id="landmark-escaleras">
+                <rect x="80" y="618" width="60" height="40" fill="url(#stairSteps)" stroke="#475569" strokeWidth="1.5" rx="2" />
+                <rect x="485" y="618" width="75" height="40" fill="url(#stairSteps)" stroke="#475569" strokeWidth="1.5" rx="2" />
+              </g>
+
+              {/* Mesa Exterior de Madera */}
+              <g id="landmark-mesa-exterior">
+                <rect x="150" y="618" width="160" height="40" fill="#B45309" stroke="#78350F" strokeWidth="2" rx="3" />
+                <text x="230" y="642" fill="#FEF3C7" fontSize="11" fontWeight="800" textAnchor="middle">Mesa Auxiliar</text>
+              </g>
+
+              {/* Botes de basura / Mantenimiento exterior */}
+              <circle cx="250" cy="700" r="10" fill="#2563EB" stroke="#1D4ED8" strokeWidth="1" />
+              <circle cx="275" cy="718" r="10" fill="#2563EB" stroke="#1D4ED8" strokeWidth="1" />
+
+              {/* RENDERIZADO DE LAS 45 POSICIONES FÍSICAS DE TARIMA */}
+              {REAL_WAREHOUSE_POSITIONS.map((pos) => {
+                const live = locationsByCode.get(pos.codigo.toUpperCase());
+                const isSelected = selectedPosition?.codigo === pos.codigo;
+                const isHovered = hoveredCode === pos.codigo;
+
+                // Filtrado visual por modo y búsqueda (Fase 3B-B)
+                let isFilteredOut = false;
+                if (filterMode === 'INTERIOR' && pos.areaFisica !== 'INTERIOR') isFilteredOut = true;
+                if (filterMode === 'EXTERIOR_TECHADO' && pos.areaFisica !== 'EXTERIOR_TECHADO') isFilteredOut = true;
+                if (filterMode === 'PNC') {
+                  const isPnc = live?.tipoUbicacion === 'PNC' || live?.categoriaUbicacion === 'VIRTUAL_NO_CONFORME' || pos.esPncSugerido;
+                  if (!isPnc) isFilteredOut = true;
+                }
+                const q = (searchTerm || '').trim().toLowerCase();
+                if (q) {
+                  const matchesSearch = pos.codigo.toLowerCase().includes(q) ||
+                                        pos.areaFisica.toLowerCase().includes(q) ||
+                                        (live?.zona?.nombre && live.zona.nombre.toLowerCase().includes(q));
+                  if (!matchesSearch) isFilteredOut = true;
+                }
+
+                // Determinación de estado físico de la posición
+                const isLivePnc = live?.tipoUbicacion === 'PNC' || live?.categoriaUbicacion === 'VIRTUAL_NO_CONFORME';
+                const isPnc = isLivePnc || pos.esPncSugerido;
+                const isOccupied = live ? (live.ocupacionBultos >= 1 || live.ocupacionUnidades > 0 || live.estadoCapacidad === 'LLENO') : false;
+
+                // Estilo y color de la tarima
+                let palletBorder = '#D97706';
+                let palletFill = pos.rotacion === 90 ? 'url(#palletWoodSlatV)' : 'url(#palletWoodSlatH)';
+                let badgeBg = '#FEF3C7';
+                let badgeText = '#92400E';
+
+                if (isPnc) {
+                  palletBorder = '#DC2626';
+                  badgeBg = '#FEE2E2';
+                  badgeText = '#991B1B';
+                } else if (isOccupied) {
+                  palletBorder = '#2563EB';
+                  badgeBg = '#DBEAFE';
+                  badgeText = '#1E40AF';
+                }
+
+                if (isSelected) {
+                  palletBorder = '#4F46E5';
+                }
+
+                return (
+                  <g
+                    key={pos.codigo}
+                    id={`pos-${pos.codigo}`}
+                    opacity={isFilteredOut ? 0.15 : 1}
+                    cursor="pointer"
+                    onClick={() => setSelectedPosition(pos)}
+                    onMouseEnter={() => setHoveredCode(pos.codigo)}
+                    onMouseLeave={() => setHoveredCode(null)}
+                    style={{ transition: 'opacity 0.2s ease, transform 0.15s ease' }}
+                  >
+                    {/* Contorno y Fondo de la Tarima */}
+                    <rect
+                      x={pos.coordX}
+                      y={pos.coordY}
+                      width={pos.ancho}
+                      height={pos.alto}
+                      fill={palletFill}
+                      stroke={palletBorder}
+                      strokeWidth={isSelected ? 3 : (isHovered ? 2.5 : 1.5)}
+                      rx={3}
+                      filter={isSelected ? 'drop-shadow(0 0 6px rgba(79, 70, 229, 0.7))' : undefined}
+                    />
+
+                    {/* Badge de Código Consecutivo G0001+ */}
+                    <rect
+                      x={pos.coordX + 4}
+                      y={pos.coordY + (pos.alto / 2) - 10}
+                      width={pos.ancho - 8}
+                      height={20}
+                      fill={badgeBg}
+                      stroke={palletBorder}
+                      strokeWidth={1}
+                      rx={3}
+                      opacity={0.95}
+                    />
+                    <text
+                      x={pos.coordX + (pos.ancho / 2)}
+                      y={pos.coordY + (pos.alto / 2) + 4}
+                      fill={badgeText}
+                      fontSize="11"
+                      fontWeight="800"
+                      textAnchor="middle"
+                      letterSpacing="0.5"
+                    >
+                      {pos.codigo}
+                    </text>
+
+                    {/* Tag indicador PNC en las posiciones designadas */}
+                    {isPnc && (
+                      <g>
+                        <rect
+                          x={pos.coordX + (pos.ancho / 2) - 16}
+                          y={pos.coordY + pos.alto - 14}
+                          width={32}
+                          height={12}
+                          fill="#DC2626"
+                          rx={2}
+                        />
+                        <text
+                          x={pos.coordX + (pos.ancho / 2)}
+                          y={pos.coordY + pos.alto - 5}
+                          fill="#FFFFFF"
+                          fontSize="9"
+                          fontWeight="900"
+                          textAnchor="middle"
+                        >
+                          PNC
+                        </text>
+                      </g>
+                    )}
+
+                    {/* Tag de Ocupada 1/1 */}
+                    {isOccupied && !isPnc && (
+                      <g>
+                        <rect
+                          x={pos.coordX + (pos.ancho / 2) - 14}
+                          y={pos.coordY + pos.alto - 14}
+                          width={28}
+                          height={12}
+                          fill="#2563EB"
+                          rx={2}
+                        />
+                        <text
+                          x={pos.coordX + (pos.ancho / 2)}
+                          y={pos.coordY + pos.alto - 5}
+                          fill="#FFFFFF"
+                          fontSize="9"
+                          fontWeight="900"
+                          textAnchor="middle"
+                        >
+                          1/1
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        </div>
+
+        {/* Panel Lateral de Inspección de Ubicación Física */}
+        {selectedPosition && (
+          <div style={{
+            backgroundColor: '#FFFFFF',
+            borderRadius: 12,
+            border: '1px solid var(--border)',
+            padding: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 16,
+            height: 'fit-content',
+            boxShadow: '0 4px 12px -2px rgba(0, 0, 0, 0.08)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <span style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  color: selectedPosition.areaFisica === 'INTERIOR' ? '#1D4ED8' : '#0D9488',
+                  letterSpacing: '0.5px'
+                }}>
+                  {selectedPosition.areaFisica === 'INTERIOR' ? 'Área Interior' : 'Exterior Techado'}
+                </span>
+                <h4 style={{ margin: '2px 0 0', fontSize: 20, fontWeight: 900, color: '#0F172A' }}>
+                  {selectedPosition.codigo}
+                </h4>
+              </div>
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => setSelectedPosition(null)}
+                style={{ padding: 4 }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Atributos Físicos Confirmados */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Capacidad Física:</span>
+                <strong style={{ color: '#0F172A' }}>1 Tarima Estándar (1/1)</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Accesibilidad:</span>
+                <strong style={{ color: '#0F172A' }}>Nivel de Piso Directo (MIXTO)</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Coordenadas Plano:</span>
+                <span style={{ fontFamily: 'monospace', color: '#475569' }}>
+                  X: {selectedPosition.coordX}, Y: {selectedPosition.coordY} ({selectedPosition.ancho}x{selectedPosition.alto}px)
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Orientación:</span>
+                <span style={{ color: '#475569' }}>{selectedPosition.rotacion === 90 ? 'Vertical (90°)' : 'Horizontal (0°)'}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ color: '#64748B' }}>Uso Operativo Actual:</span>
+                <span style={{
+                  fontWeight: 800,
+                  color: (selectedLiveLocation?.tipoUbicacion === 'PNC' || (!selectedLiveLocation && selectedPosition.esPncSugerido)) ? '#DC2626' : '#166534'
+                }}>
+                  {(selectedLiveLocation?.tipoUbicacion === 'PNC' || (!selectedLiveLocation && selectedPosition.esPncSugerido)) ? 'USO PNC' : 'COMERCIAL'}
+                </span>
+              </div>
+            </div>
+
+            {/* Feedback de Acciones */}
+            {actionFeedback && (
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: 8,
+                fontSize: 12,
+                backgroundColor: actionFeedback.type === 'success' ? '#DCFCE7' : '#FEE2E2',
+                color: actionFeedback.type === 'success' ? '#166534' : '#991B1B',
+                border: `1px solid ${actionFeedback.type === 'success' ? '#86EFAC' : '#FCA5A5'}`
+              }}>
+                {actionFeedback.message}
+              </div>
+            )}
+
+            {/* Estado en Base de Datos Real */}
+            {selectedLiveLocation ? (
+              <div style={{
+                padding: 14,
+                borderRadius: 8,
+                backgroundColor: '#F8FAFC',
+                border: '1px solid #E2E8F0',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>UUID en BD:</span>
+                  <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#1E293B', backgroundColor: '#EDE9FE', padding: '1px 6px', borderRadius: 4, maxWidth: 210, overflow: 'hidden', textOverflow: 'ellipsis' }} title={selectedLiveLocation.id}>
+                    {selectedLiveLocation.id}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>Estado Físico:</span>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: selectedLiveLocation.estado === 'LIBRE' ? '#166534' : '#991B1B' }}>
+                    {selectedLiveLocation.estado || 'LIBRE'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>Zona Asignada:</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#1E40AF' }}>
+                    {selectedLiveLocation.zona?.nombre || (selectedPosition.areaFisica === 'INTERIOR' ? 'Área Interior' : 'Exterior Techado')}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>Estatus Operativo:</span>
+                  <span style={{
+                    fontSize: 11,
+                    fontWeight: 800,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    backgroundColor: selectedLiveLocation.tipoUbicacion === 'PNC' ? '#FEE2E2' : '#DCFCE7',
+                    color: selectedLiveLocation.tipoUbicacion === 'PNC' ? '#991B1B' : '#166534'
+                  }}>
+                    {selectedLiveLocation.tipoUbicacion === 'PNC' ? 'USO PNC' : 'COMERCIAL'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: '#334155', backgroundColor: '#FFFFFF', padding: '8px 10px', borderRadius: 6, border: '1px solid #E2E8F0' }}>
+                  • Ocupación de bultos: <strong>{selectedLiveLocation.ocupacionBultos || 0}/1 tarimas</strong><br />
+                  • Ocupación en piezas: <strong>{selectedLiveLocation.ocupacionUnidades || 0} unidades</strong>
+                </div>
+
+                {/* Botón para alternar designación PNC */}
+                <button
+                  type="button"
+                  className={`btn btn-sm ${selectedLiveLocation.tipoUbicacion === 'PNC' ? 'btn-secondary' : 'btn-ghost'}`}
+                  disabled={isTogglingPnc}
+                  onClick={() => handleTogglePncDesignation(selectedLiveLocation.id, selectedLiveLocation.tipoUbicacion === 'PNC')}
+                  style={{ marginTop: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontWeight: 700 }}
+                >
+                  <ArrowRightLeft size={14} />
+                  {selectedLiveLocation.tipoUbicacion === 'PNC' ? 'Restituir a Comercial' : 'Designar como PNC'}
+                </button>
+              </div>
+            ) : (
+              <div style={{
+                padding: 12,
+                borderRadius: 8,
+                backgroundColor: '#F1F5F9',
+                border: '1px solid #CBD5E1',
+                fontSize: 12,
+                color: '#475569'
+              }}>
+                <strong>Sin registro en BD:</strong> Posición arquitectónica no localizada en el catálogo de ubicaciones.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Leyenda Visual del Plano */}
+      <div style={{
+        padding: '12px 16px',
+        borderRadius: 8,
+        backgroundColor: '#FFFFFF',
+        border: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 12,
+        fontSize: 12
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#FEF3C7', border: '1.5px solid #D97706', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Tarima Libre (0/1)</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#DBEAFE', border: '1.5px solid #2563EB', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Tarima Ocupada (1/1)</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#FEE2E2', border: '1.5px solid #DC2626', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Uso PNC / No Conforme</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#2563EB', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Mesas de Trabajo</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 14, height: 14, backgroundColor: '#F1F5F9', border: '1px solid #94A3B8', borderRadius: 3 }} />
+            <span style={{ color: '#475569' }}>Baños / Tableros</span>
+          </div>
+        </div>
+
+        <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic', fontSize: 11 }}>
+          Haga clic en cualquier posición del plano para inspeccionar sus atributos y trazabilidad espacial.
+        </span>
+      </div>
+    </div>
+  );
+}

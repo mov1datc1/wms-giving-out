@@ -133,4 +133,16 @@ flowchart TD
 
 ---
 
+## 🏢 5. Actualización Operativa Fase 3 — Layout Físico Real en Piso (`G0001`–`G0045`)
+
+A partir del cierre de **Fase 3 (2026-11-11)**, el módulo de Recepción opera sobre el layout físico oficial en piso validado E2E (`REC-2026-0020`):
+
+- **Ubicaciones Destino Oficiales (`G0001`–`G0045`):** `35` posiciones en Área Interior (`G0001`–`G0035`) y `10` en Exterior Techado (`G0036`–`G0045`), con capacidad física estricta de **`1 tarima por posición` (`capacidadBultos = 1`)**. Los racks históricos `Axx/Bxx` (`48` posiciones) permanecen inactivos exclusivamente para consulta histórica.
+- **Segregación de Producto No Conforme (PNC) y Áreas Especiales:** `G0036`, `G0041` y `G0042` operan designadas como PNC (excluidas de Putaway comercial, mutables vía RBAC + `AuditLog`), junto con las `6` áreas especiales de maniobra (`REC-01`, `REC-02`, `STG-01`, `STG-02`, `DEV-01`, `NC-EXCESO-01`).
+- **Trazabilidad Obligatoria y Validación de Rampa:** Rampa exige captura manual física de bultos, evaluación explícita de sello (`INTACTO`, `ROTO`, `SIN_SELLO`, `NO_APLICA`) y firmas legales. Lote y fecha de caducidad vigentes son validados estrictamente por `inventory-operational-state.util.ts` en todo el flujo (Previo, Conciliación, Etiquetas, Putaway y Cierre), mostrando fechas calendar-day (`DD/MM/YYYY`, p. ej. `2027-06-30` → `30/06/2027`).
+- **Tarima Master, Etiquetas y Putaway con Escaneo Dual:** La Tarima Master (`PLT-...`) actúa como contenedor logístico padre de las cajas hijas comerciales (`BOX-...`), manteniendo el reflejo del andén asignado (`Andén 01`) en etiquetas, consolidando cajas hermanas bajo `1/1` tarima en el Putaway hacia posición física `Gxxxx` y evitando sumar la tarima como stock en Inventario/Ubicaciones/Kárdex.
+- **Calidad Diferenciada, Cierre Atómico e Idempotente:** Liberaciones 100% conformes registran `totalPiezasRescatadas = 0` (`LIBERADO / CONFORME` en Reporte y Anexo B), distinguiéndose claramente de rescates reales de daño. `POST /api/receipts/:id/close` verifica integridad de conteo, calidad, etiquetas, HUs, `LotInventory`, ubicaciones, trazabilidad y discrepancias antes de sellar el previo y registrar `CERRAR_RECEPCION` en `AuditLog`.
+
+---
+
 *Documentación elaborada por el equipo de ingeniería de Movida TCI para Giving Out Operador Logístico 3PL.*

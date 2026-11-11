@@ -9,6 +9,7 @@ import {
 import JsBarcode from 'jsbarcode';
 import { API } from '../config/api';
 import { formatTimelineDateTime } from '../utils/dateUtils';
+import { classifyQualityOutcome } from '../utils/qualityReportClassification';
 
 interface QualityInspectionModalProps {
   receipt: any;
@@ -1974,7 +1975,18 @@ export function QualityInspectionModal({
                               </span>
                             </div>
                             <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
-                              ACTA TÉCNICA DE INSPECCIÓN, REACONDICIONAMIENTO Y MERMA
+                              {(() => {
+                                const qCls = classifyQualityOutcome({
+                                  qiRecord: reportData.inspeccion,
+                                  bultosDanados: Number(receipt?.bultosDanados || 0),
+                                  totalConformePiezas: Number(reportData.inspeccion?.totalPiezasInspeccionadas || 0),
+                                  totalMermaPiezas: Number(reportData.inspeccion?.totalPiezasMerma || 0),
+                                  boxHus: reportData.cajasReacondicionadas || [],
+                                });
+                                return qCls.isConformingCleanLiberation
+                                  ? 'DICTAMEN TÉCNICO DE LIBERACIÓN DE CALIDAD EN ANDÉN'
+                                  : 'ACTA TÉCNICA DE INSPECCIÓN, REACONDICIONAMIENTO Y MERMA';
+                              })()}
                             </h1>
                             <p style={{ margin: '3px 0 0 0', fontSize: 11.5, color: '#64748B' }}>
                               Departamento de Calidad, Maniobras y Operaciones en Almacén Fiscal y General
@@ -2036,117 +2048,201 @@ export function QualityInspectionModal({
                           </div>
                         </div>
 
-                        {/* CUADRO DE INDICADORES DE BALANCE */}
-                        <div
-                          style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(5, 1fr)',
-                            gap: 12,
-                            marginBottom: 24,
-                            textAlign: 'center'
-                          }}
-                        >
-                          <div style={{ border: '1px solid #E2E8F0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#FFFFFF' }}>
-                            <span style={{ fontSize: 10, color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>Cajas Revisadas</span>
-                            <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>
-                              {reportData.inspeccion.totalCajasInspeccionadas}
-                            </div>
-                          </div>
+                        {(() => {
+                          const modalQiSummary = classifyQualityOutcome({
+                            qiRecord: reportData.inspeccion,
+                            bultosDanados: Number(receipt?.bultosDanados || 0),
+                            totalConformePiezas: Number(reportData.inspeccion?.totalPiezasInspeccionadas || 0),
+                            totalMermaPiezas: Number(reportData.inspeccion?.totalPiezasMerma || 0),
+                            boxHus: reportData.cajasReacondicionadas || [],
+                          });
 
-                          <div style={{ border: '1px solid #E2E8F0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#FFFFFF' }}>
-                            <span style={{ fontSize: 10, color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>Piezas Totales</span>
-                            <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>
-                              {reportData.inspeccion.totalPiezasInspeccionadas}
-                            </div>
-                          </div>
+                          return (
+                            <>
+                              {/* CUADRO DE INDICADORES DE BALANCE */}
+                              <div
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: 'repeat(5, 1fr)',
+                                  gap: 12,
+                                  marginBottom: 24,
+                                  textAlign: 'center'
+                                }}
+                              >
+                                <div style={{ border: '1px solid #E2E8F0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#FFFFFF' }}>
+                                  <span style={{ fontSize: 10, color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>Cajas Revisadas</span>
+                                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>
+                                    {reportData.inspeccion.totalCajasInspeccionadas}
+                                  </div>
+                                </div>
 
-                          <div style={{ border: '1px solid #BBF7D0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#F0FDF4' }}>
-                            <span style={{ fontSize: 10, color: '#166534', fontWeight: 700, textTransform: 'uppercase' }}>Sanas Rescatadas</span>
-                            <div style={{ fontSize: 18, fontWeight: 800, color: '#15803D', marginTop: 2 }}>
-                              {reportData.inspeccion.totalPiezasRescatadas}
-                            </div>
-                          </div>
+                                <div style={{ border: '1px solid #E2E8F0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#FFFFFF' }}>
+                                  <span style={{ fontSize: 10, color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>Piezas Inspeccionadas</span>
+                                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>
+                                    {modalQiSummary.piezasInspeccionadas}
+                                  </div>
+                                </div>
 
-                          <div style={{ border: '1px solid #FECACA', padding: '10px 8px', borderRadius: 6, backgroundColor: '#FEF2F2' }}>
-                            <span style={{ fontSize: 10, color: '#991B1B', fontWeight: 700, textTransform: 'uppercase' }}>Merma Dictaminada</span>
-                            <div style={{ fontSize: 18, fontWeight: 800, color: '#B91C1C', marginTop: 2 }}>
-                              {reportData.inspeccion.totalPiezasMerma}
-                            </div>
-                          </div>
+                                {modalQiSummary.isConformingCleanLiberation ? (
+                                  <div style={{ border: '1px solid #BBF7D0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#F0FDF4' }}>
+                                    <span style={{ fontSize: 10, color: '#166534', fontWeight: 700, textTransform: 'uppercase' }}>Conformes en Andén</span>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: '#15803D', marginTop: 2 }}>
+                                      {modalQiSummary.piezasConformesAnden}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{ border: '1px solid #BBF7D0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#F0FDF4' }}>
+                                    <span style={{ fontSize: 10, color: '#166534', fontWeight: 700, textTransform: 'uppercase' }}>Sanas Rescatadas</span>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: '#15803D', marginTop: 2 }}>
+                                      {modalQiSummary.piezasRescatadas}
+                                    </div>
+                                  </div>
+                                )}
 
-                          <div style={{ border: '1px solid #BFDBFE', padding: '10px 8px', borderRadius: 6, backgroundColor: '#EFF6FF' }}>
-                            <span style={{ fontSize: 10, color: '#1E40AF', fontWeight: 700, textTransform: 'uppercase' }}>Cajas Conformes</span>
-                            <div style={{ fontSize: 18, fontWeight: 800, color: '#1D4ED8', marginTop: 2 }}>
-                              {reportData.inspeccion.totalCajasNuevasArmadas}
-                            </div>
-                          </div>
-                        </div>
+                                <div style={{ border: '1px solid #FECACA', padding: '10px 8px', borderRadius: 6, backgroundColor: '#FEF2F2' }}>
+                                  <span style={{ fontSize: 10, color: '#991B1B', fontWeight: 700, textTransform: 'uppercase' }}>Merma Dictaminada</span>
+                                  <div style={{ fontSize: 18, fontWeight: 800, color: '#B91C1C', marginTop: 2 }}>
+                                    {modalQiSummary.piezasMerma}
+                                  </div>
+                                </div>
 
-                        {/* TABLA DE DETALLE POR CAJA */}
-                        <div style={{ marginBottom: 24 }}>
-                          <h4 style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#0F172A', marginBottom: 8, letterSpacing: 0.5 }}>
-                            Desglose de Inspección Fina por Caja Retenida
-                          </h4>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, textAlign: 'left', tableLayout: 'fixed' }}>
-                            <thead>
-                              <tr style={{ backgroundColor: '#F1F5F9', borderBottom: '1.5px solid #CBD5E1' }}>
-                                <th style={{ width: '15%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Caja Origen</th>
-                                <th style={{ width: '10%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>SKU</th>
-                                <th style={{ width: '13%', padding: '6px 8px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Lote</th>
-                                <th style={{ width: '7%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#F8FAFC' }}>Total</th>
-                                <th style={{ width: '7%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#DCFCE7', color: '#166534' }}>Sanas</th>
-                                <th style={{ width: '7%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#FEE2E2', color: '#991C1C' }}>Merma</th>
-                                <th style={{ width: '18%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Causa Daño</th>
-                                <th style={{ width: '23%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Nueva Caja</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(reportData.inspeccion.detalles || []).map((det: any, i: number) => {
-                                const stdCap = (det.skuCodigo?.includes('ACE') ? 12 : det.skuCodigo?.includes('ARR') ? 20 : 12);
-                                return (
-                                  <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', fontWeight: 700, color: '#B91C1C', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top', fontFamily: 'monospace', fontSize: 9.5 }}>
-                                      {det.cajaOrigenCodigo}
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top' }}>
-                                      <strong style={{ color: '#0F172A' }}>{det.skuCodigo}</strong>
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 8px', color: '#0F172A', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top', fontFamily: 'monospace', fontWeight: 700 }}>
-                                      {det.loteTexto || 'S/L'}
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#0F172A', backgroundColor: '#F8FAFC', verticalAlign: 'top' }}>
-                                      {det.piezasTotales}
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#15803D', backgroundColor: '#F0FDF4', verticalAlign: 'top' }}>
-                                      {det.piezasRescatadas}
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#B91C1C', backgroundColor: '#FEF2F2', verticalAlign: 'top' }}>
-                                      {det.piezasMerma}
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', color: '#475569', fontSize: 9.5, wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top', lineHeight: 1.3 }}>
-                                      {det.motivoDano || 'Empaque dañado'}
-                                    </td>
-                                    <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', verticalAlign: 'top', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal' }}>
-                                      {det.nuevasCajasGeneradas?.map((nb: any) => {
-                                        const isPartial = nb.cantidad < stdCap;
+                                {modalQiSummary.isConformingCleanLiberation ? (
+                                  <div style={{ border: '1px solid #E2E8F0', padding: '10px 8px', borderRadius: 6, backgroundColor: '#F8FAFC' }}>
+                                    <span style={{ fontSize: 10, color: '#475569', fontWeight: 700, textTransform: 'uppercase' }}>Rescatadas (Daño)</span>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: '#475569', marginTop: 2 }}>
+                                      {modalQiSummary.piezasRescatadas}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{ border: '1px solid #BFDBFE', padding: '10px 8px', borderRadius: 6, backgroundColor: '#EFF6FF' }}>
+                                    <span style={{ fontSize: 10, color: '#1E40AF', fontWeight: 700, textTransform: 'uppercase' }}>Cajas Conformes</span>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: '#1D4ED8', marginTop: 2 }}>
+                                      {reportData.inspeccion.totalCajasNuevasArmadas}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* TABLA DE DETALLE */}
+                              {modalQiSummary.isConformingCleanLiberation ? (
+                                <div style={{ marginBottom: 24 }}>
+                                  <h4 style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#0F172A', marginBottom: 8, letterSpacing: 0.5 }}>
+                                    Desglose de Verificación Conforme en Andén ({modalQiSummary.dictamenOperativo})
+                                  </h4>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, textAlign: 'left', tableLayout: 'fixed' }}>
+                                    <thead>
+                                      <tr style={{ backgroundColor: '#F1F5F9', borderBottom: '1.5px solid #CBD5E1' }}>
+                                        <th style={{ width: '18%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>SKU</th>
+                                        <th style={{ width: '18%', padding: '6px 8px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Lote</th>
+                                        <th style={{ width: '14%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Caducidad</th>
+                                        <th style={{ width: '11%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1' }}>Esperadas</th>
+                                        <th style={{ width: '13%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#DCFCE7', color: '#166534' }}>Conformes Andén</th>
+                                        <th style={{ width: '9%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1' }}>Rescatadas</th>
+                                        <th style={{ width: '8%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1' }}>Merma</th>
+                                        <th style={{ width: '15%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Dictamen</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(reportData.inspeccion.detalles || []).map((det: any, i: number) => (
+                                        <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', fontWeight: 800, fontFamily: 'monospace' }}>
+                                            {det.sku || det.skuCodigo || '—'}
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 8px', fontFamily: 'monospace', fontWeight: 700 }}>
+                                            {det.lote || det.loteTexto || 'N/A'}
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px' }}>
+                                            {det.caducidad || 'N/A'}
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 700 }}>
+                                            {det.esperada ?? det.totalConformes ?? '—'}
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#15803D', backgroundColor: '#F0FDF4' }}>
+                                            {det.sanasAnden ?? det.totalConformes ?? 0}
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 700, color: '#475569' }}>
+                                            0
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 700, color: '#475569' }}>
+                                            {det.merma ?? det.piezasMerma ?? 0}
+                                          </td>
+                                          <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', fontWeight: 800, color: '#15803D' }}>
+                                            {modalQiSummary.dictamenOperativo}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <div style={{ marginBottom: 24 }}>
+                                  <h4 style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#0F172A', marginBottom: 8, letterSpacing: 0.5 }}>
+                                    Desglose de Inspección Fina por Caja Retenida
+                                  </h4>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, textAlign: 'left', tableLayout: 'fixed' }}>
+                                    <thead>
+                                      <tr style={{ backgroundColor: '#F1F5F9', borderBottom: '1.5px solid #CBD5E1' }}>
+                                        <th style={{ width: '15%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Caja Origen</th>
+                                        <th style={{ width: '10%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>SKU</th>
+                                        <th style={{ width: '13%', padding: '6px 8px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Lote</th>
+                                        <th style={{ width: '7%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#F8FAFC' }}>Total</th>
+                                        <th style={{ width: '7%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#DCFCE7', color: '#166534' }}>Sanas</th>
+                                        <th style={{ width: '7%', padding: '6px 4px', fontWeight: 800, textAlign: 'center', border: '1px solid #CBD5E1', backgroundColor: '#FEE2E2', color: '#991C1C' }}>Merma</th>
+                                        <th style={{ width: '18%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Causa Daño</th>
+                                        <th style={{ width: '23%', padding: '6px 6px', fontWeight: 700, border: '1px solid #CBD5E1' }}>Nueva Caja</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(reportData.inspeccion.detalles || []).map((det: any, i: number) => {
+                                        const stdCap = (det.skuCodigo?.includes('ACE') ? 12 : det.skuCodigo?.includes('ARR') ? 20 : 12);
                                         return (
-                                          <div key={nb.codigo || nb.id} style={{ marginBottom: 3, lineHeight: 1.25 }}>
-                                            <strong style={{ color: '#1D4ED8', fontFamily: 'monospace', fontSize: 9.5, display: 'block', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                                              {nb.codigo}
-                                            </strong>
-                                            <span style={{ fontSize: 9, color: isPartial ? '#B45309' : '#166534', fontWeight: 600, display: 'block', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                                              {isPartial ? `Parcial: ${nb.cantidad} de ${stdCap} pz · Reacondicionada` : `Completa: ${nb.cantidad} de ${stdCap} pz · Reacondicionada`}
-                                            </span>
-                                          </div>
+                                          <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', fontWeight: 700, color: '#B91C1C', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top', fontFamily: 'monospace', fontSize: 9.5 }}>
+                                              {det.cajaOrigenCodigo}
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top' }}>
+                                              <strong style={{ color: '#0F172A' }}>{det.skuCodigo}</strong>
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 8px', color: '#0F172A', wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top', fontFamily: 'monospace', fontWeight: 700 }}>
+                                              {det.loteTexto || 'S/L'}
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#0F172A', backgroundColor: '#F8FAFC', verticalAlign: 'top' }}>
+                                              {det.piezasTotales}
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#15803D', backgroundColor: '#F0FDF4', verticalAlign: 'top' }}>
+                                              {det.piezasRescatadas}
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 4px', textAlign: 'center', fontWeight: 800, color: '#B91C1C', backgroundColor: '#FEF2F2', verticalAlign: 'top' }}>
+                                              {det.piezasMerma}
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', color: '#475569', fontSize: 9.5, wordBreak: 'break-word', overflowWrap: 'anywhere', verticalAlign: 'top', lineHeight: 1.3 }}>
+                                              {det.motivoDano || 'Empaque dañado'}
+                                            </td>
+                                            <td style={{ border: '1px solid #CBD5E1', padding: '6px 6px', verticalAlign: 'top', wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'normal' }}>
+                                              {det.nuevasCajasGeneradas?.map((nb: any) => {
+                                                const isPartial = nb.cantidad < stdCap;
+                                                return (
+                                                  <div key={nb.codigo || nb.id} style={{ marginBottom: 3, lineHeight: 1.25 }}>
+                                                    <strong style={{ color: '#1D4ED8', fontFamily: 'monospace', fontSize: 9.5, display: 'block', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                                      {nb.codigo}
+                                                    </strong>
+                                                    <span style={{ fontSize: 9, color: isPartial ? '#B45309' : '#166534', fontWeight: 600, display: 'block', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                                                      {isPartial ? `Parcial: ${nb.cantidad} de ${stdCap} pz · Reacondicionada` : `Completa: ${nb.cantidad} de ${stdCap} pz · Reacondicionada`}
+                                                    </span>
+                                                  </div>
+                                                );
+                                              }) || <span style={{ color: '#94A3B8', fontSize: 9.5 }}>Sin cajas armadas</span>}
+                                            </td>
+                                          </tr>
                                         );
-                                      }) || <span style={{ color: '#94A3B8', fontSize: 9.5 }}>Sin cajas armadas</span>}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
 
                         {/* DESGLOSE DE MAQUILA Y COSTEO */}
                         <div

@@ -226,7 +226,7 @@ export function Picking() {
     if (!raw) {
       setScanFeedback({
         type: 'warning',
-        msg: 'Debe ingresar o escanear el código de barras del rack.',
+        msg: 'Debe ingresar o escanear el código de barras de la ubicación física.',
         step: 'ubicacion',
       });
       return;
@@ -267,7 +267,7 @@ export function Picking() {
         setLocationVerified(true);
         setScanFeedback({
           type: 'success',
-          msg: result.mensaje || `Rack ${raw} validado con éxito. Procede a escanear las cajas de este rack.`,
+          msg: result.mensaje || `Ubicación ${raw} validada con éxito. Procede a escanear las cajas asignadas.`,
           step: 'ubicacion',
         });
       } else {
@@ -285,7 +285,7 @@ export function Picking() {
         setLocationVerified(true);
         setScanFeedback({
           type: 'success',
-          msg: `Rack ${raw} validado con éxito. Procede a escanear las cajas de este rack.`,
+          msg: `Ubicación ${raw} validada con éxito. Procede a escanear las cajas asignadas.`,
           step: 'ubicacion',
         });
       } else {
@@ -308,7 +308,7 @@ export function Picking() {
     if (!locationVerified) {
       setScanFeedback({
         type: 'warning',
-        msg: 'Debes escanear y validar primero la etiqueta del rack asignado antes de escanear cajas.',
+        msg: 'Debes escanear y validar primero la etiqueta de la ubicación física asignada antes de escanear cajas.',
         step: 'ubicacion',
       });
       return;
@@ -386,7 +386,7 @@ export function Picking() {
           type: isOverQty ? 'warning' : 'error',
           msg: isHuRequired
             ? 'Esta operación requiere una unidad de manejo física. Escanea la etiqueta Code-128 de la caja/HU.'
-            : result.mensaje || `Caja inválida: "${raw}" no corresponde al lote o rack validado.`,
+            : result.mensaje || `Caja inválida: "${raw}" no corresponde al lote o ubicación física validada.`,
           step: 'caja',
         });
       }
@@ -544,7 +544,7 @@ export function Picking() {
         <div>
           <h1 className="page-title">Terminal de Surtido & Picking</h1>
           <p className="page-subtitle">
-            Doble Validación por Escaneo (Rack + Caja) · Regla de 1 Pedido por Surtidor
+            Doble Validación por Escaneo (Ubicación + Caja) · Regla de 1 Pedido por Surtidor
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -1055,7 +1055,7 @@ export function Picking() {
                       }}>
                         <MapPin size={16} color={locationVerified ? 'var(--emerald)' : 'var(--primary)'} />
                         <span style={{ fontSize: 12 }}>
-                          Ubicación Rack:{' '}
+                          Ubicación Física:{' '}
                           <strong style={{ fontFamily: 'monospace', fontSize: 14 }}>
                             {currentLine.ubicacionCodigo}
                           </strong>
@@ -1091,7 +1091,7 @@ export function Picking() {
                       {/* Scan 1: Rack Location */}
                       <form onSubmit={handleLocationScanSubmit} style={{ background: 'var(--bg-primary)', padding: 14, borderRadius: 8, border: `1px solid ${locationVerified ? 'var(--emerald)' : 'var(--border)'}` }}>
                         <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6, color: locationVerified ? 'var(--emerald)' : 'var(--text-primary)' }}>
-                          <ScanLine size={15} /> 1. Escanear Ubicación Física (Rack)
+                          <ScanLine size={15} /> 1. Escanear Ubicación Física
                         </div>
                         <div style={{ display: 'flex', gap: 8 }}>
                           <input
@@ -1118,7 +1118,7 @@ export function Picking() {
                             style={{ fontSize: 11, padding: '2px 6px', marginTop: 6 }}
                             onClick={() => { setLocationVerified(false); setLocationScan(''); }}
                           >
-                            Reescanear rack
+                            Reescanear ubicación
                           </button>
                         )}
                       </form>
@@ -1170,7 +1170,7 @@ export function Picking() {
                             Ajuste asistido manual deshabilitado
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                            El surtido exige validación física obligatoria por doble escaneo (Rack + Caja).
+                            El surtido exige validación física obligatoria por doble escaneo (Ubicación + Caja).
                           </div>
                         </div>
                       </div>
@@ -1235,7 +1235,7 @@ export function Picking() {
                             <span style={{ fontSize: 13, fontWeight: 600 }}>{line.sku?.descripcion}</span>
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                            Rack: <strong>{line.ubicacionCodigo}</strong> · Lote: <strong>{line.loteCodigo}</strong>
+                            Ubicación: <strong>{line.ubicacionCodigo}</strong> · Lote: <strong>{line.loteCodigo}</strong>
                           </div>
                         </div>
                       </div>

@@ -7,7 +7,14 @@ import { PrismaService } from '../../prisma.service';
 import { withConcurrencyRetry } from '../../common/concurrency.util';
 import { PutawayEngineService, PutawayItemInput } from './putaway-engine.service';
 import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
-import { evaluateInventoryItemOperationalState, isExpired } from '../../common/inventory-operational-state.util';
+import {
+  evaluateInventoryItemOperationalState,
+  isExpired,
+  isMissingLotValue,
+  toCalendarDayString,
+  TraceabilityValidationResult,
+  validateMandatoryLotAndExpiry,
+} from '../../common/inventory-operational-state.util';
 import { validatePickingEligibility } from '../../common/picking-validation.util';
 import { transferHuToStaging, validateHuAllocationCompatibility } from '../../common/picking-staging-transfer.util';
 
@@ -312,13 +319,31 @@ export class OperationsController {
     if ((!body.nombreChofer || !body.nombreChofer.trim()) && !receipt.nombreChofer) {
       throw new HttpException('El nombre del chofer de la unidad es obligatorio para emitir el acta de rampa.', HttpStatus.BAD_REQUEST);
     }
+    if ((!body.andenAsignado || !body.andenAsignado.trim()) && !receipt.andenAsignado) {
+      throw new HttpException('El andén de descarga asignado es obligatorio para emitir el acta de rampa.', HttpStatus.BAD_REQUEST);
+    }
+    if ((!body.nombreReceptor || !body.nombreReceptor.trim()) && !receipt.nombreReceptor) {
+      throw new HttpException('El nombre del responsable de recibo en andén es obligatorio para emitir el acta de rampa.', HttpStatus.BAD_REQUEST);
+    }
+
+    // Normalización explícita y trazable de sellos de seguridad
+    const estadoSello: 'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA' =
+      body.estadoSello || (body.sellosIntactos === true ? 'INTACTO' : (body.sellosIntactos === false ? 'ROTO' : 'INTACTO'));
+    const sellosIntactos = estadoSello === 'INTACTO';
+
+    if (estadoSello === 'ROTO' && (!body.observacionesRampa || body.observacionesRampa.trim().length < 5)) {
+      throw new HttpException('Al registrar el sello como Roto o Alterado, es obligatorio detallar las observaciones de la anomalía en rampa (mínimo 5 caracteres).', HttpStatus.BAD_REQUEST);
+    }
+    if (estadoSello === 'SIN_SELLO' && (!body.observacionesRampa || body.observacionesRampa.trim().length < 5)) {
+      throw new HttpException('Al asentar que la unidad llegó Sin Sello cuando se requería, es obligatorio justificar el motivo en Observaciones (mínimo 5 caracteres).', HttpStatus.BAD_REQUEST);
+    }
 
     const diferenciaBultos = bultosRecibidos - bultosDeclarados;
     const now = new Date();
     const usuario = body.usuario || body.nombreReceptor || 'Supervisor Andén';
 
-    // Rótulo legal de la firma del chofer: No usar "a conformidad" si hay reservas o discrepancias
-    const tieneReservas = diferenciaBultos !== 0 || bultosDanados > 0;
+    // Rótulo legal de la firma del chofer: No usar "a conformidad" si hay reservas, daños, sello roto o sello ausente
+    const tieneReservas = diferenciaBultos !== 0 || bultosDanados > 0 || estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO';
     const leyendaFirmaChofer = tieneReservas
       ? 'Entregó con reservas y discrepancias asentadas'
       : 'Entregó carga conforme (revisión exterior)';
@@ -360,11 +385,19 @@ export class OperationsController {
           placa: body.placa,
           nombreChofer: body.nombreChofer,
           lineaTransporte: body.lineaTransporte,
+          estadoSello,
+          sellosIntactos,
+          numeroSello: body.numeroSello || null,
         },
       });
       await this.audit(usuario, 'CORRECCION_ACTA_RAMPA', 'Receipt', receiptId, `Acta de rampa rectificada: ${body.motivoCorreccion || 'Sin motivo'}`);
     } else {
-      await this.audit(usuario, 'ACTA_RAMPA_LIBERACION_CHOFER', 'Receipt', receiptId, `Chofer liberado. Bultos: ${bultosRecibidos}/${bultosDeclarados} (Daño: ${bultosDanados}, Dif: ${diferenciaBultos})`);
+      await this.audit(usuario, 'ACTA_RAMPA_LIBERACION_CHOFER', 'Receipt', receiptId, `Chofer liberado. Bultos: ${bultosRecibidos}/${bultosDeclarados} (Daño: ${bultosDanados}, Dif: ${diferenciaBultos}). Sello: ${estadoSello}${body.numeroSello ? ` #${body.numeroSello}` : ''}`);
+      if (estadoSello === 'ROTO') {
+        await this.audit(usuario, 'INCIDENCIA_SELLO_RAMPA', 'Receipt', receiptId, `Incidencia en rampa: Sello roto o alterado (${body.numeroSello || 'S/N'}). Observaciones: ${body.observacionesRampa}`);
+      } else if (estadoSello === 'SIN_SELLO') {
+        await this.audit(usuario, 'INCIDENCIA_UNIDAD_SIN_SELLO', 'Receipt', receiptId, `Incidencia en rampa: Unidad arribó sin sello de seguridad cuando era requerido. Justificación: ${body.observacionesRampa}`);
+      }
     }
 
     const updated = await this.prisma.receipt.update({
@@ -413,12 +446,18 @@ export class OperationsController {
           unidad: updated.capacidadCarga || 'Camión',
           folio: updated.folioTransporte || updated.codigo,
           anden: updated.andenAsignado || 'Andén 01',
+          estadoSello,
+          sellosIntactos,
+          numeroSello: body.numeroSello || null,
         },
         conteoExterior: {
           declarados: bultosDeclarados,
           recibidos: bultosRecibidos,
           danadosVisibles: bultosDanados,
           diferencia: diferenciaBultos,
+          estadoSello,
+          sellosIntactos,
+          numeroSello: body.numeroSello || null,
           estadoCarga: tieneReservas ? 'CON_RESERVAS' : 'CONFORME_EXTERIOR',
           observaciones: updated.observacionesRampa || 'Sin observaciones de empaque',
         },
@@ -460,7 +499,20 @@ export class OperationsController {
     const diferencia = receipt.diferenciaBultos !== null && receipt.diferenciaBultos !== undefined
       ? receipt.diferenciaBultos
       : (recibidos - declarados);
-    const tieneReservas = diferencia !== 0 || danados > 0;
+    // Detección trazable de sello a partir de historial u observaciones
+    let estadoSello: 'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA' = 'INTACTO';
+    let numeroSello: string | null = null;
+    if (receipt.observacionesRampa) {
+      const match = receipt.observacionesRampa.match(/\[SELLO:\s*([A-Z_]+)(?:\s*#([A-Za-z0-9_-]+))?\]/);
+      if (match) {
+        if (['INTACTO', 'ROTO', 'SIN_SELLO', 'NO_APLICA'].includes(match[1])) {
+          estadoSello = match[1] as any;
+        }
+        if (match[2]) numeroSello = match[2];
+      }
+    }
+    const sellosIntactos = estadoSello === 'INTACTO';
+    const tieneReservas = diferencia !== 0 || danados > 0 || estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO';
     const leyendaFirmaChofer = tieneReservas
       ? 'Entregó con reservas y discrepancias asentadas'
       : 'Entregó carga conforme (revisión exterior)';
@@ -483,6 +535,9 @@ export class OperationsController {
       folioTransporte: receipt.folioTransporte || receipt.codigo,
       anden: receipt.andenAsignado || 'Rampa 1',
       andenAsignado: receipt.andenAsignado || 'Rampa 1',
+      estadoSello,
+      sellosIntactos,
+      numeroSello,
     };
 
     const conteoObj = {
@@ -494,6 +549,9 @@ export class OperationsController {
       bultosDanados: danados,
       diferencia,
       diferenciaBultos: diferencia,
+      estadoSello,
+      sellosIntactos,
+      numeroSello,
       estadoCarga: tieneReservas ? 'CON_RESERVAS' : 'CONFORME_EXTERIOR',
       tieneReservas,
       tieneDiscrepancias: tieneReservas,
@@ -627,6 +685,38 @@ export class OperationsController {
       const piezasSanasAnden = Math.max(0, conformesTotalPiezas - existingRescuedPieces);
       const cajasSanasAnden = packSize > 0 ? Math.floor(piezasSanasAnden / packSize) : 0;
       const nuevasCajasCrear = Math.max(0, cajasSanasAnden - existingHealthyBoxes.length);
+
+      // Defensa en profundidad: exigir lote y caducidad vigentes cuando el depositante/SKU lo requiera
+      if (conformesTotalPiezas > 0 || cajasSanasAnden > 0 || existingRescuedBoxes.length > 0 || existingHealthyBoxes.length > 0) {
+        const candidateBoxWithTrace = [...existingRescuedBoxes, ...existingHealthyBoxes].find(
+          b => !isMissingLotValue(b.loteTexto) || Boolean(b.fechaVencimiento),
+        );
+        const effectiveLotForLabels = !isMissingLotValue(line.loteAsignado)
+          ? String(line.loteAsignado).trim()
+          : (!isMissingLotValue(line.loteEsperado)
+              ? String(line.loteEsperado).trim()
+              : candidateBoxWithTrace?.loteTexto || null);
+        const effectiveExpForLabels = line.fechaVencimiento || candidateBoxWithTrace?.fechaVencimiento || null;
+
+        const labelTraceCheck = validateMandatoryLotAndExpiry({
+          cliente: receipt.cliente,
+          sku,
+          lote: effectiveLotForLabels,
+          fechaVencimiento: effectiveExpForLabels,
+          itemLabel: sku?.codigo || line.id,
+        });
+        if (!labelTraceCheck.valid) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.BAD_REQUEST,
+              message: `Bloqueo en Etiquetado (HU): ${labelTraceCheck.errorMessage}`,
+              error: 'Bad Request',
+              detalles: { codigo: labelTraceCheck.errorCode, skuCodigo: sku?.codigo },
+            },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+      }
 
       totalNuevasCajasCrear += nuevasCajasCrear;
 
@@ -1263,6 +1353,7 @@ export class OperationsController {
     return {
       receiptId: receipt.id,
       receiptCodigo: receipt.codigo,
+      andenAsignado: receipt.andenAsignado || null,
       cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial,
       facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia,
       etiquetasEstado: receipt.etiquetasEstado || 'PENDIENTE',
@@ -1314,7 +1405,7 @@ export class OperationsController {
       return await this.prisma.receipt.findMany({
         where,
         include: {
-          cliente: { select: { id: true, codigo: true, nombreComercial: true, giro: true, reglaInventario: true, zonaAsignadaId: true } },
+          cliente: { select: { id: true, codigo: true, nombreComercial: true, giro: true, reglaInventario: true, zonaAsignadaId: true, requiereLote: true, requiereCaducidad: true } },
           proveedor: { select: { id: true, nombre: true } },
           lineas: {
             include: {
@@ -1332,6 +1423,8 @@ export class OperationsController {
                   capacidadEmpaque: true,
                   descripcionEmpaque: true,
                   marca: true,
+                  requiereLote: true,
+                  requiereCaducidad: true,
                 },
               },
             },
@@ -1368,8 +1461,11 @@ export class OperationsController {
               estado: true,
               fechaInspeccion: true,
               totalCajasInspeccionadas: true,
+              totalPiezasInspeccionadas: true,
               totalPiezasRescatadas: true,
               totalPiezasMerma: true,
+              totalCajasNuevasArmadas: true,
+              detallesJson: true,
             },
             orderBy: { createdAt: 'desc' },
           },
@@ -2475,6 +2571,7 @@ export class OperationsController {
     return {
       receiptId: receipt.id,
       receiptCodigo: receipt.codigo,
+      andenAsignado: receipt.andenAsignado || null,
       cliente: receipt.cliente?.nombreComercial || receipt.cliente?.razonSocial,
       facturaRespaldo: receipt.facturaRespaldo || receipt.ocReferencia,
       bultosDanadosDeclarados,
@@ -3169,23 +3266,92 @@ export class OperationsController {
     const usuario = body.usuario || 'Operador Andén';
     const auditUpdates: any[] = [];
 
+    // Pre-validación obligatoria de trazabilidad (Lote / Caducidad) antes de cualquier escritura en BD
+    const preparedLines: Array<{
+      line: any;
+      item: any;
+      rescuedPieces: number;
+      piezasSanasAnden: number;
+      totalConformesResultante: number;
+      totalDanadaResultante: number;
+      isComplete: boolean;
+      validation: TraceabilityValidationResult;
+    }> = [];
+
+    for (const item of body.lineas) {
+      const line = receipt.lineas.find(l => l.id === item.receiptLineId);
+      if (!line) continue;
+
+      // Calcular piezas rescatadas existentes para esta partida vinculando estrictamente por receiptLineId o lote
+      const lineLot = (line.loteAsignado || line.loteEsperado || '').trim().toLowerCase();
+      const rescuedPieces = receipt.handlingUnits
+        .filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && (h.reacondicionada || h.cajaOrigenId) &&
+          (h.receiptLineId ? h.receiptLineId === line.id : (h.skuCodigo === line.sku?.codigo && lineLot && (h.loteTexto || '').trim().toLowerCase() === lineLot)))
+        .reduce((sum, h) => sum + (Number(h.cantidad) || 0), 0);
+
+      const packSize = Number(line.sku?.capacidadEmpaque || 1) || 1;
+      const piezasSanasAnden = item.piezasSanas !== undefined
+        ? Math.max(0, Number(item.piezasSanas) || 0)
+        : Math.max(0, (Number(item.cajasSanas) || 0) * packSize);
+      const totalConformesResultante = rescuedPieces + piezasSanasAnden;
+      const totalDanadaResultante = Number(line.cantidadDanada || 0); // Preserva merma dictaminada
+      const totalProcesado = totalConformesResultante + totalDanadaResultante;
+      const isComplete = totalProcesado >= (line.cantidadEsperada || 0);
+
+      const candidateLot = item.lote !== undefined ? item.lote : (line.loteAsignado || line.loteEsperado || '');
+      const candidateExp = item.fechaVencimiento !== undefined ? item.fechaVencimiento : line.fechaVencimiento;
+
+      const shouldValidateTraceability =
+        totalConformesResultante > 0 ||
+        Number(item.cajasSanas || 0) > 0 ||
+        Number(item.piezasSanas || 0) > 0 ||
+        Boolean(candidateExp);
+
+      const validation = validateMandatoryLotAndExpiry({
+        cliente: receipt.cliente,
+        sku: line.sku,
+        lote: candidateLot,
+        fechaVencimiento: candidateExp,
+        itemLabel: line.sku?.codigo || line.id,
+      });
+
+      if (shouldValidateTraceability && !validation.valid) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: validation.errorMessage,
+            error: 'Bad Request',
+            detalles: { codigo: validation.errorCode, skuCodigo: line.sku?.codigo },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      preparedLines.push({
+        line,
+        item,
+        rescuedPieces,
+        piezasSanasAnden,
+        totalConformesResultante,
+        totalDanadaResultante,
+        isComplete,
+        validation,
+      });
+    }
+
     await this.prisma.$transaction(async (tx) => {
-      for (const item of body.lineas) {
-        const line = receipt.lineas.find(l => l.id === item.receiptLineId);
-        if (!line) continue;
-
-        // Calcular piezas rescatadas existentes para esta partida vinculando estrictamente por receiptLineId o lote
-        const lineLot = (line.loteAsignado || line.loteEsperado || '').trim().toLowerCase();
-        const rescuedPieces = receipt.handlingUnits
-          .filter(h => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && (h.reacondicionada || h.cajaOrigenId) &&
-            (h.receiptLineId ? h.receiptLineId === line.id : (h.skuCodigo === line.sku?.codigo && lineLot && (h.loteTexto || '').trim().toLowerCase() === lineLot)))
-          .reduce((sum, h) => sum + (Number(h.cantidad) || 0), 0);
-
-        const piezasSanasAnden = Math.max(0, Number(item.piezasSanas) || 0);
-        const totalConformesResultante = rescuedPieces + piezasSanasAnden;
-        const totalDanadaResultante = Number(line.cantidadDanada || 0); // Preserva merma dictaminada
+      for (const prep of preparedLines) {
+        const {
+          line,
+          item,
+          rescuedPieces,
+          piezasSanasAnden,
+          totalConformesResultante,
+          totalDanadaResultante,
+          isComplete,
+          validation,
+        } = prep;
         const totalProcesado = totalConformesResultante + totalDanadaResultante;
-        const isComplete = totalProcesado >= (line.cantidadEsperada || 0);
 
         await tx.receiptLine.update({
           where: { id: line.id },
@@ -3193,8 +3359,8 @@ export class OperationsController {
             cantidadRecibida: totalConformesResultante,
             cantidadDanada: totalDanadaResultante,
             estado: isComplete ? 'COMPLETO' : 'CONCILIADO',
-            loteAsignado: item.lote ? item.lote.trim() : line.loteAsignado,
-            fechaVencimiento: item.fechaVencimiento ? new Date(item.fechaVencimiento) : line.fechaVencimiento,
+            loteAsignado: item.lote !== undefined ? validation.loteNormalizado : line.loteAsignado,
+            fechaVencimiento: item.fechaVencimiento !== undefined ? validation.fechaVencimientoDate : line.fechaVencimiento,
           },
         });
 
@@ -3206,6 +3372,11 @@ export class OperationsController {
           merma: totalDanadaResultante,
           esperada: line.cantidadEsperada,
           faltante: Math.max(0, (line.cantidadEsperada || 0) - totalProcesado),
+          lote: validation.loteNormalizado,
+          caducidad: validation.fechaVencimientoDate ? toCalendarDayString(validation.fechaVencimientoDate) : null,
+          requiereLote: validation.requiereLote,
+          requiereCaducidad: validation.requiereCaducidad,
+          traceabilityValid: validation.valid,
         });
       }
 
@@ -3221,12 +3392,89 @@ export class OperationsController {
         });
       }
 
+      // Verificación y registro formal de Calidad para producto conforme (Fase 3 / Calidad Canónica)
+      const totalPiezasEsperadas = receipt.lineas.reduce((s, l) => s + (l.cantidadEsperada || 0), 0);
+      const totalPiezasConformes = auditUpdates.reduce((s, a) => s + (a.totalConformes || 0), 0);
+      const totalPiezasMerma = auditUpdates.reduce((s, a) => s + (a.merma || 0), 0);
+      const totalPiezasRescatadasReal = auditUpdates.reduce((s, a) => s + (a.rescatadas || 0), 0);
+      const hasAnyDamagedOrReconditioned =
+        (receipt.bultosDanados || 0) > 0 ||
+        totalPiezasRescatadasReal > 0 ||
+        receipt.handlingUnits.some(
+          (h) =>
+            !this.isMermaHandlingUnit(h) &&
+            h.estadoHu !== 'INACTIVO' &&
+            h.estadoHu !== 'DAÑADO' &&
+            h.estadoHu !== 'BLOQUEADO' &&
+            !h.codigo?.includes('DANO') &&
+            (Boolean(h.cajaOrigenId) || Boolean(h.reacondicionada)),
+        );
+      const isAllConforming = totalPiezasMerma === 0 && totalPiezasConformes >= totalPiezasEsperadas;
+      const allRequiredTraceabilityValid =
+        preparedLines.length > 0 && preparedLines.every(p => p.validation.valid);
+
+      if (isAllConforming && (receipt.bultosDanados || 0) === 0 && allRequiredTraceabilityValid) {
+        await tx.receipt.update({
+          where: { id: receipt.id },
+          data: {
+            inspeccionCalidadEstado: 'COMPLETADA',
+          },
+        });
+
+        const existingInsp = await tx.qualityInspection.findFirst({
+          where: { receiptId: receipt.id },
+        });
+
+        if (!existingInsp) {
+          const folioInsp = `DICTAMEN-${receipt.codigo}`;
+          const packSize = receipt.lineas[0]?.sku?.capacidadEmpaque || 1;
+          const totalCajasEst = receipt.bultosRecibidos || Math.ceil(totalPiezasConformes / packSize) || auditUpdates.length;
+          const hasValidatedTraceData = auditUpdates.some(a => Boolean(a.lote || a.caducidad));
+          const traceSummary = auditUpdates
+            .filter(a => a.lote || a.caducidad)
+            .map(a => `${a.sku}${a.lote ? ` Lote ${a.lote}` : ''}${a.caducidad ? ` Cad ${a.caducidad}` : ''}`)
+            .join(', ');
+          const obsCalidad = hasValidatedTraceData
+            ? `Liberación formal de calidad en andén: 100% de producto conforme verificado. Sin daño ni merma. Lote y fecha de caducidad vigentes validados (${traceSummary}). Aprobado para almacenamiento comercial.`
+            : 'Liberación formal de calidad en andén: 100% de producto conforme verificado. Sin daño ni merma. Producto no sujeto a trazabilidad obligatoria de lote/caducidad. Aprobado para almacenamiento comercial.';
+
+          await tx.qualityInspection.create({
+            data: {
+              folio: folioInsp,
+              receiptId: receipt.id,
+              clienteId: receipt.clienteId,
+              inspectorNombre: usuario || 'Control de Calidad Andén',
+              estado: 'COMPLETADA',
+              totalCajasInspeccionadas: totalCajasEst,
+              totalPiezasInspeccionadas: totalPiezasConformes,
+              // En liberación sana sin daño ni reacondicionamiento no existen piezas rescatadas reales.
+              totalPiezasRescatadas: hasAnyDamagedOrReconditioned ? totalPiezasRescatadasReal : 0,
+              totalPiezasMerma: 0,
+              totalCajasNuevasArmadas: 0,
+              observaciones: obsCalidad,
+              detallesJson: JSON.stringify(auditUpdates),
+              firmadoPor: usuario || 'Control de Calidad Andén',
+            },
+          });
+
+          await this.audit(
+            usuario,
+            'DICTAMEN_CALIDAD_LIBERADO',
+            'Receipt',
+            receipt.id,
+            `Dictamen formal de Calidad (${folioInsp}): 100% producto conforme (${totalPiezasConformes} pzas). Cero averías reportadas. Mercancía LIBERADA formalmente para Putaway comercial en layout.`,
+            tx,
+          );
+        }
+      }
+
       await this.audit(
         usuario,
         'CONCILIACION_ANDEN',
         'Receipt',
         receipt.id,
         `Conteo en andén guardado: ${auditUpdates.map(a => `${a.sku}: ${a.sanasAnden} sanas + ${a.rescatadas} resc = ${a.totalConformes} conf`).join(', ')}.`,
+        tx,
       );
     });
 
@@ -3380,20 +3628,44 @@ export class OperationsController {
       );
     }
 
-    // Regla de Precedencia Central: Bloquear Putaway comercial de mercancía vencida
+    // Regla de Precedencia Central: Bloquear Putaway comercial sin trazabilidad obligatoria o con mercancía vencida
     const lineForExpiry = receipt.lineas?.find((l: any) => l.id === huObj.receiptLineId) ||
       receipt.lineas?.find((l: any) => l.sku?.codigo === huObj.skuCodigo);
-    const huExpDate = huObj.fechaVencimiento || lineForExpiry?.fechaVencimiento;
-    if (huExpDate && isExpired(huExpDate, new Date(), true)) {
-      const destRole = classifyLocationOperationalRole(destLoc);
-      if (destRole.rolOperativo === 'ALMACENABLE_COMERCIAL') {
+    const huExpDate = huObj.fechaVencimiento || lineForExpiry?.fechaVencimiento || null;
+    const huEffectiveLot = !isMissingLotValue(huObj.loteTexto)
+      ? String(huObj.loteTexto).trim()
+      : (!isMissingLotValue(lineForExpiry?.loteAsignado)
+          ? String(lineForExpiry!.loteAsignado).trim()
+          : (!isMissingLotValue(lineForExpiry?.loteEsperado) ? String(lineForExpiry!.loteEsperado).trim() : null));
+
+    const destRole = classifyLocationOperationalRole(destLoc);
+    if (destRole.rolOperativo === 'ALMACENABLE_COMERCIAL') {
+      const scanTraceCheck = validateMandatoryLotAndExpiry({
+        cliente: receipt.cliente,
+        sku: lineForExpiry?.sku,
+        lote: huEffectiveLot,
+        fechaVencimiento: huExpDate,
+        itemLabel: `${huObj.codigo} (${lineForExpiry?.sku?.codigo || huObj.skuCodigo || 'SKU'})`,
+      });
+      if (!scanTraceCheck.valid) {
+        if (scanTraceCheck.isExpiredDate) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              message: 'MERCANCÍA VENCIDA — Putaway comercial no permitido. La unidad requiere disposición operativa conforme al flujo de calidad/no conforme.',
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
         throw new HttpException(
           {
-            statusCode: HttpStatus.CONFLICT,
-            message: 'MERCANCÍA VENCIDA — Putaway comercial no permitido. La unidad requiere disposición operativa conforme al flujo de calidad/no conforme.',
-            error: 'Conflict',
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo Comercial Putaway: ${scanTraceCheck.errorMessage}`,
+            error: 'Bad Request',
+            detalles: { codigo: scanTraceCheck.errorCode, skuCodigo: lineForExpiry?.sku?.codigo || huObj.skuCodigo },
           },
-          HttpStatus.CONFLICT,
+          HttpStatus.BAD_REQUEST,
         );
       }
     }
@@ -3478,6 +3750,7 @@ export class OperationsController {
               huId: currentHu.id,
               huCodigo: currentHu.codigo,
               tipoHu: currentHu.tipoHu || 'CAJA',
+              parentHuId: currentHu.parentHuId || null,
               skuId: line?.skuId || '',
               skuCodigo: currentHu.skuCodigo || line?.sku?.codigo || '',
               skuDescripcion: currentHu.skuDescripcion || line?.sku?.descripcion || '',
@@ -3497,6 +3770,8 @@ export class OperationsController {
                 huBultos: 1,
                 client: receipt.cliente,
                 item: itemInput,
+                incomingHuIds: [currentHu.id],
+                incomingPalletKeys: [currentHu.parentHuId || currentHu.id],
               },
             );
 
@@ -3743,6 +4018,20 @@ export class OperationsController {
       );
     }
 
+    const totalDanadaLineas = receipt.lineas?.reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0) || 0;
+    const hasDamagedUnits = (receipt.bultosDanados || 0) > 0 || totalDanadaLineas > 0;
+    const isQualityLiberated =
+      receipt.inspeccionCalidadEstado === 'COMPLETADA' ||
+      (receipt.inspecciones && receipt.inspecciones.length > 0) ||
+      (!hasDamagedUnits && (receipt.estado === 'CONCILIADO' || receipt.conteoAndenEstado === 'COMPLETADO'));
+
+    if (!isQualityLiberated) {
+      throw new HttpException(
+        'Candado de Calidad: No se puede proceder a Putaway comercial sin un dictamen formal de calidad LIBERADO.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     const isMermaHu = (h: any) =>
       h.codigo?.includes('MERMA') ||
       h.codigo?.startsWith('HU-NC-') ||
@@ -3978,6 +4267,7 @@ export class OperationsController {
       box: any;
       destLocation: any;
       resolvedSkuId: string;
+      skuObj?: any;
       effectiveLote: string | null;
       effectiveFechaVencimiento: Date | null;
     }> = [];
@@ -4006,27 +4296,52 @@ export class OperationsController {
         throw new HttpException(`No se pudo determinar el SKU asociado a la caja "${b.codigo}".`, HttpStatus.BAD_REQUEST);
       }
 
-      let effectiveLote = b.loteTexto || line?.loteAsignado || line?.loteEsperado || null;
+      const skuObj = line?.sku || (await this.prisma.skuMaster.findUnique({ where: { id: resolvedSkuId } }));
+      let effectiveLote = !isMissingLotValue(b.loteTexto)
+        ? String(b.loteTexto).trim()
+        : (!isMissingLotValue(line?.loteAsignado)
+            ? String(line!.loteAsignado).trim()
+            : (!isMissingLotValue(line?.loteEsperado) ? String(line!.loteEsperado).trim() : null));
       let effectiveFechaVencimiento = b.fechaVencimiento || line?.fechaVencimiento || null;
 
-      if (effectiveFechaVencimiento && isExpired(effectiveFechaVencimiento, new Date(), true)) {
-        const destRole = classifyLocationOperationalRole(destLoc);
-        if (destRole.rolOperativo === 'ALMACENABLE_COMERCIAL') {
+      const destRole = classifyLocationOperationalRole(destLoc);
+      if (destRole.rolOperativo === 'ALMACENABLE_COMERCIAL') {
+        const putawayTraceCheck = validateMandatoryLotAndExpiry({
+          cliente: receipt.cliente,
+          sku: skuObj,
+          lote: effectiveLote,
+          fechaVencimiento: effectiveFechaVencimiento,
+          itemLabel: `${b.codigo} (${skuObj?.codigo || b.skuCodigo || 'SKU'})`,
+        });
+        if (!putawayTraceCheck.valid) {
+          if (putawayTraceCheck.isExpiredDate) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.CONFLICT,
+                message: `MERCANCÍA VENCIDA — Putaway comercial no permitido para la caja "${b.codigo}". La unidad requiere disposición operativa conforme al flujo de calidad/no conforme.`,
+                error: 'Conflict',
+              },
+              HttpStatus.CONFLICT,
+            );
+          }
           throw new HttpException(
             {
-              statusCode: HttpStatus.CONFLICT,
-              message: `MERCANCÍA VENCIDA — Putaway comercial no permitido para la caja "${b.codigo}". La unidad requiere disposición operativa conforme al flujo de calidad/no conforme.`,
-              error: 'Conflict',
+              statusCode: HttpStatus.BAD_REQUEST,
+              message: `Bloqueo Comercial Putaway: ${putawayTraceCheck.errorMessage}`,
+              error: 'Bad Request',
+              detalles: { codigo: putawayTraceCheck.errorCode, skuCodigo: skuObj?.codigo || b.skuCodigo },
             },
-            HttpStatus.CONFLICT,
+            HttpStatus.BAD_REQUEST,
           );
         }
+        effectiveLote = putawayTraceCheck.loteNormalizado;
       }
 
       pendingWithDest.push({
         box: b,
         destLocation: destLoc,
         resolvedSkuId,
+        skuObj,
         effectiveLote,
         effectiveFechaVencimiento: effectiveFechaVencimiento ? new Date(effectiveFechaVencimiento) : null,
       });
@@ -4077,25 +4392,59 @@ export class OperationsController {
               }
             }
 
-            // 4. Revalidación estricta de capacidad por ubicación destino dentro de la transacción
+            // 4. Revalidación estricta de capacidad y compatibilidad por ubicación destino dentro de la transacción
             const incomingPiecesByLoc = new Map<string, number>();
-            const incomingBultosByLoc = new Map<string, number>();
+            const incomingHuIdsByLoc = new Map<string, Set<string>>();
+            const incomingPalletKeysByLoc = new Map<string, Set<string>>();
+            const sampleItemByLoc = new Map<string, PutawayItemInput>();
 
             for (const p of pendingWithDest) {
               const freshHu = freshHuMap.get(p.box.id);
               const cant = freshHu?.cantidad ?? p.box.cantidad ?? 0;
-              incomingPiecesByLoc.set(p.destLocation.id, (incomingPiecesByLoc.get(p.destLocation.id) || 0) + cant);
-              incomingBultosByLoc.set(p.destLocation.id, (incomingBultosByLoc.get(p.destLocation.id) || 0) + 1);
+              const locId = p.destLocation.id;
+              incomingPiecesByLoc.set(locId, (incomingPiecesByLoc.get(locId) || 0) + cant);
+
+              if (!incomingHuIdsByLoc.has(locId)) incomingHuIdsByLoc.set(locId, new Set<string>());
+              incomingHuIdsByLoc.get(locId)!.add(p.box.id);
+
+              if (!incomingPalletKeysByLoc.has(locId)) incomingPalletKeysByLoc.set(locId, new Set<string>());
+              const palletKey = freshHu?.parentHuId || p.box.parentHuId || p.box.id;
+              incomingPalletKeysByLoc.get(locId)!.add(palletKey);
+
+              if (!sampleItemByLoc.has(locId)) {
+                sampleItemByLoc.set(locId, {
+                  huId: p.box.id,
+                  huCodigo: p.box.codigo,
+                  tipoHu: freshHu?.tipoHu || p.box.tipoHu || 'CAJA',
+                  parentHuId: freshHu?.parentHuId || p.box.parentHuId || null,
+                  skuId: p.resolvedSkuId,
+                  skuCodigo: p.skuObj?.codigo || p.box.skuCodigo || '',
+                  skuDescripcion: p.skuObj?.descripcion || p.box.skuDescripcion || '',
+                  skuCategoria: p.skuObj?.categoria || '',
+                  cantidad: cant,
+                  lote: p.effectiveLote || '',
+                  fechaVencimiento: p.effectiveFechaVencimiento ? p.effectiveFechaVencimiento.toISOString() : null,
+                  ubicacionActual: freshHu?.ubicacionActual || p.box.ubicacionActual || 'RAMPA_RECEPCION',
+                  skuTemperatura: p.skuObj?.temperaturaRequerida || 'AMBIENTE',
+                });
+              }
             }
 
             for (const [locId, totalPieces] of incomingPiecesByLoc.entries()) {
-              const totalBultos = incomingBultosByLoc.get(locId) || 1;
+              const incomingHuIds = [...(incomingHuIdsByLoc.get(locId) || [])];
+              const incomingPalletKeys = [...(incomingPalletKeysByLoc.get(locId) || [])];
               const targetDestLoc = freshLocMap.get(locId);
               const reval = await this.putawayEngine.revalidateLocationForPutaway(
                 locId,
                 totalPieces,
                 tx,
-                { huBultos: totalBultos, client: receipt.cliente },
+                {
+                  huBultos: Math.max(1, incomingPalletKeys.length),
+                  client: receipt.cliente,
+                  item: sampleItemByLoc.get(locId),
+                  incomingHuIds,
+                  incomingPalletKeys,
+                },
               );
 
               if (!reval.valid) {
@@ -4118,6 +4467,7 @@ export class OperationsController {
               fechaVencimiento: Date | null;
               destLocId: string;
               destLocCodigo: string;
+              destLocTipo: string | null;
               cantidadTotal: number;
               items: typeof pendingWithDest;
             }
@@ -4136,6 +4486,7 @@ export class OperationsController {
                   fechaVencimiento: p.effectiveFechaVencimiento,
                   destLocId: p.destLocation.id,
                   destLocCodigo: p.destLocation.codigo,
+                  destLocTipo: p.destLocation.tipoUbicacion || null,
                   cantidadTotal: 0,
                   items: [],
                 };
@@ -4188,7 +4539,7 @@ export class OperationsController {
                     ubicacionId: group.destLocId,
                     cantidadDisponible: group.cantidadTotal,
                     estadoCalidad: 'LIBERADO',
-                    notas: `Alojado desde ${receipt.codigo} a rack ${group.destLocCodigo}${group.lote ? ` (Lote ${group.lote})` : ''}`,
+                    notas: `Alojado desde ${receipt.codigo} ${this.formatDestinationLocationPhrase({ codigo: group.destLocCodigo, tipoUbicacion: group.destLocTipo })}${group.lote ? ` (Lote ${group.lote})` : ''}`,
                   },
                 });
                 targetLotId = newLot.id;
@@ -4245,12 +4596,42 @@ export class OperationsController {
                 toLocationId: p.destLocation.id,
                 cantidad: cant,
                 usuario: usuarioResponsable,
-                motivo: `Alojamiento Putaway confirmado a rack ${p.destLocation.codigo} (Fase 4)`,
+                motivo: `Alojamiento Putaway confirmado ${this.formatDestinationLocationPhrase(p.destLocation)} (Fase 4)`,
                 documentoOrigen: receipt.codigo,
               });
             }
 
             await Promise.all(huUpdatePromises);
+
+            // 8b. Propagar ubicación destino a Tarimas Master cuyos bultos hijos quedaron alojados en la misma posición física
+            // (Contenedor físico: conserva parentHuId de hijas y lotId = null sin duplicar cantidades ni inventario)
+            const freshReceiptHusPostUpdate = await tx.handlingUnit.findMany({
+              where: { receiptId: receipt.id, estadoHu: 'ACTIVO' },
+            });
+            const transientLocations = new Set(['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING', 'DEV-01']);
+            const activeMasterPallets = freshReceiptHusPostUpdate.filter(
+              (h: any) => (h.tipoHu === 'PALLET' || h.tipoHu === 'TARIMA') && !isMermaHu(h),
+            );
+            const activeCommercialBoxesAfter = freshReceiptHusPostUpdate.filter(
+              (h: any) => h.tipoHu === 'CAJA' && !isMermaHu(h),
+            );
+
+            for (const pallet of activeMasterPallets) {
+              const childBoxes = activeCommercialBoxesAfter.filter((b: any) => b.parentHuId === pallet.id);
+              if (childBoxes.length === 0) continue;
+              const childDests = childBoxes
+                .map((b: any) => b.ubicacionActual)
+                .filter((u: any) => u && !transientLocations.has(u));
+              if (childDests.length === childBoxes.length) {
+                const distinctDests = [...new Set(childDests)];
+                if (distinctDests.length === 1 && pallet.ubicacionActual !== distinctDests[0]) {
+                  await tx.handlingUnit.update({
+                    where: { id: pallet.id },
+                    data: { ubicacionActual: distinctDests[0] },
+                  });
+                }
+              }
+            }
 
             // 9. Actualizar estado operativo en ubicaciones destino a OCUPADO
             for (const locId of sortedLocIds) {
@@ -4775,6 +5156,7 @@ export class OperationsController {
                   fechaVencimiento: p.effectiveFechaVencimiento,
                   destLocId: p.destLocation.id,
                   destLocCodigo: p.destLocation.codigo,
+                  destLocTipo: p.destLocation.tipoUbicacion || null,
                   cantidadTotal: 0,
                   boxes: [],
                 });
@@ -4840,7 +5222,7 @@ export class OperationsController {
                     ubicacionId: group.destLocId,
                     cantidadDisponible: group.cantidadTotal,
                     estadoCalidad: 'LIBERADO',
-                    notas: `Reconciliación post-cierre desde ${receipt.codigo} a rack ${group.destLocCodigo}${group.lote ? ` (Lote ${group.lote})` : ''}`,
+                    notas: `Reconciliación post-cierre desde ${receipt.codigo} ${this.formatDestinationLocationPhrase({ codigo: group.destLocCodigo, tipoUbicacion: group.destLocTipo })}${group.lote ? ` (Lote ${group.lote})` : ''}`,
                   },
                 });
                 targetLotId = newLot.id;
@@ -4879,7 +5261,7 @@ export class OperationsController {
                 toLocationId: p.destLocation.id,
                 cantidad: cant,
                 usuario: usuarioResponsable,
-                motivo: `Reconciliación post-cierre de Putaway a rack ${p.destLocation.codigo}: ${motivo}`,
+                motivo: `Reconciliación post-cierre de Putaway ${this.formatDestinationLocationPhrase(p.destLocation)}: ${motivo}`,
                 documentoOrigen: receipt.codigo,
               });
             }
@@ -6421,21 +6803,51 @@ export class OperationsController {
     };
   }
 
+  private isMermaHandlingUnit(hu: any): boolean {
+    return Boolean(
+      hu?.codigo?.includes('MERMA') ||
+      hu?.codigo?.startsWith('HU-NC-') ||
+      hu?.ubicacionActual === 'DEV-01' ||
+      hu?.ubicacionActual?.includes('DEV'),
+    );
+  }
+
+  private buildCloseAuditDetail(params: {
+    receiptCodigo: string;
+    usuario: string;
+    totalEsperado: number;
+    totalConforme: number;
+    totalMerma: number;
+    totalFaltante: number;
+    totalDisponibleFinal: number;
+    husAlojadasCount: number;
+    ubicacionesFinales: string[];
+    lotesResumen: string[];
+    discrepanciasCount: number;
+  }): string {
+    const ubicacionTexto = params.ubicacionesFinales.length > 0 ? params.ubicacionesFinales.join(', ') : 'Sin ubicación';
+    const lotesTexto = params.lotesResumen.length > 0 ? ` (${params.lotesResumen.join('; ')})` : '';
+    const discTexto = params.discrepanciasCount > 0
+      ? ` Discrepancias justificadas: ${params.discrepanciasCount}.`
+      : '';
+    return `Recepción ${params.receiptCodigo} cerrada por ${params.usuario}. Balance final: ${params.totalEsperado} esperadas / ${params.totalConforme} conformes / ${params.totalMerma} merma / ${params.totalFaltante} faltante. Stock disponible: ${params.totalDisponibleFinal} PZA. ${params.husAlojadasCount} HUs alojadas en ${ubicacionTexto}${lotesTexto}.${discTexto}`;
+  }
+
   @Post('receipts/:id/close')
   @ApiOperation({
     summary: 'Finalizar y cerrar recepción de mercancía (Cierre definitivo de almacén - Tarea 3 / Tarea 5)',
     description: 'Finiquita la recepción, cambia el estatus operacional a CERRADA, activa candado permanente inmutable y genera bitácora de auditoría.',
   })
-  @ApiParam({ name: 'id', description: 'Identificador único UUID de la recepción previa' })
+  @ApiParam({ name: 'id', description: 'Identificador único UUID o folio de la recepción previa' })
   @ApiBody({ type: CloseReceiptDto })
   @ApiResponse({ status: 200, description: 'Recepción finalizada y cerrada correctamente en inventario.' })
-  @ApiResponse({ status: 400, description: 'Datos incompletos (usuario auditor ausente).', type: ApiErrorResponseDto })
+  @ApiResponse({ status: 400, description: 'Datos incompletos o validaciones pre-cierre incumplidas.', type: ApiErrorResponseDto })
   @ApiResponse({ status: 404, description: 'Recepción previa no encontrada.', type: ApiErrorResponseDto })
   @HttpCode(HttpStatus.OK)
   async closeReceipt(@Param('id') receiptId: string, @Body() body: any) {
     try {
-      const receipt = await this.prisma.receipt.findUnique({
-        where: { id: receiptId },
+      const receipt = await this.prisma.receipt.findFirst({
+        where: { OR: [{ id: receiptId }, { codigo: receiptId }] },
         include: {
           lineas: { include: { sku: true } },
           cliente: true,
@@ -6488,19 +6900,89 @@ export class OperationsController {
       }
 
       const usuario = body.usuario.trim();
+      const activeLines = receipt.lineas || [];
+      const totalEsperado = activeLines.reduce((acc: number, l: any) => acc + Number(l.cantidadEsperada ?? 0), 0);
+      const totalConformesPiezas = activeLines.reduce((acc: number, l: any) => acc + Number(l.cantidadRecibida ?? 0), 0);
+      const totalMermaPiezas = activeLines.reduce((acc: number, l: any) => acc + Number(l.cantidadDanada ?? 0), 0);
+      const totalFaltantePiezas = activeLines.reduce(
+        (acc: number, l: any) => acc + Math.max(0, Number(l.cantidadEsperada ?? 0) - Number(l.cantidadRecibida ?? 0) - Number(l.cantidadDanada ?? 0)),
+        0,
+      );
 
-      // 3. AUDITORÍA DE DISCREPANCIAS Y CANDADO DE CIERRE (Tarea 5)
-      // Bloquear el cierre de recepción si existen discrepancias sin justificación o clasificación de estatus
-      // CANDADO DE SEGURIDAD CANÓNICA DE FASE 4:
-      // Validar que todas las HUs comerciales activas estén formalmente alojadas en racks
-      // y vinculadas canónicamente a LotInventory (HUs comerciales activas alojadas == contabilizadas)
-      const isMermaHu = (h: any) => h.codigo?.includes('MERMA') || h.codigo?.startsWith('HU-NC-') || h.ubicacionActual === 'DEV-01';
-      const activeCommercialBoxes = receipt.handlingUnits?.filter(
-        (h: any) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && !isMermaHu(h)
-      ) || [];
+      // 3A. Conteo físico en andén obligatorio antes de cerrar
+      if (receipt.conteoAndenEstado !== 'COMPLETADO') {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo de Cierre: El conteo y conciliación en andén aún no está COMPLETADO (estado actual: ${receipt.conteoAndenEstado || 'PENDIENTE'}).`,
+            error: 'Bad Request',
+            detalles: { codigo: 'CIERRE_BLOQUEADO_POR_CONTEO_INCOMPLETO', conteoAndenEstado: receipt.conteoAndenEstado },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
 
+      // 3B. Inspección / liberación de calidad completada formalmente
+      const qualityState = String(receipt.inspeccionCalidadEstado || '').toUpperCase().trim();
+      if (!['COMPLETADA', 'COMPLETADO', 'LIBERADA', 'LIBERADO'].includes(qualityState)) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo de Cierre: La inspección de calidad no está formalmente completada/liberada (estado actual: ${receipt.inspeccionCalidadEstado || 'PENDIENTE'}).`,
+            error: 'Bad Request',
+            detalles: { codigo: 'CIERRE_BLOQUEADO_POR_CALIDAD_PENDIENTE', inspeccionCalidadEstado: receipt.inspeccionCalidadEstado },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 3C. Etiquetado físico colocado cuando existan HUs que requieran etiqueta o mercancía conforme
+      const physicalLabeledHus = (receipt.handlingUnits || []).filter((h: any) => !this.isMermaHandlingUnit(h));
+      if ((physicalLabeledHus.length > 0 || totalConformesPiezas > 0) && receipt.etiquetasEstado !== 'COLOCADAS') {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo de Cierre: Las etiquetas Giving Out no han sido confirmadas como COLOCADAS (estado actual: ${receipt.etiquetasEstado || 'PENDIENTE'}).`,
+            error: 'Bad Request',
+            detalles: { codigo: 'CIERRE_BLOQUEADO_POR_ETIQUETAS_NO_COLOCADAS', etiquetasEstado: receipt.etiquetasEstado },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 3D. HUs comerciales activas obligatorias cuando existen piezas conformes recibidas
+      const activeCommercialBoxes = (receipt.handlingUnits || []).filter(
+        (h: any) => h.tipoHu === 'CAJA' && h.estadoHu === 'ACTIVO' && !this.isMermaHandlingUnit(h),
+      );
+      if (totalConformesPiezas > 0 && activeCommercialBoxes.length === 0) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo de Cierre: Se registraron ${totalConformesPiezas} piezas conformes pero no existen Handling Units (cajas activas) creadas ni alojadas para respaldar el stock.`,
+            error: 'Bad Request',
+            detalles: { codigo: 'CIERRE_BLOQUEADO_SIN_HUS_COMERCIALES', totalConformesPiezas },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const sumActiveBoxQty = activeCommercialBoxes.reduce((acc: number, b: any) => acc + Number(b.cantidad || 0), 0);
+      if (totalConformesPiezas > 0 && sumActiveBoxQty !== totalConformesPiezas) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            message: `Bloqueo de Cierre: Descuadre entre piezas conformes recibidas (${totalConformesPiezas}) y la suma de cajas comerciales activas (${sumActiveBoxQty}).`,
+            error: 'Bad Request',
+            detalles: { codigo: 'CIERRE_BLOQUEADO_POR_DESCUADRE_HUS', totalConformesPiezas, sumActiveBoxQty },
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // 3E. Validar Putaway completo en HUs comerciales activas (lotId + ubicación no en tránsito)
+      const transientLocations = new Set(['RAMPA_RECEPCION', 'REC-01', 'REC-02', 'RECIBO', 'ANDEN', 'STAGING', 'STG-01', 'STG-02']);
       const unlinkedBoxes = activeCommercialBoxes.filter(
-        (h: any) => !h.lotId || !h.ubicacionActual || ['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING'].includes(h.ubicacionActual)
+        (h: any) => !h.lotId || !h.ubicacionActual || transientLocations.has(String(h.ubicacionActual).toUpperCase().trim()),
       );
 
       if (unlinkedBoxes.length > 0) {
@@ -6524,7 +7006,184 @@ export class OperationsController {
         );
       }
 
-      const activeLines = receipt.lineas || [];
+      // 3F. Validar existencia real de LotInventory, ubicación comercial almacenable y balance exacto
+      const distinctLotIds = [...new Set(activeCommercialBoxes.map((b: any) => b.lotId).filter(Boolean))];
+      let totalDisponibleFinal = 0;
+      const ubicacionesSet = new Set<string>();
+      const lotesResumenSet = new Set<string>();
+      const lotMapById = new Map<string, any>();
+
+      if (activeCommercialBoxes.length > 0) {
+        const lots = await this.prisma.lotInventory.findMany({
+          where: { id: { in: distinctLotIds } },
+          include: { ubicacion: { include: { zona: true } }, sku: true },
+        });
+        for (const lot of lots) {
+          lotMapById.set(lot.id, lot);
+        }
+
+        const allActiveBoxesOnLots = await this.prisma.handlingUnit.findMany({
+          where: { lotId: { in: distinctLotIds }, tipoHu: 'CAJA', estadoHu: 'ACTIVO' },
+          select: { id: true, lotId: true, cantidad: true, receiptId: true },
+        });
+
+        const expectedQtyByLotId = new Map<string, number>();
+        for (const b of allActiveBoxesOnLots) {
+          if (b.lotId) {
+            expectedQtyByLotId.set(b.lotId, (expectedQtyByLotId.get(b.lotId) || 0) + Number(b.cantidad || 0));
+          }
+        }
+
+        const receiptContributedByLotId = new Map<string, number>();
+        for (const box of activeCommercialBoxes) {
+          const line = activeLines.find((l: any) => l.id === box.receiptLineId) ||
+            activeLines.find((l: any) => l.sku?.codigo === box.skuCodigo);
+          const resolvedSkuId = (box as any).skuId || line?.skuId;
+          const lot = box.lotId ? lotMapById.get(box.lotId) : null;
+
+          if (!lot || lot.clienteId !== receipt.clienteId || (resolvedSkuId && lot.skuId !== resolvedSkuId)) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.BAD_REQUEST,
+                message: `Bloqueo de Cierre: No existe LotInventory comercial válido asociado a la caja "${box.codigo}".`,
+                error: 'Bad Request',
+                detalles: { codigo: 'CIERRE_BLOQUEADO_SIN_LOTINVENTORY', huCodigo: box.codigo, lotId: box.lotId },
+              },
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+
+          const locClass = classifyLocationOperationalRole(lot.ubicacion);
+          const lotLocCode = String(lot.ubicacion?.codigo || '').toUpperCase().trim();
+          const boxLocCode = String(box.ubicacionActual || '').toUpperCase().trim();
+          if (!lot.ubicacion || lot.ubicacion.activo === false || !locClass.esAlmacenable || locClass.rolOperativo !== 'ALMACENABLE_COMERCIAL' || lotLocCode !== boxLocCode) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.BAD_REQUEST,
+                message: `Bloqueo de Cierre: La ubicación "${lot.ubicacion?.codigo || box.ubicacionActual}" asociada al inventario de "${box.codigo}" no es una posición comercial almacenable vigente (${locClass.motivoNoVendible || 'ubicación inválida'}).`,
+                error: 'Bad Request',
+                detalles: { codigo: 'CIERRE_BLOQUEADO_UBICACION_NO_COMERCIAL', huCodigo: box.codigo, ubicacion: lot.ubicacion?.codigo || box.ubicacionActual, rolOperativo: locClass.rolOperativo },
+              },
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+
+          ubicacionesSet.add(lot.ubicacion.codigo);
+          receiptContributedByLotId.set(lot.id, (receiptContributedByLotId.get(lot.id) || 0) + Number(box.cantidad || 0));
+        }
+
+        for (const lotId of distinctLotIds) {
+          const lot = lotMapById.get(lotId);
+          const expectedQtyForLot = expectedQtyByLotId.get(lotId) || 0;
+          const disp = Number(lot?.cantidadDisponible ?? 0);
+          const res = Number(lot?.cantidadReservada ?? 0);
+          const bloq = Number(lot?.cantidadBloqueada ?? 0);
+          const qualityStatus = String(lot?.estadoCalidad || '').toUpperCase().trim();
+
+          if (!lot || qualityStatus !== 'LIBERADO' || bloq > 0 || res < 0 || res > disp || disp !== expectedQtyForLot) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.BAD_REQUEST,
+                message: `Bloqueo de Cierre: El balance del LotInventory "${lotId}" (${disp} disp / ${res} res / ${bloq} bloq / estado ${lot?.estadoCalidad}) no coincide con las piezas conformes alojadas esperadas (${expectedQtyForLot}).`,
+                error: 'Bad Request',
+                detalles: { codigo: 'CIERRE_BLOQUEADO_BALANCE_LOTINVENTORY', lotId, cantidadDisponible: disp, cantidadReservada: res, cantidadBloqueada: bloq, esperada: expectedQtyForLot },
+              },
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          totalDisponibleFinal += receiptContributedByLotId.get(lotId) || 0;
+        }
+      }
+
+      // 3G. Validar trazabilidad sanitaria/operativa obligatoria (Lote y Caducidad vigente) reutilizando helper canónico
+      const now = new Date();
+      for (const line of activeLines) {
+        if (Number(line.cantidadRecibida ?? 0) <= 0) continue;
+        const lineBoxes = activeCommercialBoxes.filter(
+          (b: any) => b.receiptLineId === line.id || (!b.receiptLineId && b.skuCodigo === line.sku?.codigo),
+        );
+        const firstBox = lineBoxes[0];
+        const effectiveLineLot = !isMissingLotValue(line.loteAsignado)
+          ? String(line.loteAsignado).trim()
+          : (firstBox?.loteTexto || line.loteEsperado || null);
+        const effectiveLineExpiry = line.fechaVencimiento ?? firstBox?.fechaVencimiento ?? (line as any).fechaCaducidadEsperada ?? null;
+
+        const lineTrace = validateMandatoryLotAndExpiry({
+          cliente: receipt.cliente,
+          sku: line.sku,
+          lote: effectiveLineLot,
+          fechaVencimiento: effectiveLineExpiry,
+          itemLabel: line.sku?.codigo || 'Partida',
+          businessDate: now,
+        });
+
+        if (!lineTrace.valid) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.BAD_REQUEST,
+              message: `Bloqueo de Cierre: ${lineTrace.errorMessage}`,
+              error: 'Bad Request',
+              detalles: { codigo: lineTrace.errorCode, skuCodigo: line.sku?.codigo },
+            },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        if (lineTrace.loteNormalizado || lineTrace.fechaVencimientoDate) {
+          const lotStr = lineTrace.loteNormalizado ? `Lote: ${lineTrace.loteNormalizado}` : '';
+          const expStr = lineTrace.fechaVencimientoDate ? `Cad: ${toCalendarDayString(lineTrace.fechaVencimientoDate)}` : '';
+          lotesResumenSet.add([lotStr, expStr].filter(Boolean).join(' · '));
+        }
+      }
+
+      for (const box of activeCommercialBoxes) {
+        const line = activeLines.find((l: any) => l.id === box.receiptLineId) ||
+          activeLines.find((l: any) => l.sku?.codigo === box.skuCodigo);
+        const lot = box.lotId ? lotMapById.get(box.lotId) : null;
+        const boxTrace = validateMandatoryLotAndExpiry({
+          cliente: receipt.cliente,
+          sku: line?.sku,
+          lote: box.loteTexto ?? lot?.lote ?? line?.loteAsignado,
+          fechaVencimiento: box.fechaVencimiento ?? lot?.fechaVencimiento ?? line?.fechaVencimiento,
+          itemLabel: `${box.codigo} (${line?.sku?.codigo || box.skuCodigo || 'SKU'})`,
+          businessDate: now,
+        });
+        if (!boxTrace.valid) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.BAD_REQUEST,
+              message: `Bloqueo de Cierre: ${boxTrace.errorMessage}`,
+              error: 'Bad Request',
+              detalles: { codigo: boxTrace.errorCode, huCodigo: box.codigo },
+            },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        if (lot) {
+          const lotTrace = validateMandatoryLotAndExpiry({
+            cliente: receipt.cliente,
+            sku: line?.sku || lot.sku,
+            lote: lot.lote,
+            fechaVencimiento: lot.fechaVencimiento,
+            itemLabel: `LotInventory ${lot.id}`,
+            businessDate: now,
+          });
+          if (!lotTrace.valid) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.BAD_REQUEST,
+                message: `Bloqueo de Cierre: ${lotTrace.errorMessage}`,
+                error: 'Bad Request',
+                detalles: { codigo: lotTrace.errorCode, lotId: lot.id },
+              },
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+      }
+
+      // 3H. AUDITORÍA DE DISCREPANCIAS Y CANDADO DE CIERRE (Tarea 5)
       const discrepantLines: Array<{
         line: any;
         esperada: number;
@@ -6637,50 +7296,90 @@ export class OperationsController {
         }
       }
 
-      // 4. Actualizar partidas con la resolución de discrepancias
-      for (const [lineId, res] of resolvedMap.entries()) {
-        const line = activeLines.find((l: any) => l.id === lineId);
-        const resolutionNote = `[DISCREPANCIA_RESUELTA] Estatus: ${res.clasificacion} | Justificación: ${res.justificacion}`;
-        const newNotes = line?.notas ? `${line.notas} | ${resolutionNote}` : resolutionNote;
-
-        await this.prisma.receiptLine.update({
-          where: { id: lineId },
-          data: {
-            estado: 'DISCREPANCIA',
-            notas: newNotes,
-          },
-        });
-      }
-
-      // 5. Actualizar la recepción a CERRADA con candado definitivo
-      const updated = await this.prisma.receipt.update({
-        where: { id: receiptId },
-        data: {
-          estado: 'CERRADA',
-          cerradoPor: usuario,
-          fechaCierre: new Date(),
-          bloqueado: true,
-          notas: body.notasCierre ? `${receipt.notas ? receipt.notas + ' | ' : ''}Cierre: ${body.notasCierre}` : receipt.notas,
-        },
-        include: {
-          cliente: true,
-          proveedor: true,
-          lineas: { include: { sku: true } },
-        },
+      const auditMsg = this.buildCloseAuditDetail({
+        receiptCodigo: receipt.codigo,
+        usuario,
+        totalEsperado,
+        totalConforme: totalConformesPiezas,
+        totalMerma: totalMermaPiezas,
+        totalFaltante: totalFaltantePiezas,
+        totalDisponibleFinal,
+        husAlojadasCount: activeCommercialBoxes.length,
+        ubicacionesFinales: [...ubicacionesSet],
+        lotesResumen: [...lotesResumenSet],
+        discrepanciasCount: resolvedMap.size,
       });
 
-      const auditMsg = discrepantLines.length > 0
-        ? `Recepción ${receipt.codigo} finalizada y cerrada con ${discrepantLines.length} discrepancias clasificadas y justificadas legalmente.`
-        : `Recepción ${receipt.codigo} finalizada y cerrada 100% conforme sin discrepancias.`;
+      // 4-5. EJECUCIÓN ATÓMICA TRANSACCIONAL DEL CIERRE Y BITÁCORA
+      const txResult = await this.prisma.$transaction(async (tx) => {
+        try {
+          if (typeof (tx as any).$queryRaw === 'function') {
+            await (tx as any).$queryRaw`SELECT id FROM "Receipt" WHERE id = ${receipt.id} FOR UPDATE`;
+          }
+        } catch {
+          // Fallback en mocks sin $queryRaw
+        }
 
-      await this.audit(usuario, 'CERRAR_RECEPCION', 'Receipt', receiptId, auditMsg);
+        const freshReceipt = await tx.receipt.findUnique({
+          where: { id: receipt.id },
+          include: {
+            cliente: true,
+            proveedor: true,
+            lineas: { include: { sku: true } },
+          },
+        });
 
-      return {
-        success: true,
-        message: `Recepción ${receipt.codigo} finalizada y cerrada correctamente`,
-        discrepanciasResueltas: resolvedMap.size,
-        receipt: updated,
-      };
+        if (freshReceipt && (freshReceipt.estado === 'CERRADA' || freshReceipt.estado === 'CERRADO' || freshReceipt.fechaCierre)) {
+          return {
+            success: true,
+            idempotent: true,
+            message: `Recepción ${receipt.codigo} ya se encontraba finalizada y cerrada previamente. Se preservó el cierre existente sin duplicar movimientos ni auditorías.`,
+            discrepanciasResueltas: freshReceipt.lineas?.filter((l: any) => l.estado === 'DISCREPANCIA' || (l.notas && l.notas.includes('[DISCREPANCIA_RESUELTA]'))).length || 0,
+            receipt: freshReceipt,
+          };
+        }
+
+        for (const [lineId, res] of resolvedMap.entries()) {
+          const line = activeLines.find((l: any) => l.id === lineId);
+          const resolutionNote = `[DISCREPANCIA_RESUELTA] Estatus: ${res.clasificacion} | Justificación: ${res.justificacion}`;
+          const newNotes = line?.notas ? `${line.notas} | ${resolutionNote}` : resolutionNote;
+
+          await tx.receiptLine.update({
+            where: { id: lineId },
+            data: {
+              estado: 'DISCREPANCIA',
+              notas: newNotes,
+            },
+          });
+        }
+
+        const updated = await tx.receipt.update({
+          where: { id: receipt.id },
+          data: {
+            estado: 'CERRADA',
+            cerradoPor: usuario,
+            fechaCierre: new Date(),
+            bloqueado: true,
+            notas: body.notasCierre ? `${receipt.notas ? receipt.notas + ' | ' : ''}Cierre: ${body.notasCierre}` : receipt.notas,
+          },
+          include: {
+            cliente: true,
+            proveedor: true,
+            lineas: { include: { sku: true } },
+          },
+        });
+
+        await this.audit(usuario, 'CERRAR_RECEPCION', 'Receipt', receipt.id, auditMsg, tx);
+
+        return {
+          success: true,
+          message: `Recepción ${receipt.codigo} finalizada y cerrada correctamente`,
+          discrepanciasResueltas: resolvedMap.size,
+          receipt: updated,
+        };
+      });
+
+      return txResult;
     } catch (error: any) {
       console.error('Error al cerrar recepción:', error);
       if (error instanceof HttpException) throw error;
@@ -9501,6 +10200,17 @@ export class OperationsController {
       pendingApprovals, totalEndCustomers,
       recentMovements,
     };
+  }
+
+  private formatDestinationLocationPhrase(
+    loc?: { codigo?: string | null; tipoUbicacion?: string | null } | null,
+  ): string {
+    const codigo = String(loc?.codigo || '').trim();
+    const tipo = String(loc?.tipoUbicacion || '').toUpperCase().trim();
+    const isHistoricalRack =
+      (tipo === 'ESTANTERIA' || tipo === 'RACK') &&
+      !codigo.toUpperCase().startsWith('G');
+    return isHistoricalRack ? `a rack ${codigo}` : `en posición física ${codigo}`;
   }
 
   private async ensureVirtualMermaLocation(client: any = this.prisma) {

@@ -33,8 +33,37 @@ export function RampArrivalModal({
   const [nombreChofer, setNombreChofer] = useState(receipt?.nombreChofer || '');
   const [andenAsignado, setAndenAsignado] = useState(receipt?.andenAsignado || '');
   const [nombreReceptor, setNombreReceptor] = useState(
-    receipt?.nombreReceptor || currentUser?.nombre || currentUser?.name || 'Jonathan Palacios'
+    receipt?.nombreReceptor || currentUser?.nombre || currentUser?.name || currentUser?.email || ''
   );
+
+  // Control explícito y trazable del estado del sello / precinto (SIN selección por default)
+  const getInitialEstadoSello = (): 'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA' | null => {
+    // Si la unidad ya fue liberada previamente, permitir restaurar
+    if (activeReceipt?.fechaLiberacionChofer || receipt?.fechaLiberacionChofer) {
+      if (receipt?.estadoSello && ['INTACTO', 'ROTO', 'SIN_SELLO', 'NO_APLICA'].includes(receipt.estadoSello)) {
+        return receipt.estadoSello;
+      }
+      if (receipt?.observacionesRampa) {
+        if (receipt.observacionesRampa.includes('[SELLO: ROTO]')) return 'ROTO';
+        if (receipt.observacionesRampa.includes('[SELLO: SIN_SELLO]')) return 'SIN_SELLO';
+        if (receipt.observacionesRampa.includes('[SELLO: NO_APLICA]')) return 'NO_APLICA';
+        if (receipt.observacionesRampa.includes('[SELLO: INTACTO]')) return 'INTACTO';
+      }
+    }
+    return null; // Operación real: operador debe seleccionar explícitamente al abrir
+  };
+
+  const getInitialNumeroSello = (): string => {
+    if (receipt?.numeroSello) return receipt.numeroSello;
+    if (receipt?.observacionesRampa) {
+      const match = receipt.observacionesRampa.match(/\[SELLO:\s*[A-Z_]+(?:\s*#([A-Za-z0-9_-]+))?\]/);
+      if (match && match[2]) return match[2];
+    }
+    return '';
+  };
+
+  const [estadoSello, setEstadoSello] = useState<'INTACTO' | 'ROTO' | 'SIN_SELLO' | 'NO_APLICA' | null>(getInitialEstadoSello());
+  const [numeroSello, setNumeroSello] = useState<string>(getInitialNumeroSello());
 
   // Conteo exterior de bultos
   // Calcular bultos sugeridos de las líneas si no están definidos
@@ -52,12 +81,11 @@ export function RampArrivalModal({
       ? receipt.bultosDeclarados
       : (totalBultosLineas > 0 ? totalBultosLineas : 0)
   );
+  // Bultos Recibidos: Requiere captura física del operador en rampa (no auto-confirmar sin conteo)
   const [bultosRecibidos, setBultosRecibidos] = useState<number | string>(
     receipt?.bultosRecibidos !== undefined && receipt?.bultosRecibidos !== null
       ? receipt.bultosRecibidos
-      : (receipt?.bultosDeclarados !== undefined && receipt?.bultosDeclarados !== null
-          ? receipt.bultosDeclarados
-          : (totalBultosLineas > 0 ? totalBultosLineas : 0))
+      : ''
   );
   const [bultosDanados, setBultosDanados] = useState<number | string>(
     receipt?.bultosDanados !== undefined && receipt?.bultosDanados !== null ? receipt.bultosDanados : 0
@@ -95,7 +123,7 @@ export function RampArrivalModal({
       setPlaca(receipt.placa || '');
       setNombreChofer(receipt.nombreChofer || '');
       setAndenAsignado(receipt.andenAsignado || '');
-      setNombreReceptor(receipt.nombreReceptor || currentUser?.nombre || currentUser?.name || 'Jonathan Palacios');
+      setNombreReceptor(receipt.nombreReceptor || currentUser?.nombre || currentUser?.name || currentUser?.email || '');
       if (receipt.bultosDeclarados !== undefined && receipt.bultosDeclarados !== null) {
         setBultosDeclarados(receipt.bultosDeclarados);
       }
@@ -106,6 +134,21 @@ export function RampArrivalModal({
         setBultosDanados(receipt.bultosDanados);
       }
       if (receipt.observacionesRampa) setObservacionesRampa(receipt.observacionesRampa);
+      if (receipt.fechaLiberacionChofer) {
+        if (receipt.estadoSello && ['INTACTO', 'ROTO', 'SIN_SELLO', 'NO_APLICA'].includes(receipt.estadoSello)) {
+          setEstadoSello(receipt.estadoSello);
+        } else if (receipt.sellosIntactos === false) {
+          setEstadoSello('ROTO');
+        } else if (receipt.observacionesRampa) {
+          if (receipt.observacionesRampa.includes('[SELLO: ROTO]')) setEstadoSello('ROTO');
+          else if (receipt.observacionesRampa.includes('[SELLO: SIN_SELLO]')) setEstadoSello('SIN_SELLO');
+          else if (receipt.observacionesRampa.includes('[SELLO: NO_APLICA]')) setEstadoSello('NO_APLICA');
+          else if (receipt.observacionesRampa.includes('[SELLO: INTACTO]')) setEstadoSello('INTACTO');
+        }
+      }
+      if (receipt.numeroSello) {
+        setNumeroSello(receipt.numeroSello);
+      }
       if (receipt.firmaChofer) {
         setFirmaChofer(receipt.firmaChofer);
         setChoferPadActive(false);
@@ -122,14 +165,35 @@ export function RampArrivalModal({
   const numRecibidos = bultosRecibidos === '' ? 0 : Number(bultosRecibidos);
   const numDanados = bultosDanados === '' ? 0 : Number(bultosDanados);
 
-  // Diferencia calculada: recibidos - declarados (fórmula exacta)
-  const diferenciaBultos = numRecibidos - numDeclarados;
-  const tieneDiscrepancias = diferenciaBultos !== 0 || numDanados > 0;
+  // Conteo físico real ingresado
+  const conteoCapturado = bultosRecibidos !== '' && !isNaN(numRecibidos) && numRecibidos >= 0;
+  const diferenciaBultos = conteoCapturado ? (numRecibidos - numDeclarados) : 0;
+  const selloSeleccionado = estadoSello !== null;
+
+  // Condiciones de reserva / incidencias
+  const tieneReservas =
+    estadoSello === 'ROTO' ||
+    estadoSello === 'SIN_SELLO' ||
+    (conteoCapturado && diferenciaBultos !== 0) ||
+    numDanados > 0;
+
+  // Conforme SOLO tras conteo físico completo y sin incidencias
+  const esConforme =
+    conteoCapturado &&
+    selloSeleccionado &&
+    (estadoSello === 'INTACTO' || estadoSello === 'NO_APLICA') &&
+    diferenciaBultos === 0 &&
+    numDanados === 0;
+
+  // Pendiente de validación física si falta conteo o falta selección de sello
+  const pendienteValidacion = !conteoCapturado || !selloSeleccionado;
 
   // Leyenda dinámica del chofer
-  const leyendaChofer = tieneDiscrepancias
+  const leyendaChofer = tieneReservas
     ? 'Entregó con reservas y discrepancias asentadas'
-    : 'Entregó carga conforme (revisión exterior)';
+    : esConforme
+    ? 'Entregó carga conforme (revisión exterior)'
+    : 'Pendiente de validación física en rampa';
 
   // Handler para campos de bultos que permite vaciar mientras se escribe
   const handleBultosChange = (setter: React.Dispatch<React.SetStateAction<number | string>>) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -294,13 +358,13 @@ export function RampArrivalModal({
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    // Validación de enteros no negativos
+    // Validación de enteros no negativos y captura física
     if (bultosDeclarados === '' || isNaN(numDeclarados) || numDeclarados < 0 || !Number.isInteger(numDeclarados)) {
       setErrorMsg('Debe especificar los bultos declarados como un número entero mayor o igual a cero.');
       return;
     }
     if (bultosRecibidos === '' || isNaN(numRecibidos) || numRecibidos < 0 || !Number.isInteger(numRecibidos)) {
-      setErrorMsg('Debe especificar los bultos recibidos como un número entero mayor o igual a cero.');
+      setErrorMsg('Debe registrar físicamente los bultos recibidos en rampa (captura física requerida).');
       return;
     }
     if (bultosDanados === '' || isNaN(numDanados) || numDanados < 0 || !Number.isInteger(numDanados)) {
@@ -316,7 +380,7 @@ export function RampArrivalModal({
 
     // Validación obligatoria de unidad de transporte que arriba físicamente a rampa
     if (!lineaTransporte || !lineaTransporte.trim()) {
-      setErrorMsg('Debe registrar la línea de transporte de la unidad física que arribó a rampa.');
+      setErrorMsg('Debe registrar la línea de transporte / fletera de la unidad física que arribó a rampa.');
       return;
     }
     if (!placa || !placa.trim()) {
@@ -327,16 +391,58 @@ export function RampArrivalModal({
       setErrorMsg('Debe registrar el nombre del chofer de la unidad física que arribó a rampa.');
       return;
     }
+    if (!andenAsignado || !andenAsignado.trim()) {
+      setErrorMsg('Debe registrar el andén asignado para la descarga de la unidad en rampa.');
+      return;
+    }
+    if (!nombreReceptor || !nombreReceptor.trim()) {
+      setErrorMsg('Debe registrar el responsable de recibo en andén (usuario autenticado).');
+      return;
+    }
+
+    // 0. Selección explícita obligatoria del estado del sello (sin default)
+    if (!estadoSello) {
+      setErrorMsg('Debe seleccionar explícitamente el estado físico del sello o precinto de seguridad de la unidad.');
+      return;
+    }
+
+    // 1. Folio de sello según condición física
+    if (estadoSello === 'INTACTO' && (!numeroSello || !numeroSello.trim())) {
+      setErrorMsg('Al registrar el sello como Intacto, es obligatorio ingresar el número/folio físico del sello.');
+      return;
+    }
+    if (estadoSello === 'ROTO' && (!numeroSello || !numeroSello.trim())) {
+      setErrorMsg('Al registrar el sello como Roto o Alterado, capture el folio visible o escriba "ILEGIBLE".');
+      return;
+    }
+
+    // 2. Observaciones obligatorias ante anomalías o reservas
+    if (estadoSello === 'ROTO' && (!observacionesRampa || observacionesRampa.trim().length < 5)) {
+      setErrorMsg('Al marcar el sello como Roto o Alterado, es obligatorio detallar las observaciones de la anomalía en rampa (mínimo 5 caracteres).');
+      return;
+    }
+    if (estadoSello === 'SIN_SELLO' && (!observacionesRampa || observacionesRampa.trim().length < 5)) {
+      setErrorMsg('Al asentar que la unidad llegó Sin Sello cuando se requería, es obligatorio justificar el motivo en las Observaciones (mínimo 5 caracteres).');
+      return;
+    }
+    if (tieneReservas && (!observacionesRampa || observacionesRampa.trim().length < 5)) {
+      setErrorMsg('La carga presenta reservas (daños, faltante/sobrante o condición de sello). Es obligatorio registrar las observaciones correspondientes (mínimo 5 caracteres).');
+      return;
+    }
+
+    // Validación estricta de firmas digitales: nunca vacías
+    if (!firmaChofer || !firmaChofer.trim()) {
+      setErrorMsg('La firma digital del transportista / chofer es obligatoria para emitir el acta de rampa.');
+      return;
+    }
+    if (!firmaReceptor || !firmaReceptor.trim()) {
+      setErrorMsg('La firma digital del responsable de andén es obligatoria para liberar al chofer.');
+      return;
+    }
 
     // Validación de auditoría si ya estaba firmado y liberado
     if (isLiberated && (!motivoCorreccion || motivoCorreccion.trim().length < 5)) {
       setErrorMsg('Este documento ya fue firmado y liberado previamente. Para aplicar cambios debe justificar un motivo de corrección para el historial de auditoría.');
-      return;
-    }
-
-    // Validación de firmas al liberar por primera vez
-    if (!isLiberated && (!firmaChofer || !firmaReceptor)) {
-      setErrorMsg('Debe recabar ambas firmas (Chofer de la unidad y Receptor de andén) para validar el acta de rampa.');
       return;
     }
 
@@ -350,19 +456,31 @@ export function RampArrivalModal({
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
+      // Etiquetado explícito de sello en observaciones para trazabilidad permanente sin ruptura de schema
+      const cleanObs = observacionesRampa.trim();
+      const numSelloVal = (estadoSello === 'NO_APLICA' || estadoSello === 'SIN_SELLO') ? '' : numeroSello.trim();
+      const selloPrefix = `[SELLO: ${estadoSello}${numSelloVal ? ` #${numSelloVal}` : ''}]`;
+      const finalObs = cleanObs
+        ? (cleanObs.includes('[SELLO:') ? cleanObs : `${selloPrefix} ${cleanObs}`)
+        : selloPrefix;
+
       const body = {
         bultosDeclarados: numDeclarados,
         bultosRecibidos: numRecibidos,
         bultosDanados: numDanados,
-        lineaTransporte,
-        capacidadCarga,
-        placa,
-        nombreChofer,
-        andenAsignado,
-        observacionesRampa,
+        lineaTransporte: lineaTransporte.trim(),
+        capacidadCarga: capacidadCarga.trim() || undefined,
+        placa: placa.trim(),
+        nombreChofer: nombreChofer.trim(),
+        andenAsignado: andenAsignado.trim(),
+        estadoSello,
+        sellosIntactos: estadoSello === 'INTACTO',
+        numeroSello: numSelloVal || undefined,
+        observacionesRampa: finalObs,
         firmaChofer,
         firmaReceptor,
-        nombreReceptor,
+        nombreReceptor: nombreReceptor.trim(),
+        usuario: currentUser?.nombre || currentUser?.name || currentUser?.email || nombreReceptor.trim(),
         motivoCorreccion: isLiberated ? motivoCorreccion.trim() : undefined,
       };
 
@@ -785,6 +903,225 @@ export function RampArrivalModal({
                   />
                 </div>
               </div>
+
+              {/* CONTROL PROFESIONAL DE ESTADO DE SELLOS DE SEGURIDAD (SIN DEFAULT) */}
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #E2E8F0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: '#334155' }}>
+                    <ShieldCheck size={16} style={{ color: estadoSello === 'INTACTO' ? '#16A34A' : estadoSello === 'ROTO' ? '#DC2626' : estadoSello === 'SIN_SELLO' ? '#D97706' : estadoSello === 'NO_APLICA' ? '#475569' : '#94A3B8' }} />
+                    Estado del Sello / Precinto de Seguridad *
+                    {!estadoSello && (
+                      <span style={{ fontSize: 10, color: '#DC2626', fontWeight: 600, backgroundColor: '#FEF2F2', padding: '1px 6px', borderRadius: 4, border: '1px solid #FECACA' }}>
+                        Selección requerida
+                      </span>
+                    )}
+                  </label>
+                  <span style={{ fontSize: 10.5, color: '#64748B' }}>
+                    Inspección física exterior de inviolabilidad
+                  </span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                  {/* Opción 1: Intacto */}
+                  <button
+                    type="button"
+                    onClick={() => setEstadoSello('INTACTO')}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: estadoSello === 'INTACTO' ? '2px solid #16A34A' : '1px solid #CBD5E1',
+                      backgroundColor: estadoSello === 'INTACTO' ? '#F0FDF4' : '#FFFFFF',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.15s ease',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 3,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle2 size={16} style={{ color: estadoSello === 'INTACTO' ? '#16A34A' : '#94A3B8' }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: estadoSello === 'INTACTO' ? '#166534' : '#334155' }}>
+                        Intacto / Íntegro
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 9.5, color: estadoSello === 'INTACTO' ? '#15803D' : '#64748B' }}>
+                      Sello verificado con folio
+                    </span>
+                  </button>
+
+                  {/* Opción 2: Roto / Alterado */}
+                  <button
+                    type="button"
+                    onClick={() => setEstadoSello('ROTO')}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: estadoSello === 'ROTO' ? '2px solid #DC2626' : '1px solid #CBD5E1',
+                      backgroundColor: estadoSello === 'ROTO' ? '#FEF2F2' : '#FFFFFF',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.15s ease',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 3,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <AlertTriangle size={16} style={{ color: estadoSello === 'ROTO' ? '#DC2626' : '#94A3B8' }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: estadoSello === 'ROTO' ? '#991B1B' : '#334155' }}>
+                        Roto / Alterado
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 9.5, color: estadoSello === 'ROTO' ? '#B91C1C' : '#64748B' }}>
+                      Violado, forzado o roto
+                    </span>
+                  </button>
+
+                  {/* Opción 3: Sin Sello (Ausente) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEstadoSello('SIN_SELLO');
+                      setNumeroSello('');
+                    }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: estadoSello === 'SIN_SELLO' ? '2px solid #D97706' : '1px solid #CBD5E1',
+                      backgroundColor: estadoSello === 'SIN_SELLO' ? '#FFFBEB' : '#FFFFFF',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.15s ease',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 3,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <AlertCircle size={16} style={{ color: estadoSello === 'SIN_SELLO' ? '#D97706' : '#94A3B8' }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: estadoSello === 'SIN_SELLO' ? '#92400E' : '#334155' }}>
+                        Sin Sello (Ausente)
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 9.5, color: estadoSello === 'SIN_SELLO' ? '#B45309' : '#64748B' }}>
+                      Debía tener sello pero no lo trae
+                    </span>
+                  </button>
+
+                  {/* Opción 4: No Aplica */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEstadoSello('NO_APLICA');
+                      setNumeroSello('');
+                    }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: estadoSello === 'NO_APLICA' ? '2px solid #64748B' : '1px solid #CBD5E1',
+                      backgroundColor: estadoSello === 'NO_APLICA' ? '#F8FAFC' : '#FFFFFF',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.15s ease',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 3,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Layers size={16} style={{ color: estadoSello === 'NO_APLICA' ? '#475569' : '#94A3B8' }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: estadoSello === 'NO_APLICA' ? '#1E293B' : '#334155' }}>
+                        No Aplica Precinto
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 9.5, color: estadoSello === 'NO_APLICA' ? '#475569' : '#64748B' }}>
+                      Unidad abierta o no requerida
+                    </span>
+                  </button>
+                </div>
+
+                {/* Folio de sello condicional y advertencias */}
+                <div style={{ marginTop: 10, display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <div style={{ flex: '1 1 280px' }}>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 3 }}>
+                      {estadoSello === 'NO_APLICA'
+                        ? 'Folio de Sello (No aplica para esta unidad)'
+                        : estadoSello === 'SIN_SELLO'
+                        ? 'Folio de Sello (Opcional - Sello ausente)'
+                        : estadoSello === 'ROTO'
+                        ? 'Folio del Sello Afectado (o "ILEGIBLE") *'
+                        : 'Número / Folio del Sello de Seguridad *'}
+                    </label>
+                    <input
+                      type="text"
+                      value={numeroSello}
+                      onChange={(e) => setNumeroSello(e.target.value)}
+                      disabled={estadoSello === 'NO_APLICA' || !estadoSello}
+                      placeholder={
+                        !estadoSello
+                          ? 'Seleccione primero el estado del sello'
+                          : estadoSello === 'NO_APLICA'
+                          ? 'No aplica precinto por tipo de unidad'
+                          : estadoSello === 'SIN_SELLO'
+                          ? 'N/A (Sello ausente)'
+                          : estadoSello === 'ROTO'
+                          ? 'Folio visible o "ILEGIBLE"'
+                          : 'Ej. MX-889102 (Obligatorio)'
+                      }
+                      style={{
+                        width: '100%',
+                        padding: '7px 10px',
+                        borderRadius: 6,
+                        border: `1px solid ${
+                          (estadoSello === 'INTACTO' || estadoSello === 'ROTO') && !numeroSello
+                            ? '#F59E0B'
+                            : '#CBD5E1'
+                        }`,
+                        backgroundColor:
+                          estadoSello === 'NO_APLICA' || !estadoSello
+                            ? '#F1F5F9'
+                            : (estadoSello === 'INTACTO' || estadoSello === 'ROTO') && !numeroSello
+                            ? '#FFFBEB'
+                            : '#FFFFFF',
+                        color: estadoSello === 'NO_APLICA' || !estadoSello ? '#94A3B8' : '#0F172A',
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        boxSizing: 'border-box',
+                        cursor: estadoSello === 'NO_APLICA' || !estadoSello ? 'not-allowed' : 'text',
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ flex: '2 1 320px', fontSize: 11 }}>
+                    {!estadoSello && (
+                      <span style={{ color: '#D97706', fontWeight: 600 }}>
+                        ⚠️ Seleccione el estado observado para habilitar el registro de la unidad.
+                      </span>
+                    )}
+                    {estadoSello === 'INTACTO' && (
+                      <span style={{ color: '#166534', fontWeight: 600 }}>
+                        Capture el folio alfanumérico visible troquelado en el precinto físico.
+                      </span>
+                    )}
+                    {estadoSello === 'ROTO' && (
+                      <span style={{ color: '#DC2626', fontWeight: 600 }}>
+                        ⚠️ Registre el folio o "ILEGIBLE" y justifique la causa en Observaciones abajo.
+                      </span>
+                    )}
+                    {estadoSello === 'SIN_SELLO' && (
+                      <span style={{ color: '#D97706', fontWeight: 600 }}>
+                        ⚠️ La unidad debía traer sello y llegó abierta/sin precinto. Justifique en Observaciones.
+                      </span>
+                    )}
+                    {estadoSello === 'NO_APLICA' && (
+                      <span style={{ color: '#475569' }}>
+                        Operación o unidad abierta/local que no requiere precinto fiscal o de seguridad.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* SECCIÓN 2: CONTEO GLOBAL Y DAÑOS EXTERIORES */}
@@ -839,26 +1176,29 @@ export function RampArrivalModal({
 
                 <div>
                   <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#0284C7', marginBottom: 4 }}>
-                    Bultos Recibidos
+                    Bultos Recibidos *
                   </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     value={bultosRecibidos}
                     onChange={handleBultosChange(setBultosRecibidos)}
-                    placeholder="0"
+                    placeholder="Captura física en rampa"
                     style={{
                       width: '100%',
                       padding: '10px',
                       borderRadius: 8,
-                      border: '1px solid #38BDF8',
+                      border: `1px solid ${bultosRecibidos === '' ? '#F59E0B' : '#38BDF8'}`,
+                      backgroundColor: bultosRecibidos === '' ? '#FFFBEB' : '#FFFFFF',
                       fontSize: 16,
                       fontWeight: 700,
                       color: '#0284C7',
                       boxSizing: 'border-box',
                     }}
                   />
-                  <span style={{ fontSize: 10, color: '#64748B' }}>Total descargado en rampa</span>
+                  <span style={{ fontSize: 10, color: bultosRecibidos === '' ? '#B45309' : '#64748B', fontWeight: bultosRecibidos === '' ? 600 : 400 }}>
+                    {bultosRecibidos === '' ? 'Conteo físico pendiente' : 'Total descargado en rampa'}
+                  </span>
                 </div>
 
                 <div>
@@ -894,13 +1234,17 @@ export function RampArrivalModal({
                       padding: '10px',
                       borderRadius: 8,
                       backgroundColor:
-                        diferenciaBultos === 0
+                        bultosRecibidos === ''
+                          ? '#F8FAFC'
+                          : diferenciaBultos === 0
                           ? '#F1F5F9'
                           : diferenciaBultos > 0
                           ? '#ECFDF5'
                           : '#FEF2F2',
                       border:
-                        diferenciaBultos === 0
+                        bultosRecibidos === ''
+                          ? '1px dashed #CBD5E1'
+                          : diferenciaBultos === 0
                           ? '1px solid #CBD5E1'
                           : diferenciaBultos > 0
                           ? '1px solid #A7F3D0'
@@ -908,7 +1252,9 @@ export function RampArrivalModal({
                       fontSize: 16,
                       fontWeight: 800,
                       color:
-                        diferenciaBultos === 0
+                        bultosRecibidos === ''
+                          ? '#94A3B8'
+                          : diferenciaBultos === 0
                           ? '#475569'
                           : diferenciaBultos > 0
                           ? '#059669'
@@ -916,9 +1262,9 @@ export function RampArrivalModal({
                       textAlign: 'center',
                     }}
                   >
-                    {diferenciaBultos > 0 ? `+${diferenciaBultos}` : diferenciaBultos}{' '}
+                    {bultosRecibidos === '' ? '—' : diferenciaBultos > 0 ? `+${diferenciaBultos}` : diferenciaBultos}{' '}
                     <span style={{ fontSize: 11, fontWeight: 600 }}>
-                      {diferenciaBultos === 0 ? 'Sin dif.' : diferenciaBultos > 0 ? 'Sobrante' : 'Faltante'}
+                      {bultosRecibidos === '' ? 'Pendiente captura' : diferenciaBultos === 0 ? 'Sin dif.' : diferenciaBultos > 0 ? 'Sobrante' : 'Faltante'}
                     </span>
                   </div>
                   <span style={{ fontSize: 10, color: '#64748B' }}>Recibidos vs Declarados</span>
@@ -931,21 +1277,57 @@ export function RampArrivalModal({
                   marginTop: 12,
                   padding: '10px 14px',
                   borderRadius: 8,
-                  backgroundColor: tieneDiscrepancias ? '#FFFBEB' : '#F0FDF4',
-                  border: `1px solid ${tieneDiscrepancias ? '#FDE68A' : '#BBF7D0'}`,
+                  backgroundColor:
+                    pendienteValidacion
+                      ? '#F8FAFC'
+                      : tieneReservas
+                      ? (estadoSello === 'ROTO' ? '#FEF2F2' : '#FFFBEB')
+                      : '#F0FDF4',
+                  border: `1px solid ${
+                    pendienteValidacion
+                      ? '#CBD5E1'
+                      : tieneReservas
+                      ? (estadoSello === 'ROTO' ? '#FECACA' : '#FDE68A')
+                      : '#BBF7D0'
+                  }`,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 10,
                 }}
               >
-                {tieneDiscrepancias ? (
-                  <AlertTriangle size={18} style={{ color: '#D97706', flexShrink: 0 }} />
+                {pendienteValidacion ? (
+                  <Clock size={18} style={{ color: '#64748B', flexShrink: 0 }} />
+                ) : tieneReservas ? (
+                  estadoSello === 'ROTO' ? (
+                    <AlertCircle size={18} style={{ color: '#DC2626', flexShrink: 0 }} />
+                  ) : (
+                    <AlertTriangle size={18} style={{ color: '#D97706', flexShrink: 0 }} />
+                  )
                 ) : (
                   <CheckCircle2 size={18} style={{ color: '#16A34A', flexShrink: 0 }} />
                 )}
                 <div style={{ fontSize: 12 }}>
-                  <strong style={{ color: tieneDiscrepancias ? '#92400E' : '#166534' }}>
-                    {tieneDiscrepancias ? 'Atención: Carga con Discrepancias / Reservas en Rampa' : 'Carga Conforme en Rampa'}
+                  <strong
+                    style={{
+                      color:
+                        pendienteValidacion
+                          ? '#475569'
+                          : tieneReservas
+                          ? (estadoSello === 'ROTO' ? '#991B1B' : '#92400E')
+                          : '#166534',
+                    }}
+                  >
+                    {pendienteValidacion
+                      ? 'Pendiente de validación física en rampa'
+                      : tieneReservas
+                      ? (estadoSello === 'ROTO'
+                          ? 'Carga recibida con reservas (Sello Roto o Alterado)'
+                          : estadoSello === 'SIN_SELLO'
+                          ? 'Carga recibida con reservas (Unidad Sin Sello Requerido)'
+                          : 'Carga recibida con reservas (Discrepancias / Daños)')
+                      : estadoSello === 'NO_APLICA'
+                      ? 'Carga Conforme en Rampa (Unidad sin sellos requeridos)'
+                      : 'Carga Conforme en Rampa (Sellos y empaques íntegros)'}
                   </strong>
                   <div style={{ color: '#64748B' }}>
                     Leyenda que firmará el transportista:{' '}
@@ -956,19 +1338,50 @@ export function RampArrivalModal({
 
               {/* OBSERVACIONES */}
               <div style={{ marginTop: 12 }}>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 4 }}>
-                  Observaciones de Rampa (Estado de empaques, sello roto, estiba caída, etc.)
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: (estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO' || (tieneReservas && !pendienteValidacion)) ? '#DC2626' : '#64748B',
+                    marginBottom: 4,
+                  }}
+                >
+                  Observaciones de Rampa{' '}
+                  {estadoSello === 'ROTO'
+                    ? '(Obligatorio por Sello Roto / Alterado) *'
+                    : estadoSello === 'SIN_SELLO'
+                    ? '(Obligatorio por Sello Ausente) *'
+                    : tieneReservas && !pendienteValidacion
+                    ? '(Obligatorio por Reservas en Carga) *'
+                    : '(Estado de empaques, sello, estiba caída, etc.)'}
                 </label>
                 <textarea
                   rows={2}
                   value={observacionesRampa}
                   onChange={(e) => setObservacionesRampa(e.target.value)}
-                  placeholder="Detallar cualquier condición física observada durante la descarga exterior..."
+                  placeholder={
+                    estadoSello === 'ROTO'
+                      ? 'Obligatorio: Detallar anomalía del sello, cerrojo y condición de arribo de la unidad...'
+                      : estadoSello === 'SIN_SELLO'
+                      ? 'Obligatorio: Justificar por qué la unidad arriba sin precinto y autorización de apertura...'
+                      : tieneReservas && !pendienteValidacion
+                      ? 'Obligatorio: Describir causas de las reservas, bultos dañados o diferencias detectadas...'
+                      : 'Detallar cualquier condición física observada durante la descarga exterior...'
+                  }
                   style={{
                     width: '100%',
                     padding: '8px 10px',
                     borderRadius: 6,
-                    border: '1px solid #CBD5E1',
+                    border: `1px solid ${
+                      (estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO' || (tieneReservas && !pendienteValidacion)) && (!observacionesRampa || observacionesRampa.trim().length < 5)
+                        ? '#F87171'
+                        : '#CBD5E1'
+                    }`,
+                    backgroundColor:
+                      (estadoSello === 'ROTO' || estadoSello === 'SIN_SELLO' || (tieneReservas && !pendienteValidacion)) && (!observacionesRampa || observacionesRampa.trim().length < 5)
+                        ? '#FFF5F5'
+                        : '#FFFFFF',
                     fontSize: 12,
                     boxSizing: 'border-box',
                     resize: 'vertical',
@@ -1053,10 +1466,10 @@ export function RampArrivalModal({
                       marginTop: 6,
                       fontSize: 10.5,
                       fontWeight: 600,
-                      color: tieneDiscrepancias ? '#B45309' : '#15803D',
+                      color: tieneReservas ? '#B45309' : '#15803D',
                       textAlign: 'center',
                       padding: '4px',
-                      backgroundColor: tieneDiscrepancias ? '#FFFBEB' : '#F0FDF4',
+                      backgroundColor: tieneReservas ? '#FFFBEB' : '#F0FDF4',
                       borderRadius: 4,
                     }}
                   >
@@ -1300,26 +1713,29 @@ export function RampArrivalModal({
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || !estadoSello}
                   style={{
                     padding: '9px 22px',
                     borderRadius: 8,
                     fontSize: 13,
                     fontWeight: 700,
-                    backgroundColor: '#0D9488',
-                    border: '1px solid #0D9488',
+                    backgroundColor: (!estadoSello || submitting) ? '#94A3B8' : '#0D9488',
+                    border: `1px solid ${(!estadoSello || submitting) ? '#94A3B8' : '#0D9488'}`,
                     color: '#FFFFFF',
-                    cursor: submitting ? 'not-allowed' : 'pointer',
+                    cursor: (!estadoSello || submitting) ? 'not-allowed' : 'pointer',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 6,
-                    boxShadow: '0 2px 4px rgba(13,148,136,0.25)',
-                    opacity: submitting ? 0.7 : 1,
+                    boxShadow: (!estadoSello || submitting) ? 'none' : '0 2px 4px rgba(13,148,136,0.25)',
+                    opacity: submitting ? 0.7 : (!estadoSello ? 0.8 : 1),
                   }}
+                  title={!estadoSello ? 'Debe seleccionar el estado del sello para habilitar la liberación' : ''}
                 >
                   <Save size={15} />
                   {submitting
                     ? 'Procesando...'
+                    : !estadoSello
+                    ? 'Seleccione Estado de Sello'
                     : isLiberated
                     ? 'Guardar Corrección Auditada'
                     : 'Guardar y Liberar Chofer'}

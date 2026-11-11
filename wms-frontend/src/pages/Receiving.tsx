@@ -29,6 +29,7 @@ import {
   formatDateTime,
   WAREHOUSE_TIMEZONE
 } from '../utils/dateUtils';
+import { classifyQualityOutcome } from '../utils/qualityReportClassification';
 
 interface PrevioForm {
   clienteId: string;
@@ -195,6 +196,66 @@ export const DEFAULT_DISCREPANCY_JUSTIFICATIONS: Record<string, string> = {
   DIFERENCIA_DOCUMENTAL: 'Discrepancia originada por error administrativo documental o cruce de órdenes de compra',
   OTRO_JUSTIFICADO: 'Diferencia física justificada y autorizada por la supervisión operativa de almacén',
 };
+
+function getLocalCalendarYmd(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function isValidCalendarYmd(ymd: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
+export function validateLineAndenTraceability(params: {
+  clientObj: any;
+  line: any;
+  loteVal: string;
+  caducidadVal: string;
+  businessYmd?: string;
+}) {
+  const { clientObj, line, loteVal, caducidadVal } = params;
+  const sku = line?.sku;
+  const isGiroRegulado = clientObj?.giro === 'COMIDA' || clientObj?.giro === 'FARMACEUTICO';
+  const reqLote = Boolean(clientObj?.requiereLote || isGiroRegulado || sku?.requiereLote);
+  const reqCaducidad = Boolean(clientObj?.requiereCaducidad || isGiroRegulado || sku?.requiereCaducidad);
+
+  const cleanLot = String(loteVal || '').trim();
+  const isSentinelLot = ['S/LOTE', 'S/L', 'SIN LOTE', 'N/A', 'NA', 'NULL', 'UNDEFINED'].includes(cleanLot.toUpperCase());
+  const missingLote = reqLote && (!cleanLot || isSentinelLot);
+
+  const cleanCad = String(caducidadVal || '').trim();
+  const missingCaducidad = reqCaducidad && !cleanCad;
+  const invalidCaducidad = Boolean(cleanCad) && !isValidCalendarYmd(cleanCad);
+  const todayYmd = params.businessYmd || getLocalCalendarYmd();
+  const expiredCaducidad = Boolean(cleanCad) && !invalidCaducidad && cleanCad <= todayYmd;
+
+  const skuLabel = sku?.codigo || line?.skuId || 'Partida';
+  const errors: string[] = [];
+  if (missingLote) errors.push(`${skuLabel}: Lote obligatorio`);
+  if (missingCaducidad) errors.push(`${skuLabel}: Caducidad obligatoria`);
+  if (invalidCaducidad) errors.push(`${skuLabel}: Fecha de caducidad inválida`);
+  if (expiredCaducidad) errors.push(`${skuLabel}: Fecha vencida (${cleanCad})`);
+
+  return {
+    reqLote,
+    reqCaducidad,
+    missingLote,
+    missingCaducidad,
+    invalidCaducidad,
+    expiredCaducidad,
+    hasCaducidadError: missingCaducidad || invalidCaducidad || expiredCaducidad,
+    isValid: errors.length === 0,
+    errors,
+  };
+}
 
 const demoReceipts = [
   {
@@ -535,35 +596,73 @@ export function buildReceiptTimeline(
     });
   }
 
-  // 5. INSPECCIÓN DE CALIDAD Y DICTAMEN (RESCATE / MERMA)
-  const auditCalidad = findLastAudit(['INSPECCION_CALIDAD_REACONDICIONAMIENTO', 'DICTAMEN_CALIDAD']);
+  // 5. INSPECCIÓN Y LIBERACIÓN DE CALIDAD (CONFORME EN ANDÉN / RESCATE / MERMA)
+  const auditCalidad = findLastAudit(['INSPECCION_CALIDAD_REACONDICIONAMIENTO', 'DICTAMEN_CALIDAD', 'DICTAMEN_CALIDAD_LIBERADO']);
   const insp = (receipt.inspecciones && receipt.inspecciones.length > 0) ? receipt.inspecciones[0] : (receipt.qualityInspections?.[0] || null);
   const isCalidadDone = Boolean(auditCalidad || insp || receipt.inspeccionCalidadEstado === 'COMPLETADA');
   if (isCalidadDone) {
     const fol = insp?.folio || (receipt.codigo ? `DICTAMEN-${receipt.codigo}` : 'DICTAMEN-CALIDAD');
-    const inspTot = insp?.totalPiezasInspeccionadas ?? (Number(receipt.bultosDanados || 0) * (receipt.lineas?.[0]?.sku?.capacidadEmpaque || receipt.piezasPorCajaEsperadas || 0));
-    const inspRes = insp?.totalPiezasRescatadas ?? inspTot;
-    const inspMer = insp?.totalPiezasMerma ?? 0;
+    const totalConfLineas = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadRecibida || 0), 0);
+    const totalMermaLineas = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadDanada || 0), 0);
+    const boxHusTimeline = allHus.filter((h: any) => h.tipoHu === 'CAJA');
+    const hasDamagedTimeline = Boolean(
+      Number(receipt.bultosDanados || 0) > 0 ||
+      damagedHu ||
+      boxHusTimeline.some((h: any) => h.estadoHu === 'INACTIVO' || h.estadoHu === 'DAÑADO' || h.codigo?.includes('DANO')),
+    );
+    const hasMermaTimeline = Boolean(
+      totalMermaLineas > 0 ||
+      boxHusTimeline.some((h: any) => h.codigo?.includes('MERMA') || h.codigo?.startsWith('HU-NC-') || h.ubicacionActual === 'DEV-01'),
+    );
+    const qOutcome = classifyQualityOutcome({
+      qiRecord: insp,
+      bultosDanados: Number(receipt.bultosDanados || 0),
+      bultosRecibidos: Number(receipt.bultosRecibidos || 0),
+      totalConformePiezas: totalConfLineas,
+      totalMermaPiezas: totalMermaLineas,
+      boxHus: boxHusTimeline,
+      hasDamagedBoxes: hasDamagedTimeline,
+      hasMerma: hasMermaTimeline,
+      originDamagedBox: damagedHu || null,
+    });
+    const inspTot = qOutcome.piezasInspeccionadas || totalConfLineas;
+    const inspRes = qOutcome.piezasRescatadas;
+    const inspMer = qOutcome.piezasMerma;
+    const isCleanLib = qOutcome.isConformingCleanLiberation || (!insp && !hasDamagedTimeline && !hasMermaTimeline);
+
     events.push({
       id: 'evt-calidad',
       fase: 'CALIDAD',
       fecha: insp?.fechaInspeccion || auditCalidad?.createdAt || insp?.createdAt || receipt.updatedAt,
-      titulo: `Inspección de Calidad completada (Dictamen ${fol})`,
-      subtitulo: `Revisión técnica de ${inspTot} piezas: ${inspRes} piezas rescatadas/reacondicionadas en caja activa · ${inspMer} piezas de merma dictaminada fuera de stock${insp?.observaciones ? ` · ${insp.observaciones}` : ''}`,
+      titulo: isCleanLib
+        ? `Liberación Técnica de Calidad completada (Dictamen ${fol})`
+        : `Inspección de Calidad completada (Dictamen ${fol})`,
+      subtitulo: isCleanLib
+        ? `Verificación conforme en andén de ${inspTot} piezas (${qOutcome.piezasConformesAnden || inspTot} conformes · 0 rescatadas · 0 merma · ${qOutcome.dictamenOperativo})${insp?.observaciones ? ` · ${insp.observaciones}` : ''}`
+        : `Revisión técnica de ${inspTot} piezas: ${inspRes} piezas rescatadas/reacondicionadas en caja activa · ${inspMer} piezas de merma dictaminada fuera de stock${insp?.observaciones ? ` · ${insp.observaciones}` : ''}`,
       actor: insp?.inspectorNombre || auditCalidad?.usuario || receipt.recibidoPor || 'Inspector de Calidad',
       tipo: 'CALIDAD',
-      color: '#7C3AED',
-      borderColor: '#DDD6FE',
-      bgColor: '#F5F3FF',
-      badgeText: `Dictamen ${fol}`,
-      badgeBg: '#EDE9FE',
-      badgeColor: '#6D28D9',
-      detalles: auditCalidad?.detalle || `Dictamen ${fol}: ${inspRes} piezas conformes rescatadas, ${inspMer} piezas de merma dictaminada fuera de stock.`,
-      metrics: [
-        { label: 'Inspeccionadas', value: `${inspTot} pz` },
-        { label: 'Rescatadas', value: `${inspRes} pz`, color: '#059669' },
-        { label: 'Merma Dictaminada', value: `${inspMer} pz`, color: '#DC2626' }
-      ]
+      color: isCleanLib ? '#059669' : '#7C3AED',
+      borderColor: isCleanLib ? '#A7F3D0' : '#DDD6FE',
+      bgColor: isCleanLib ? '#ECFDF5' : '#F5F3FF',
+      badgeText: isCleanLib ? `Dictamen ${fol} · LIBERADO` : `Dictamen ${fol}`,
+      badgeBg: isCleanLib ? '#D1FAE5' : '#EDE9FE',
+      badgeColor: isCleanLib ? '#065F46' : '#6D28D9',
+      detalles: auditCalidad?.detalle || (isCleanLib
+        ? `Dictamen ${fol}: ${qOutcome.piezasConformesAnden || inspTot} piezas conformes liberadas en andén (0 rescatadas, 0 merma).`
+        : `Dictamen ${fol}: ${inspRes} piezas conformes rescatadas, ${inspMer} piezas de merma dictaminada fuera de stock.`),
+      metrics: isCleanLib
+        ? [
+            { label: 'Inspeccionadas', value: `${inspTot} pz` },
+            { label: 'Conformes Andén', value: `${qOutcome.piezasConformesAnden || inspTot} pz`, color: '#059669' },
+            { label: 'Rescatadas', value: '0 pz' },
+            { label: 'Merma Dictaminada', value: '0 pz' },
+          ]
+        : [
+            { label: 'Inspeccionadas', value: `${inspTot} pz` },
+            { label: 'Rescatadas', value: `${inspRes} pz`, color: '#059669' },
+            { label: 'Merma Dictaminada', value: `${inspMer} pz`, color: '#DC2626' },
+          ]
     });
   }
 
@@ -757,7 +856,7 @@ export function buildReceiptTimeline(
   }
 
   // 11. CIERRE OFICIAL DE RECEPCIÓN (SI YA SE EJECUTÓ)
-  const auditCierre = findLastAudit(['CIERRE_RECEPCION']);
+  const auditCierre = findLastAudit(['CERRAR_RECEPCION', 'CIERRE_RECEPCION']);
   const isCerrado = Boolean(auditCierre || receipt.fechaCierre || receipt.estado === 'CERRADO' || receipt.estado === 'CERRADA');
   if (isCerrado) {
     const totalConf = (receipt.lineas || []).reduce((s: number, l: any) => s + Number(l.cantidadRecibida || 0), 0);
@@ -1020,7 +1119,9 @@ export function Receiving() {
 
   async function handleSaveAndenReconciliation(receipt: any) {
     const draftForReceipt = andenDrafts[receipt.id] || {};
+    const clientObj = clients.find(c => c.id === receipt.clienteId) || receipt.cliente;
     const linesPayload: any[] = [];
+    const traceabilityErrors: string[] = [];
 
     for (const l of (receipt.lineas || [])) {
       const lineDraft = draftForReceipt[l.id];
@@ -1049,12 +1150,27 @@ export function Receiving() {
         }
       }
 
+      const loteClean = (lineDraft?.lote !== undefined ? lineDraft.lote : (l.loteAsignado || l.loteEsperado || l.lote || '')).trim();
+      const cadClean = lineDraft?.fechaVencimiento !== undefined ? lineDraft.fechaVencimiento : (l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : '');
+
+      if (cSanas > 0 || pSanas > 0 || lineRescuedPieces > 0) {
+        const check = validateLineAndenTraceability({
+          clientObj,
+          line: l,
+          loteVal: loteClean,
+          caducidadVal: cadClean,
+        });
+        if (!check.isValid) {
+          traceabilityErrors.push(...check.errors);
+        }
+      }
+
       linesPayload.push({
         receiptLineId: l.id,
         cajasSanas: cSanas,
         piezasSanas: pSanas,
-        lote: (lineDraft?.lote !== undefined ? lineDraft.lote : (l.loteAsignado || l.loteEsperado || l.lote || '')).trim(),
-        fechaVencimiento: lineDraft?.fechaVencimiento !== undefined ? lineDraft.fechaVencimiento : (l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : ''),
+        lote: loteClean,
+        fechaVencimiento: cadClean,
       });
     }
 
@@ -1065,6 +1181,14 @@ export function Receiving() {
       setAndenErrorBanner({
         receiptId: receipt.id,
         text: 'Debes capturar al menos una cantidad mayor a 0 en las partidas sanas de andén antes de guardar la conciliación.',
+      });
+      return;
+    }
+
+    if (traceabilityErrors.length > 0) {
+      setAndenErrorBanner({
+        receiptId: receipt.id,
+        text: `Trazabilidad obligatoria incompleta o inválida: ${traceabilityErrors.join(' · ')}. Captura un Lote y Fecha de Caducidad vigente antes de conciliar.`,
       });
       return;
     }
@@ -1088,7 +1212,7 @@ export function Receiving() {
 
       setAndenSuccessBanner({
         receiptId: receipt.id,
-        text: resData.message || `¡Conteo de andén conciliado exitosamente! (${totalCajasCapturadas} bultos sanos registrados, ${totalPiezasCapturadas} pzas conformes adicionales).`,
+        text: resData.message || `¡Conteo de andén conciliado exitosamente! (${totalCajasCapturadas} bultos sanos registrados, ${totalPiezasCapturadas} pzas conformes contabilizadas).`,
       });
 
       setShowAndenCapture(false);
@@ -6021,11 +6145,13 @@ export function Receiving() {
                         };
 
                         // Cálculos acumulados en vivo a partir de las entradas del usuario y dictámenes previos
+                        const currentClientObj = clients.find((c: any) => c.id === currentReceipt.clienteId) || currentReceipt.cliente;
                         let sumCajasSanasDraft = 0;
                         let sumPiezasSanasDraft = 0;
                         let sumRescatadasPrevias = 0;
                         let sumMermaPrevias = 0;
                         let sumEsperadasTotal = 0;
+                        const traceabilityBlockingErrors: string[] = [];
 
                         linesList.forEach((l: any) => {
                           const factor = Number(l.sku?.capacidadEmpaque || l.sku?.piezasPorCaja || (l.sku?.codigo?.includes('ACE') ? 12 : l.sku?.codigo?.includes('ARR') ? 20 : 1)) || 1;
@@ -6054,12 +6180,27 @@ export function Receiving() {
                             ? draft.piezasSanas
                             : (isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0 ? defaultPiezas : '');
 
+                          const linePiezas = typeof pItem === 'number' ? pItem : (typeof cItem === 'number' ? cItem * factor : 0);
                           if (typeof cItem === 'number') {
                             sumCajasSanasDraft += cItem;
-                            sumPiezasSanasDraft += (typeof pItem === 'number' ? pItem : cItem * factor);
+                            sumPiezasSanasDraft += linePiezas;
                           } else if (typeof pItem === 'number') {
                             sumPiezasSanasDraft += pItem;
                             sumCajasSanasDraft += Math.round(pItem / factor);
+                          }
+
+                          if (linePiezas > 0 || lineRescuedPieces > 0) {
+                            const loteValLoop = draft?.lote !== undefined ? draft.lote : (l.loteAsignado || l.loteEsperado || l.lote || '');
+                            const cadValLoop = draft?.fechaVencimiento !== undefined ? draft.fechaVencimiento : (l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : '');
+                            const traceLoop = validateLineAndenTraceability({
+                              clientObj: currentClientObj,
+                              line: l,
+                              loteVal: loteValLoop,
+                              caducidadVal: cadValLoop,
+                            });
+                            if (!traceLoop.isValid) {
+                              traceabilityBlockingErrors.push(...traceLoop.errors);
+                            }
                           }
                         });
 
@@ -6202,6 +6343,13 @@ export function Receiving() {
                                     const totalRecibidasLinea = totalConformesLinea + lineMermaPieces;
                                     const faltanteLinea = Math.max(0, esp - totalRecibidasLinea);
                                     const hasUserTyped = typeof cVal === 'number' || typeof pVal === 'number' || isAndenConteoCompleted || Number(l.cantidadRecibida || 0) > 0;
+                                    const isLineActiveCount = pSanasCalc > 0 || lineRescuedPieces > 0;
+                                    const traceCheck = validateLineAndenTraceability({
+                                      clientObj: currentClientObj,
+                                      line: l,
+                                      loteVal,
+                                      caducidadVal,
+                                    });
 
                                     return (
                                       <tr key={l.id || lineIdx} style={{ borderBottom: '1px solid #E2E8F0', background: lineIdx % 2 === 0 ? '#FFFFFF' : '#FAFAFA' }}>
@@ -6352,31 +6500,67 @@ export function Receiving() {
                                         {/* Lote y Caducidad */}
                                         <td style={{ padding: '10px 12px' }}>
                                           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                            <input
-                                              type="text"
-                                              placeholder="Lote..."
-                                              value={loteVal}
-                                              onChange={(e) => handleAndenDraftChange(currentReceipt.id, l.id, 'lote', e.target.value, factor)}
-                                              style={{
-                                                padding: '4px 8px',
-                                                fontSize: 11.5,
-                                                borderRadius: 4,
-                                                border: '1px solid #CBD5E1',
-                                                background: '#FFFFFF',
-                                              }}
-                                            />
-                                            <input
-                                              type="date"
-                                              value={caducidadVal}
-                                              onChange={(e) => handleAndenDraftChange(currentReceipt.id, l.id, 'fechaVencimiento', e.target.value, factor)}
-                                              style={{
-                                                padding: '4px 8px',
-                                                fontSize: 11,
-                                                borderRadius: 4,
-                                                border: '1px solid #CBD5E1',
-                                                background: '#FFFFFF',
-                                              }}
-                                            />
+                                            <div>
+                                              <input
+                                                id={`input-anden-lote-${lineIdx}`}
+                                                type="text"
+                                                placeholder={traceCheck.reqLote ? 'Lote obligatorio *' : 'Lote (opcional)...'}
+                                                value={loteVal}
+                                                onChange={(e) => handleAndenDraftChange(currentReceipt.id, l.id, 'lote', e.target.value, factor)}
+                                                style={{
+                                                  width: '100%',
+                                                  padding: '4px 8px',
+                                                  fontSize: 11.5,
+                                                  borderRadius: 4,
+                                                  border: (traceCheck.missingLote && isLineActiveCount)
+                                                    ? '1.5px solid #EF4444'
+                                                    : traceCheck.missingLote
+                                                    ? '1.5px solid #F59E0B'
+                                                    : '1px solid #CBD5E1',
+                                                  background: (traceCheck.missingLote && isLineActiveCount) ? '#FEF2F2' : '#FFFFFF',
+                                                  boxSizing: 'border-box',
+                                                }}
+                                              />
+                                              {traceCheck.missingLote && (
+                                                <div style={{ fontSize: 10, fontWeight: 700, color: isLineActiveCount ? '#DC2626' : '#B45309', marginTop: 1 }}>
+                                                  * Lote obligatorio requerido
+                                                </div>
+                                              )}
+                                            </div>
+                                            <div>
+                                              <input
+                                                id={`input-anden-caducidad-${lineIdx}`}
+                                                type="date"
+                                                value={caducidadVal}
+                                                onChange={(e) => handleAndenDraftChange(currentReceipt.id, l.id, 'fechaVencimiento', e.target.value, factor)}
+                                                style={{
+                                                  width: '100%',
+                                                  padding: '4px 8px',
+                                                  fontSize: 11,
+                                                  borderRadius: 4,
+                                                  border: ((traceCheck.hasCaducidadError && isLineActiveCount) || traceCheck.expiredCaducidad || traceCheck.invalidCaducidad)
+                                                    ? '1.5px solid #EF4444'
+                                                    : traceCheck.missingCaducidad
+                                                    ? '1.5px solid #F59E0B'
+                                                    : '1px solid #CBD5E1',
+                                                  background: ((traceCheck.hasCaducidadError && isLineActiveCount) || traceCheck.expiredCaducidad || traceCheck.invalidCaducidad) ? '#FEF2F2' : '#FFFFFF',
+                                                  boxSizing: 'border-box',
+                                                }}
+                                              />
+                                              {traceCheck.expiredCaducidad ? (
+                                                <div style={{ fontSize: 10, fontWeight: 700, color: '#DC2626', marginTop: 1 }}>
+                                                  * Producto vencido (debe ser posterior a hoy)
+                                                </div>
+                                              ) : traceCheck.invalidCaducidad ? (
+                                                <div style={{ fontSize: 10, fontWeight: 700, color: '#DC2626', marginTop: 1 }}>
+                                                  * Fecha de caducidad inválida
+                                                </div>
+                                              ) : traceCheck.missingCaducidad ? (
+                                                <div style={{ fontSize: 10, fontWeight: 700, color: isLineActiveCount ? '#DC2626' : '#B45309', marginTop: 1 }}>
+                                                  * Caducidad obligatoria requerida
+                                                </div>
+                                              ) : null}
+                                            </div>
                                           </div>
                                         </td>
                                       </tr>
@@ -6490,6 +6674,28 @@ export function Receiving() {
                               </div>
                             </div>
 
+                            {/* ALERTA DE TRAZABILIDAD OBLIGATORIA INCOMPLETA */}
+                            {traceabilityBlockingErrors.length > 0 && (
+                              <div style={{
+                                background: '#FEF2F2',
+                                border: '1px solid #FECACA',
+                                color: '#991B1B',
+                                padding: '10px 14px',
+                                borderRadius: 8,
+                                marginBottom: 12,
+                                fontSize: 12.5,
+                                fontWeight: 600,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                              }}>
+                                <AlertTriangle size={16} style={{ color: '#DC2626', flexShrink: 0 }} />
+                                <div>
+                                  <strong>Trazabilidad obligatoria pendiente:</strong> {traceabilityBlockingErrors.join(' · ')}. Capture Lote y Fecha de Caducidad vigente por partida antes de conciliar.
+                                </div>
+                              </div>
+                            )}
+
                             {/* BOTONES DE ACCIÓN: GUARDAR Y CONCILIAR */}
                             <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
                               <button
@@ -6504,11 +6710,18 @@ export function Receiving() {
                                 type="button"
                                 id="btn-guardar-conteo-anden"
                                 onClick={() => handleSaveAndenReconciliation(currentReceipt)}
-                                disabled={savingAnden || (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0)}
+                                disabled={savingAnden || (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) || traceabilityBlockingErrors.length > 0}
+                                title={
+                                  traceabilityBlockingErrors.length > 0
+                                    ? `Faltan datos obligatorios: ${traceabilityBlockingErrors.join('; ')}`
+                                    : (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0)
+                                    ? 'Capture las cantidades físicas en andén'
+                                    : 'Guardar y conciliar conteo físico en andén'
+                                }
                                 className="btn btn-primary"
                                 style={{
-                                  background: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? '#94A3B8' : '#0284C7',
-                                  borderColor: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? '#94A3B8' : '#0284C7',
+                                  background: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) || traceabilityBlockingErrors.length > 0 ? '#94A3B8' : '#0284C7',
+                                  borderColor: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) || traceabilityBlockingErrors.length > 0 ? '#94A3B8' : '#0284C7',
                                   padding: '10px 22px',
                                   fontSize: 13.5,
                                   fontWeight: 800,
@@ -6516,8 +6729,8 @@ export function Receiving() {
                                   display: 'inline-flex',
                                   alignItems: 'center',
                                   gap: 8,
-                                  boxShadow: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? 'none' : '0 2px 8px rgba(2,132,199,0.3)',
-                                  cursor: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) ? 'not-allowed' : 'pointer',
+                                  boxShadow: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) || traceabilityBlockingErrors.length > 0 ? 'none' : '0 2px 8px rgba(2,132,199,0.3)',
+                                  cursor: (sumCajasSanasDraft === 0 && sumPiezasSanasDraft === 0) || traceabilityBlockingErrors.length > 0 ? 'not-allowed' : 'pointer',
                                 }}
                               >
                                 {savingAnden ? (
@@ -7176,7 +7389,9 @@ export function Receiving() {
                           </p>
                           <div style={{ fontSize: 11.5, color: '#64748B', lineHeight: 1.6, background: '#FFFFFF', padding: 10, borderRadius: 6, border: '1px solid #E2E8F0' }}>
                             <div>Etiquetas disponibles: <strong style={{ color: '#0F172A' }}>{activasCount + (palletHu ? 1 : 0)} ({activasCount} {activasCount === 1 ? 'caja' : 'cajas'} + {palletHu ? 1 : 0} {palletHu ? 'Tarima Master' : 'Tarimas'})</strong></div>
-                            <div>Tarima Master: <strong>{palletHu ? palletHu.codigo : 'Generada'}</strong></div>
+                            {palletHu && (
+                              <div>Tarima Master: <strong>{palletHu.codigo}</strong></div>
+                            )}
                             <div>Cajas conformes en inventario: <strong>{activasCount} etiquetas</strong></div>
                             <div>Formato térmico: <strong>100x50 mm / 100x150 mm</strong></div>
                           </div>

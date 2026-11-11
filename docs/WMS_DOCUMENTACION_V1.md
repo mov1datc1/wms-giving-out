@@ -710,7 +710,7 @@ npm run build          # Build completo
 
 ## 14. Roadmap
 
-### ✅ v1.0 — Fase 1: Core WMS (Actual)
+### ✅ v1.0 — Fase 1: Core WMS
 - [x] Autenticación JWT + RBAC
 - [x] Multi-tenant (clientes con inventario segregado)
 - [x] Recepción con auto-putaway
@@ -722,6 +722,43 @@ npm run build          # Build completo
 - [x] Trazabilidad completa
 - [x] Dashboard con KPIs
 - [x] Panel de administración
+
+---
+
+## 15. Actualización Arquitectural y Operativa — Fase 3 (Layout Físico Real y Cierre E2E)
+
+**Estado:** Certificada en integración E2E (`2026-11-11`) y promovida a `dev` para QA integral.
+
+### 15.1 Layout Físico Oficial del Almacén (`G0001`–`G0045`)
+- **45 Posiciones Físicas Operativas (`TARIMA_PISO`):**
+  - **35 posiciones en Área Interior:** `G0001`–`G0035`.
+  - **10 posiciones en Exterior Techado:** `G0036`–`G0045`.
+- **Posiciones Designadas PNC (`G0036`, `G0041`, `G0042`):** Reservadas inicialmente para Producto No Conforme / Merma, excluidas del Putaway comercial y con mutabilidad bidireccional Comercial $\leftrightarrow$ PNC protegida mediante `PATCH /api/locations/:id/pnc-designation` (validación estricta de saldo/HUs, JWT + RBAC nivel supervisor y asiento en `AuditLog`).
+- **6 Áreas Especiales Activas:** `REC-01`, `REC-02` (`RECIBO`), `STG-01`, `STG-02` (`STAGING`), `DEV-01` (`PISO`) y `NC-EXCESO-01` (`CUARENTENA`).
+- **48 Racks Históricos (`Axx/Bxx`):** Desactivados (`activo = false`) y aislados exclusivamente en la pestaña histórica de `/locations` (`Locations.tsx`) para preservar trazabilidad sin interferir con Putaway, Picking o disponibilidad comercial.
+
+### 15.2 Regla Física de Capacidad y Jerarquía de Handling Units
+- **Capacidad Canónica (`1 posición física = 1 tarima`):** Toda posición `Gxxxx` tiene capacidad física estricta `capacidadBultos = 1`.
+- **Tarima Master (`PALLET` / `TARIMA`) como Contenedor Logístico Padre:** Agrupa cajas hijas (`CAJA`) mediante `parentHuId` (`PLT-...` $\rightarrow$ `BOX-...`).
+  - `PutawayEngineService` (`putaway-engine.service.ts`) reconoce consolidación sobre la misma Tarima Master (`isSamePalletConsolidation`) y excluye ubicaciones PNC.
+  - En UI (`locationHuDisplay.ts`, `Locations.tsx`, `PutawayModal.tsx`), las Tarimas Master se muestran como contenedor logístico (`Contenedor de N cajas`) y **no** suman unidades al stock físico ni generan falsas alertas de discrepancia frente a `LotInventory`.
+
+### 15.3 Hardening End-to-End de Recepción, Calidad, Etiquetado, Putaway y Cierre
+- **Trazabilidad Obligatoria Lote / Caducidad (`inventory-operational-state.util.ts`):** `resolveTraceabilityRequirements`, `isMissingLotValue`, `parseStrictCalendarDate` y `validateMandatoryLotAndExpiry` bloquean faltantes de lote o centinelas inválidos, formatos de fecha erróneos y producto caducado (`exp <= hoy`) en previo, conciliación, etiquetado, Putaway y cierre.
+- **Control en Rampa y Etiquetado (`Receiving.tsx`, `RampArrivalModal.tsx`, `DualLabelModal.tsx`):** Validación explícita sin sello por defecto (`INTACTO`, `ROTO`, `SIN_SELLO`, `NO_APLICA`), firmas legales y reflejo exacto del andén asignado (`Andén 01`, vía `receipt.andenAsignado`) en etiquetas térmicas.
+- **Calidad Conforme vs. Rescate Real (`operations.controller.ts`, `qualityReportClassification.ts`, `ReceiptReportModal.tsx`, `QualityInspectionModal.tsx`):**
+  - Las liberaciones 100% conformes en andén registran `totalPiezasRescatadas = 0` y `totalPiezasInspeccionadas = conformes`.
+  - Reporte Principal, Firma 2 y Anexo B distinguen *Liberación Técnica de Calidad en Andén (`LIBERADO / CONFORME`)* de *Inspección / Reacondicionamiento por Daño*, conservando compatibilidad histórica sin alterar datos en BD.
+- **Cierre Atómico e Idempotente (`POST /api/receipts/:id/close`) y `AuditLog`:** Bloquea cierre si faltan etapas (conteo, calidad, etiquetas), HUs comerciales, `LotInventory` balanceado, ubicación almacenable, lote/caducidad vigentes o clasificación de discrepancias; mantiene idempotencia sobre stock/movimientos y genera el asiento `CERRAR_RECEPCION` en `AuditLog`.
+
+### 15.4 Inventario, Ubicaciones y Trazabilidad / Kárdex
+- **Renderizado Calendar-Day (`dateUtils.ts`, `traceabilityDisplay.ts`, `Traceability.tsx`, `PutawayModal.tsx`):** Todas las vistas críticas (`Inventario`, `Ubicaciones`, `Picking`/`OrderPreparationModal`, `Reportes`, `Putaway` y `Trazabilidad` + CSV) formatean fechas de caducidad como día calendario (`2027-06-30` $\rightarrow$ `30/06/2027`), eliminando desfases `-1` día por huso UTC local.
+- **Terminología `posición física` vs `rack` Histórico (`inventory.controller.ts`, `operations.controller.ts`, `traceabilityDisplay.ts`):** `GET /api/inventory/movements` incluye `tipoUbicacion`; los nuevos movimientos usan `formatDestinationLocationPhrase` (`en posición física <CODIGO>` en `TARIMA_PISO` vs `a rack <CODIGO>` en `ESTANTERIA`/`RACK`), mientras la UI formatea descripciones históricas heredadas sin mutar registros inmutables de `InventoryMovement`.
+
+### 15.5 Validación Automatizada, Evidencia E2E y Baseline Pre-QA
+- **Suites Jest Backend (`5/5 suites`, `32/32 tests PASS`):** `putaway-engine.service.spec.ts`, `receipt-closure.spec.ts`, `quality-inspection.spec.ts`, `location-hu-display.spec.ts` y `traceability-display.spec.ts`.
+- **Certificación E2E (`REC-2026-0020`):** Ciclo completo `Previo → Rampa → Calidad → Etiquetas → Putaway → Cierre` (`estado = CERRADA`, `24/24/24`, `0` merma, `0` faltante, lote `LOT-QA-E2E-001`, caducidad `2027-06-30`, `1` Tarima Master + `2` cajas x `12 PZA` en `G0001` `1/1`, `LotInventory = 24 PZA LIBERADO`, `InventoryMovement = 2 TRASIEGOS REC-01 → G0001`). Control `REC-2026-0019` intacto en `PENDIENTE_ARRIBO` (`18` esperadas / `0` recibidas).
+- **Respaldo Recomendado Pre-QA:** Antes de ejecutar pruebas destructivas o funcionales de la etapa de **QA integral del sistema en `dev`**, tomar un snapshot completo de la base de datos como baseline estable de cierre de Fase 3.
 
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline
