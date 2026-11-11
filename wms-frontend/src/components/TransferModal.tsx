@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { API } from '../config/api';
 import { formatCalendarDate } from '../utils/dateUtils';
+import { getActiveOperationalZoneIds } from '../utils/locationHuDisplay';
 
 export interface TransferModalProps {
   item: any;
@@ -46,6 +47,7 @@ export function evaluateDestinationCompatibility(
   sku: any,
   client: any,
   loc: any,
+  activeOperationalZoneIds?: Set<string>,
 ): DestinationCompatibilityResult {
   const skuTemp = (sku?.temperaturaRequerida || 'AMBIENTE').toUpperCase();
   const locTemp = (loc.temperatura || loc.zona?.temperatura || 'AMBIENTE').toUpperCase();
@@ -91,8 +93,12 @@ export function evaluateDestinationCompatibility(
     }
   }
 
-  // 3. Asignación contractual de zona al depositante (Regla canónica de Putaway)
-  const clientAssignedZoneId = client?.zonaAsignadaId;
+  // 3. Asignación contractual de zona al depositante (solo si pertenece a una zona activa del layout actual)
+  const rawAssignedZoneId = client?.zonaAsignadaId ? String(client.zonaAsignadaId) : null;
+  const clientAssignedZoneId =
+    rawAssignedZoneId && (!activeOperationalZoneIds || activeOperationalZoneIds.has(rawAssignedZoneId))
+      ? rawAssignedZoneId
+      : null;
   const isAssignedZone = Boolean(clientAssignedZoneId && (loc.zonaId === clientAssignedZoneId || loc.zona?.id === clientAssignedZoneId));
 
   if (isAssignedZone) {
@@ -100,7 +106,19 @@ export function evaluateDestinationCompatibility(
       status: 'COMPATIBLE',
       motivo: `Zona ${loc.zona?.nombre || loc.zona?.codigo} asignada contractualmente al depositante`,
       esCritica: false,
-      esFallbackDemo: true,
+    };
+  }
+
+  // 4. Layout físico general activo (G0001–G0045 en INTERIOR / EXTERIOR_TECHADO sin restricción por producto)
+  const isGeneralFloorZone =
+    loc.activo !== false &&
+    String(loc.tipoUbicacion || '').toUpperCase() !== 'PNC' &&
+    (zonaCodigoUpper === 'INTERIOR' || zonaCodigoUpper === 'EXTERIOR_TECHADO' || String(loc.codigo || '').toUpperCase().startsWith('G'));
+  if (!clientAssignedZoneId && isGeneralFloorZone) {
+    return {
+      status: 'COMPATIBLE',
+      motivo: `Posición física activa ${loc.zona?.nombre || loc.codigo} habilitada en layout general`,
+      esCritica: false,
     };
   }
 
@@ -235,6 +253,7 @@ export function TransferModal({
         });
         if (res.ok) {
           const data: any[] = await res.json();
+          const activeZoneIds = getActiveOperationalZoneIds(data);
           const originCode = item?.ubicacion?.codigo;
           const originId = item?.ubicacion?.id || item?.ubicacionId;
 
@@ -252,13 +271,13 @@ export function TransferModal({
 
             // Descartar áreas especiales y no comerciales
             if (['DEV-01', 'NC-EXCESO-01', 'NC-MERMA-01', 'REC-01', 'STG-01', 'STG-02'].includes(loc.codigo)) return false;
-            if (['CUARENTENA', 'DEVOLUCION', 'RECIBO', 'STAGING'].includes(loc.tipoUbicacion)) return false;
+            if (['CUARENTENA', 'DEVOLUCION', 'RECIBO', 'STAGING', 'PNC'].includes(loc.tipoUbicacion)) return false;
             if (loc.classification?.esVirtualOTransitoria) return false;
             if (loc.esAlmacenable === false) return false;
             if (loc.categoriaUbicacion && loc.categoriaUbicacion !== 'FISICA_ALMACENABLE') return false;
 
             // Compatibilidad canónica real con el producto y depositante: EXCLUSIVAMENTE 'COMPATIBLE'
-            const compat = evaluateDestinationCompatibility(item?.sku, item?.cliente, loc);
+            const compat = evaluateDestinationCompatibility(item?.sku, item?.cliente, loc, activeZoneIds);
             if (compat.status !== 'COMPATIBLE') return false;
 
             return true;

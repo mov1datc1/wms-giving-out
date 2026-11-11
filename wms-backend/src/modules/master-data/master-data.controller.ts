@@ -757,6 +757,7 @@ export class MasterDataController {
     const huCountByLoc: Record<string, number> = {};
     const husByLocAndClient: Record<string, Record<string, number>> = {};
     const distinctPalletsByLoc: Record<string, Set<string>> = {};
+    const distinctPalletsByLocAndClient: Record<string, Record<string, Set<string>>> = {};
 
     for (const hu of allActiveHus) {
       // Si la HU tiene lote asociado, verificar que el lote tenga saldo físico real (> 0)
@@ -768,17 +769,29 @@ export class MasterDataController {
       }
 
       if (hu.ubicacionActual) {
+        const physicalUnitKey = (hu as any).parentHuId || hu.id;
         if (!distinctPalletsByLoc[hu.ubicacionActual]) distinctPalletsByLoc[hu.ubicacionActual] = new Set<string>();
-        distinctPalletsByLoc[hu.ubicacionActual].add((hu as any).parentHuId || hu.id);
+        distinctPalletsByLoc[hu.ubicacionActual].add(physicalUnitKey);
 
-        if (!husByLocAndClient[hu.ubicacionActual]) husByLocAndClient[hu.ubicacionActual] = {};
-        const cid = hu.clienteId || 'DESCONOCIDO';
-        husByLocAndClient[hu.ubicacionActual][cid] = (husByLocAndClient[hu.ubicacionActual][cid] || 0) + 1;
+        const cid = hu.clienteId || (hu.lote as any)?.clienteId || 'DESCONOCIDO';
+        if (!distinctPalletsByLocAndClient[hu.ubicacionActual]) {
+          distinctPalletsByLocAndClient[hu.ubicacionActual] = {};
+        }
+        if (!distinctPalletsByLocAndClient[hu.ubicacionActual][cid]) {
+          distinctPalletsByLocAndClient[hu.ubicacionActual][cid] = new Set<string>();
+        }
+        distinctPalletsByLocAndClient[hu.ubicacionActual][cid].add(physicalUnitKey);
       }
     }
 
     for (const locKey of Object.keys(distinctPalletsByLoc)) {
       huCountByLoc[locKey] = distinctPalletsByLoc[locKey].size;
+    }
+    for (const locKey of Object.keys(distinctPalletsByLocAndClient)) {
+      husByLocAndClient[locKey] = {};
+      for (const cid of Object.keys(distinctPalletsByLocAndClient[locKey])) {
+        husByLocAndClient[locKey][cid] = distinctPalletsByLocAndClient[locKey][cid].size;
+      }
     }
 
     return locations.map(loc => {

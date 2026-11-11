@@ -788,6 +788,33 @@ npm run build          # Build completo
 
 ---
 
+## 17. Actualización Bloque 2 RC — Regresión e Higiene Operativa Inbound Post-RBAC
+
+**Estado:** Certificado **PASS** en Bloque 2 (**F**, **G**, **H**, **K**, **L**, **P** · `0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`) e integrado en `dev` (`main` intacta sin deploy).
+
+### 17.1 Correcciones de Backend y Endpoints (`MasterDataController`, `OperationsController`)
+- **Ubicaciones `bultosPorCliente` (`master-data.controller.ts`):** `GET /api/locations` agrupa HUs activas del depositante por contenedor físico raíz `(hu.parentHuId || hu.id)` mediante `distinctPalletsByLocAndClient` (`Set<string>`), reportando `1` tarima/bulto físico para `AlimNorte` en `G0001` en vez de `3`.
+- **Acuse de Rampa Homologado (`operations.controller.ts`):** `GET /api/receipts/:id/acuse-rampa` acepta UUID y código folio `REC-XXXX` (`findFirst` con `OR: [{ id }, { codigo }]`), manteniendo protección `@RequireAccess` (`401`/`403`) y `404` ante inexistentes.
+
+### 17.2 Higiene Frontend, Compatibilidad Legacy y RBAC UI
+- **Compatibilidad de Zonas Legacy y `activo = false` (`locationHuDisplay.ts`, `Locations.tsx`, `TransferModal.tsx`):**
+  - Se excluyen ubicaciones históricas inactivas (`activo = false`), `PNC` y no almacenables; `zonaAsignadaId` legacy sin ubicaciones operativas activas (`ALM-A` / `ALM-B`) deja de inflar disponibilidad falsa (`12 celdas` eliminadas; `41 celdas` comerciales disponibles para `AlimNorte`) y permite operar trasiegos en `G0001–G0045`.
+  - Se muestran métricas contextuales coherentes (`1 tarima / bulto físico`) y se remueve `demoLocations`.
+- **Etiquetado y Tarima Master (`LabelPreview.tsx`, `DualLabelModal.tsx`, `ReceiptPrintModal.tsx`, `PutawayModal.tsx`):**
+  - Eliminados `fullDemoLabels`, `defaultClients`, `'Fashion Forward'`, `'PED-2026-0008'`, `'A01-R01-N1'`, `'A01-R02-N1'`, preferencia `'ALM-A'`, `'Jonathan Palacios'` y timestamps fijos; implementados estados reales de loading, vacío y error.
+  - `PLT-REC-2026-0020-01` se muestra como `Tarima Master` (`1 tarima`, `Contenedor de 2 cajas`, `SKU contenido: ACE-OLI-1L`), nunca como `SKU-N/A` / `2 PZA`.
+  - `DualLabelModal` normaliza caducidades mediante `formatCalendarDate` (`2027-06-30` → `30/06/2027`).
+- **Recepción e Inventario (`Receiving.tsx`, `Inventory.tsx`):**
+  - Removido `demoReceipts`, fallbacks de prueba (`'Juan Manuel Prueba'`, `'TEST-001'`, `'Transportes Prueba E2E'`, `'Jonathan Palacios'`) y corregida advertencia React `validateDOMNesting` dentro de `<tbody>`.
+  - `Inventory.tsx` oculta el botón `"Acciones"` y sus modales operativos cuando `!hasActionPermission('inventario', 'editar') && !hasActionPermission('inventario', 'ajustar')`, manteniendo alineación UI-backend (`Operador Recepción` conserva `Detalle` sin ver acciones rechazadas con `403`).
+
+### 17.3 Validación, Deuda de Datos y Continuación
+- **Pruebas:** **`8/8 suites Jest` (`52/52 tests PASS`)**, `npx nest build` PASS, `tsc -b && vite build` PASS, `git diff --check` PASS, Chrome Headless (`0 pageExceptions`, `0 httpErrors`, `0 validateDOMNesting`) y `9` smoke tests HTTP PASS.
+- **Deuda de Datos Documentada (sin mutación BD):** `AlimNorte.zonaAsignadaId -> ALM-B histórica` y `Fashion Forward.zonaAsignadaId -> ALM-A histórica` (evaluar limpieza a `NULL` antes de Go-Live si esos racks no volverán a utilizarse).
+- **Punto de Reanudación:** **BLOQUE 3 — PICKING + RESERVA + DESPACHO E2E**.
+
+---
+
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline
 - [ ] Cache de datos críticos en dispositivo

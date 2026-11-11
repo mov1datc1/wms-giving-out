@@ -616,7 +616,7 @@ export function DualLabelModal({
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const opName = colocadorNombre?.trim() || 'Jonathan Palacios';
+      const opName = colocadorNombre?.trim() || currentUser?.nombre || currentUser?.name || currentUser?.email || 'Operador de almacén';
       const res = await fetch(`${API}/receipts/${receipt.id}/labels/confirm-placement`, {
         method: 'POST',
         headers,
@@ -901,7 +901,7 @@ export function DualLabelModal({
               sku: b.skuCodigo,
               desc: b.skuDescripcion || '',
               lote: b.loteTexto || 'S/L',
-              caducidad: b.fechaVencimiento ? String(b.fechaVencimiento).slice(0, 10) : 'Sin caducidad',
+              caducidad: b.fechaVencimiento ? formatCalendarDate(b.fechaVencimiento, 'Sin caducidad') : 'Sin caducidad',
               cajasTotal: 0,
               cajasConformes: 0,
               cajasDanadas: 0,
@@ -1043,7 +1043,7 @@ export function DualLabelModal({
                       <span style="font-size: 5.4pt; color: #333;">${(item.desc || '').replace('[DAÑO EXTERIOR] ', '').substring(0, 32)}</span>
                     </td>
                     <td style="padding: 0.6mm 0.8mm; font-family: monospace; font-weight: bold;">${item.lote}</td>
-                    <td style="padding: 0.6mm 0.8mm; font-family: monospace;">${item.caducidad}</td>
+                    <td style="padding: 0.6mm 0.8mm; font-family: monospace;">${item.caducidad && item.caducidad !== 'Según partida' ? formatCalendarDate(item.caducidad, item.caducidad) : 'Según partida'}</td>
                     <td style="padding: 0.6mm 0.8mm; text-align: center; font-weight: bold;">
                       ${item.cajasDanadas > 0
                         ? `${item.cajasConformes} Conf + ${item.cajasDanadas} Daño`
@@ -1161,7 +1161,7 @@ export function DualLabelModal({
             <div style="display: flex; justify-content: space-between; align-items: center; font-size: 6.2pt; border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 0.3mm 0.8mm; margin-bottom: 0.4mm; background: #eee; gap: 3px;">
               <span style="white-space: nowrap;">LOTE: <b style="font-family: monospace; font-size: 6.8pt;">${box.loteTexto || 'S/L'}</b></span>
               <span style="color: #666;">•</span>
-              <span style="white-space: nowrap;">CADUCIDAD: <b style="font-family: monospace; font-size: 6.8pt;">${box.fechaVencimiento ? String(box.fechaVencimiento).slice(0, 10) : 'N/A'}</b></span>
+              <span style="white-space: nowrap;">CADUCIDAD: <b style="font-family: monospace; font-size: 6.8pt;">${box.fechaVencimiento ? formatCalendarDate(box.fechaVencimiento, 'N/A') : 'N/A'}</b></span>
               <span style="color: #666;">•</span>
               <span style="white-space: nowrap;">TARIMA: <b>${box.parentPalletCode}</b></span>
             </div>
@@ -1212,7 +1212,7 @@ export function DualLabelModal({
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="white-space: nowrap;">LOTE: <b style="font-family: monospace; font-size: 7pt;">${box.loteTexto || 'S/L'}</b></span>
                   <span style="color: #94a3b8;">•</span>
-                  <span style="white-space: nowrap;">CADUCIDAD: <b style="font-family: monospace; font-size: 7pt;">${box.fechaVencimiento ? String(box.fechaVencimiento).slice(0, 10) : 'N/A'}</b></span>
+                  <span style="white-space: nowrap;">CADUCIDAD: <b style="font-family: monospace; font-size: 7pt;">${box.fechaVencimiento ? formatCalendarDate(box.fechaVencimiento, 'N/A') : 'N/A'}</b></span>
                 </div>
                 <div style="margin-top: 0.3mm; font-size: 6.4pt; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                   CONDICIÓN: <b style="letter-spacing: 0.01em;">${textoCondicion}</b>
@@ -1222,7 +1222,7 @@ export function DualLabelModal({
               <div style="display: flex; justify-content: space-between; align-items: center; font-size: 6.4pt; border-top: 1px dashed #666; border-bottom: 1px dashed #666; padding: 0.4mm 0.8mm; margin-bottom: 0.4mm; gap: 4px;">
                 <span style="white-space: nowrap;">LOTE: <b style="font-family: monospace; font-size: 7pt;">${box.loteTexto || 'S/L'}</b></span>
                 <span style="color: #94a3b8;">•</span>
-                <span style="white-space: nowrap;">CADUCIDAD: <b style="font-family: monospace; font-size: 7pt;">${box.fechaVencimiento ? String(box.fechaVencimiento).slice(0, 10) : 'N/A'}</b></span>
+                <span style="white-space: nowrap;">CADUCIDAD: <b style="font-family: monospace; font-size: 7pt;">${box.fechaVencimiento ? formatCalendarDate(box.fechaVencimiento, 'N/A') : 'N/A'}</b></span>
                 <span style="color: #94a3b8;">•</span>
                 <span style="white-space: nowrap; font-size: 6.4pt;">CONDICIÓN: <b>${textoCondicion}</b></span>
               </div>
@@ -1679,7 +1679,7 @@ export function DualLabelModal({
                         </td>
                         <td style={{ padding: '8px 10px' }}>
                           <div style={{ fontWeight: 600 }}>{item.lote}</div>
-                          <div style={{ fontSize: 10.5, color: '#64748B' }}>{item.fechaVencimiento || 'Sin caducidad'}</div>
+                          <div style={{ fontSize: 10.5, color: '#64748B' }}>{item.fechaVencimiento ? formatCalendarDate(item.fechaVencimiento, 'Sin caducidad') : 'Sin caducidad'}</div>
                         </td>
                         <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: '#334155' }}>
                           {item.cajasEsperadas} cajas
@@ -2067,7 +2067,7 @@ export function DualLabelModal({
               >
                 <CheckCircle2 size={16} color="#16A34A" />
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>
-                  Etiquetas colocadas en físico por {labelsData?.etiquetasColocadasPor || labelsData?.colocadoPor || receipt?.etiquetasColocadasPor || 'Jonathan Palacios'}
+                  Etiquetas colocadas en físico por {labelsData?.etiquetasColocadasPor || labelsData?.colocadoPor || receipt?.etiquetasColocadasPor || 'Operador registrado'}
                 </div>
               </div>
             )}
@@ -2675,7 +2675,7 @@ export function DualLabelModal({
                             <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
                               <div style={{ fontWeight: 600 }}>{b.loteTexto || '—'}</div>
                               <div style={{ fontSize: 10.5, color: '#64748B' }}>
-                                {b.fechaVencimiento ? String(b.fechaVencimiento).slice(0, 10) : 'Sin caducidad'}
+                                {b.fechaVencimiento ? formatCalendarDate(b.fechaVencimiento, 'Sin caducidad') : 'Sin caducidad'}
                               </div>
                             </td>
                             <td style={{ padding: '8px 8px', textAlign: 'center', fontWeight: 700, color: '#0F172A', whiteSpace: 'nowrap' }}>

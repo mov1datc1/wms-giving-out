@@ -7,8 +7,11 @@ jest.mock('../../email.service', () => ({
 
 import { MasterDataController } from '../master-data/master-data.controller';
 import {
+  getActiveOperationalZoneIds,
   getLocationHuRowPresentation,
+  hasActiveAssignedClientZone,
   isContainerMasterHu,
+  isLocationCompatibleWithClient,
   summarizeLocationHus,
 } from '../../../../wms-frontend/src/utils/locationHuDisplay';
 
@@ -168,6 +171,140 @@ describe('Ubicaciones: exclusión de Tarima Master (PALLET/TARIMA) en suma inven
     });
     expect(summary.totalPiecesInInventariableHus).toBe(60);
     expect(summary.hasHuDiscrepancy).toBe(false);
+  });
+
+  it('4. getLocations agrupa bultosPorCliente por (parentHuId || id): 1 Pallet Master + 2 cajas = 1 bulto físico (NO 3)', async () => {
+    const palletId = 'plt-rec20-01';
+    const clientId = 'cli-alimnorte';
+    const lotObj = {
+      id: 'lot-qa-1',
+      ubicacionId: 'loc-g0001',
+      skuId: 'sku-ace',
+      clienteId: clientId,
+      cantidadDisponible: 24,
+      cantidadReservada: 0,
+      cantidadBloqueada: 0,
+      sku: { id: 'sku-ace', codigo: 'ACE-OLI-1L', descripcion: 'Aceite de Oliva Extra Virgen 1L', uomBase: 'PZA' },
+      cliente: { id: clientId, nombreComercial: 'AlimNorte', razonSocial: 'AlimNorte' },
+    };
+
+    const handlingUnits = [
+      {
+        id: palletId,
+        codigo: 'PLT-REC-2026-0020-01',
+        tipoHu: 'PALLET',
+        parentHuId: null,
+        ubicacionActual: 'G0001',
+        cantidad: 2,
+        clienteId: clientId,
+        lotId: null,
+        lote: null,
+      },
+      {
+        id: 'box-1',
+        codigo: 'BOX-REC-2026-0020-0001',
+        tipoHu: 'CAJA',
+        parentHuId: palletId,
+        ubicacionActual: 'G0001',
+        cantidad: 12,
+        clienteId: clientId,
+        lotId: lotObj.id,
+        lote: { id: lotObj.id, ubicacionId: 'loc-g0001', cantidadDisponible: 24, cantidadBloqueada: 0 },
+      },
+      {
+        id: 'box-2',
+        codigo: 'BOX-REC-2026-0020-0002',
+        tipoHu: 'CAJA',
+        parentHuId: palletId,
+        ubicacionActual: 'G0001',
+        cantidad: 12,
+        clienteId: clientId,
+        lotId: lotObj.id,
+        lote: { id: lotObj.id, ubicacionId: 'loc-g0001', cantidadDisponible: 24, cantidadBloqueada: 0 },
+      },
+    ];
+
+    const prismaMock: any = {
+      location: {
+        findMany: jest.fn(async () => [
+          {
+            id: 'loc-g0001',
+            codigo: 'G0001',
+            tipoUbicacion: 'TARIMA_PISO',
+            estado: 'OCUPADO',
+            activo: true,
+            capacidadUnits: 100,
+            zonaId: 'zone-interior',
+            zona: { id: 'zone-interior', codigo: 'INTERIOR', nombre: 'Área Interior', tipoZona: 'ALMACENAMIENTO' },
+            almacen: { id: 'wh-1', nombre: 'CEDIS' },
+            lotes: [lotObj],
+          },
+        ]),
+      },
+      handlingUnit: {
+        findMany: jest.fn(async () => handlingUnits),
+      },
+    };
+
+    const controller = new MasterDataController(prismaMock, {} as any);
+    const locations: any[] = await controller.getLocations();
+
+    expect(locations).toHaveLength(1);
+    expect(locations[0].ocupacionBultos).toBe(1);
+    expect(locations[0].ocupacionUnidades).toBe(24);
+    expect(locations[0].bultosPorCliente[clientId]).toBe(1);
+    expect(locations[0].bultosPorCliente[clientId]).not.toBe(3);
+  });
+
+  it('5. Compatibilidad de ubicaciones excluye racks inactivos (activo=false) e ignora zonaAsignadaId legacy (ALM-A/ALM-B)', () => {
+    const legacyZoneId = 'zone-alm-b';
+    const interiorZoneId = 'zone-interior';
+    const exteriorZoneId = 'zone-exterior';
+
+    const locations = [
+      // Posición activa ocupada por AlimNorte
+      {
+        id: 'g1', codigo: 'G0001', activo: true, tipoUbicacion: 'TARIMA_PISO',
+        esAlmacenable: true, categoriaUbicacion: 'FISICA_ALMACENABLE',
+        estado: 'OCUPADO', estadoCapacidad: 'LLENO', zonaId: interiorZoneId,
+      },
+      // Posiciones comerciales activas libres
+      {
+        id: 'g2', codigo: 'G0002', activo: true, tipoUbicacion: 'TARIMA_PISO',
+        esAlmacenable: true, categoriaUbicacion: 'FISICA_ALMACENABLE',
+        estado: 'LIBRE', estadoCapacidad: 'LIBRE', zonaId: interiorZoneId,
+      },
+      {
+        id: 'g37', codigo: 'G0037', activo: true, tipoUbicacion: 'TARIMA_PISO',
+        esAlmacenable: true, categoriaUbicacion: 'FISICA_ALMACENABLE',
+        estado: 'LIBRE', estadoCapacidad: 'LIBRE', zonaId: exteriorZoneId,
+      },
+      // Posición PNC (excluida de disponibilidad comercial)
+      {
+        id: 'g36', codigo: 'G0036', activo: true, tipoUbicacion: 'PNC',
+        esAlmacenable: false, categoriaUbicacion: 'VIRTUAL_NO_CONFORME',
+        estado: 'LIBRE', estadoCapacidad: 'NO_APLICA', zonaId: exteriorZoneId,
+      },
+      // Racks históricos ALM-B inactivos (antes causaban "12 celdas disponibles")
+      {
+        id: 'b01', codigo: 'B01-R01-N1', activo: false, tipoUbicacion: 'ESTANTERIA',
+        esAlmacenable: true, categoriaUbicacion: 'FISICA_ALMACENABLE',
+        estado: 'LIBRE', estadoCapacidad: 'LIBRE', zonaId: legacyZoneId,
+      },
+    ];
+
+    const alimNorteLegacyClient = { id: 'cli-alim', nombreComercial: 'AlimNorte', zonaAsignadaId: legacyZoneId };
+    const activeZones = getActiveOperationalZoneIds(locations);
+
+    expect(activeZones.has(interiorZoneId)).toBe(true);
+    expect(activeZones.has(exteriorZoneId)).toBe(true);
+    expect(activeZones.has(legacyZoneId)).toBe(false);
+    expect(hasActiveAssignedClientZone(alimNorteLegacyClient, activeZones)).toBe(false);
+
+    const compatibleFree = locations.filter((l) => isLocationCompatibleWithClient(l, alimNorteLegacyClient, false, activeZones));
+    expect(compatibleFree.map((l) => l.codigo)).toEqual(['G0002', 'G0037']);
+    expect(compatibleFree.some((l) => l.codigo === 'B01-R01-N1')).toBe(false);
+    expect(compatibleFree.some((l) => l.codigo === 'G0036')).toBe(false);
   });
 });
 

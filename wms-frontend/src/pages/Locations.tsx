@@ -11,6 +11,9 @@ import { formatCalendarDate } from '../utils/dateUtils';
 import {
   getLocationHuRowPresentation,
   summarizeLocationHus,
+  getActiveOperationalZoneIds,
+  hasActiveAssignedClientZone,
+  isLocationCompatibleWithClient,
 } from '../utils/locationHuDisplay';
 import {
   REAL_WAREHOUSE_POSITIONS,
@@ -84,39 +87,12 @@ function getLocationClientStats(loc: any, clientTargetId: string) {
   };
 }
 
-// Helper para evaluar disponibilidad compatible para un depositante (3PL)
-function isLocationCompatibleWithClient(loc: any, clientObj: any, hasStock: boolean): boolean {
-  if (!clientObj) return false;
-  
-  // Debe ser física almacenable
-  if (loc.esAlmacenable === false || loc.categoriaUbicacion !== 'FISICA_ALMACENABLE') {
-    return false;
-  }
-  // No debe estar bloqueada
-  if (loc.estado === 'BLOQUEADO' || loc.estadoCapacidad === 'BLOQUEADO') {
-    return false;
-  }
-  // No debe estar en sobrecapacidad ni llena
-  if (loc.estadoCapacidad === 'SOBRECAPACIDAD' || loc.estadoCapacidad === 'LLENO') {
-    return false;
-  }
-  // Debe tener espacio libre disponible (LIBRE o PARCIAL)
-  if (loc.estadoCapacidad !== 'LIBRE' && loc.estadoCapacidad !== 'PARCIAL') {
-    return false;
-  }
-  // Criterios de compatibilidad configurados (3PL):
-  if (clientObj.zonaAsignadaId) {
-    const matchesZone = loc.zonaId === clientObj.zonaAsignadaId || loc.zona?.id === clientObj.zonaAsignadaId;
-    return matchesZone || hasStock;
-  }
-  return true;
-}
-
 export function Locations() {
   const { token } = useAuth();
   const [locations, setLocations] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Vista predeterminada: 1. Plano Físico 2D — Operación (Fase 3B-B)
   const [viewMode, setViewMode] = useState<'spatial' | 'operational' | 'layout'>('spatial');
 
@@ -164,6 +140,7 @@ export function Locations() {
 
   async function loadData() {
     setLoading(true);
+    setLoadError(null);
     try {
       const [locRes, clientRes] = await Promise.all([
         fetch(`${API}/locations`, { headers }),
@@ -172,18 +149,20 @@ export function Locations() {
       
       if (locRes.ok) {
         const data = await locRes.json();
-        setLocations(data.length > 0 ? data : demoLocations);
+        setLocations(Array.isArray(data) ? data : []);
       } else {
-        setLocations(demoLocations);
+        setLocations([]);
+        setLoadError(`Error al cargar ubicaciones (HTTP ${locRes.status}).`);
       }
 
       if (clientRes.ok) {
         const clientData = await clientRes.json();
-        setClients(clientData);
+        setClients(Array.isArray(clientData) ? clientData : []);
       }
     } catch (err) {
       console.error(err);
-      setLocations(demoLocations);
+      setLocations([]);
+      setLoadError('No se pudo conectar con el servidor para consultar las ubicaciones.');
     }
     setLoading(false);
   }
@@ -208,6 +187,8 @@ export function Locations() {
       setLocDetailLoading(false);
     }
   }
+
+  const activeOperationalZoneIds = useMemo(() => getActiveOperationalZoneIds(locations), [locations]);
 
   const selectedClient = clients.find(c => c.id === filterCliente);
   const selectedClientName = selectedClient?.nombreComercial || selectedClient?.razonSocial || 'Depositante';
@@ -239,7 +220,7 @@ export function Locations() {
     let matchCliente = true;
     if (filterCliente) {
       const stats = getLocationClientStats(l, filterCliente);
-      const isComp = isLocationCompatibleWithClient(l, selectedClient, stats.hasStock);
+      const isComp = isLocationCompatibleWithClient(l, selectedClient, stats.hasStock, activeOperationalZoneIds);
 
       if (clientViewMode === 'existencia') {
         matchCliente = stats.hasStock;
@@ -442,12 +423,12 @@ export function Locations() {
   const clientTotalBultos = locations.reduce((sum, l) => sum + getLocationClientStats(l, filterCliente).bultos, 0);
   const compatiblePositionsCount = locations.filter(l => {
     const stats = getLocationClientStats(l, filterCliente);
-    return isLocationCompatibleWithClient(l, selectedClient, stats.hasStock) && !stats.hasStock;
+    return isLocationCompatibleWithClient(l, selectedClient, stats.hasStock, activeOperationalZoneIds) && !stats.hasStock;
   }).length;
   // Unión sin duplicados de posiciones con existencia física + posiciones disponibles para el depositante
   const relatedPositionsCount = locations.filter(l => {
     const stats = getLocationClientStats(l, filterCliente);
-    const isComp = isLocationCompatibleWithClient(l, selectedClient, stats.hasStock);
+    const isComp = isLocationCompatibleWithClient(l, selectedClient, stats.hasStock, activeOperationalZoneIds);
     return stats.hasStock || isComp;
   }).length;
 
@@ -637,6 +618,31 @@ export function Locations() {
         </div>
       </div>
 
+      {/* Alerta explícita de error de carga (sin fallback demo) */}
+      {loadError && (
+        <div style={{
+          padding: '12px 16px',
+          borderRadius: 8,
+          background: '#FEF2F2',
+          border: '1px solid #FCA5A5',
+          color: '#991B1B',
+          fontSize: 13,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 16
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={16} />
+            <span>{loadError}</span>
+          </div>
+          <button type="button" className="btn btn-sm btn-secondary" onClick={loadData}>
+            Reintentar
+          </button>
+        </div>
+      )}
+
       {/* Franja Ejecutiva de Capacidad y Estado: Métricas Exclusivas de G0001–G0045 */}
       {!filterCliente ? (
         /* ===== KPIs OFICIALES DEL ALMACÉN REAL (G0001–G0045) ===== */
@@ -732,12 +738,14 @@ export function Locations() {
             </div>
           </div>
 
-          {/* Card 3: Bultos / HUs del Cliente */}
+          {/* Card 3: Tarimas / Bultos Físicos del Cliente */}
           <div className="stat-card" style={{ borderColor: 'rgba(2,132,199,0.4)' }}>
             <div className="stat-icon" style={{ background: 'rgba(2,132,199,0.15)', color: '#0284C7' }}><Box size={22}/></div>
             <div className="stat-info">
-              <span className="stat-value">{clientTotalBultos} bultos</span>
-              <span className="stat-label">Unidades de manejo (HUs) del cliente</span>
+              <span className="stat-value">
+                {clientTotalBultos} {clientTotalBultos === 1 ? 'tarima / bulto' : 'tarimas / bultos'}
+              </span>
+              <span className="stat-label">Unidades físicas ocupadas del cliente</span>
             </div>
           </div>
 
@@ -773,10 +781,17 @@ export function Locations() {
                 Vista de {selectedClientName}
               </span>
               <span style={{ fontSize: 12, color: 'var(--text-secondary)', marginLeft: 8 }}>
-                · <strong>{clientTotalPieces.toLocaleString()} piezas</strong> · <strong>{clientTotalBultos} bultos</strong> · <strong>{clientPositionsCount} posiciones utilizadas</strong>
-                {selectedClient?.zonaAsignadaId && (
+                · <strong>{clientTotalPieces.toLocaleString()} piezas</strong> ·{' '}
+                <strong>
+                  {clientTotalBultos} {clientTotalBultos === 1 ? 'tarima / bulto físico' : 'tarimas / bultos físicos'}
+                </strong>{' '}
+                ·{' '}
+                <strong>
+                  {clientPositionsCount} {clientPositionsCount === 1 ? 'posición utilizada' : 'posiciones utilizadas'}
+                </strong>
+                {hasActiveAssignedClientZone(selectedClient, activeOperationalZoneIds) && (
                   <span style={{ marginLeft: 6, color: '#1D4ED8' }}>
-                    (Zona: {locations.find(l => l.zonaId === selectedClient.zonaAsignadaId)?.zona?.nombre || 'Zona preferente'})
+                    (Zona: {locations.find(l => l.activo !== false && l.zonaId === selectedClient.zonaAsignadaId)?.zona?.nombre || 'Zona preferente'})
                   </span>
                 )}
               </span>
@@ -1246,7 +1261,7 @@ export function Locations() {
 
                                             // Diferenciación 3PL por Depositante
                                             const clientStats = filterCliente ? getLocationClientStats(loc, filterCliente) : null;
-                                            const isComp = filterCliente ? isLocationCompatibleWithClient(loc, selectedClient, clientStats?.hasStock || false) : false;
+                                            const isComp = filterCliente ? isLocationCompatibleWithClient(loc, selectedClient, clientStats?.hasStock || false, activeOperationalZoneIds) : false;
                                             const isClientHoldingStock = clientStats?.hasStock || false;
 
                                             // En este tab histórico, atenuar visualmente las celdas y reemplazar el verde "LIBRE" por "INACTIVO"
@@ -1366,7 +1381,7 @@ export function Locations() {
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
                                                   <span style={{ fontSize: 9.5, color: '#94A3B8' }}>
                                                     {filterCliente && isClientHoldingStock
-                                                      ? `${clientStats?.bultos || 0} bultos`
+                                                      ? `${clientStats?.bultos || 0} ${(clientStats?.bultos || 0) === 1 ? 'bulto' : 'bultos'}`
                                                       : 'Rack inactivo'
                                                     }
                                                   </span>
@@ -1795,7 +1810,7 @@ export function Locations() {
                       )}
 
                       {/* Banner discreto para posición disponible de depositante */}
-                      {filterCliente && !clientPiecesInModal && isLocationCompatibleWithClient(selectedLoc, selectedClient, false) && (
+                      {filterCliente && !clientPiecesInModal && isLocationCompatibleWithClient(selectedLoc, selectedClient, false, activeOperationalZoneIds) && (
                         <div style={{
                           padding: '10px 14px',
                           borderRadius: 8,
@@ -2437,14 +2452,6 @@ export function Locations() {
     </div>
   );
 }
-
-const demoLocations = [
-  { id: 'loc-1', codigo: 'REC-01', estado: 'LIBRE', tipoUbicacion: 'RECIBO', categoriaUbicacion: 'RECIBO_TRANSITO', esAlmacenable: false, estadoCapacidad: 'NO_APLICA', zona: { codigo: 'ZONA-REC', nombre: 'Andén de Recibo & Inspección' } },
-  { id: 'loc-2', codigo: 'DEV-01', estado: 'LIBRE', tipoUbicacion: 'DEVOLUCION', categoriaUbicacion: 'VIRTUAL_NO_CONFORME', esAlmacenable: false, estadoCapacidad: 'NO_APLICA', zona: { codigo: 'ZONA-REC', nombre: 'Andén de Recibo & Inspección' } },
-  { id: 'loc-3', codigo: 'A01-R01-N1', estado: 'OCUPADO', ocupacionUnidades: 40, capacidadUnits: 40, ocupacionBultos: 2, capacidadBultos: 5, tipoUbicacion: 'ESTANTERIA', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'LLENO', pasillo: 'A01', rack: 'R01', nivel: 'N1', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
-  { id: 'loc-4', codigo: 'A01-R01-N2', estado: 'LIBRE', ocupacionUnidades: 0, capacidadUnits: 40, ocupacionBultos: 0, capacidadBultos: 5, tipoUbicacion: 'ESTANTERIA', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'LIBRE', pasillo: 'A01', rack: 'R01', nivel: 'N2', zona: { codigo: 'ZONA-ROPA', nombre: 'Zona Almacenaje Ropa (FIFO)' } },
-  { id: 'loc-5', codigo: 'B01-R01-N1', estado: 'OCUPADO', ocupacionUnidades: 586, capacidadUnits: 40, ocupacionBultos: 4, capacidadBultos: 5, tipoUbicacion: 'RACK', categoriaUbicacion: 'FISICA_ALMACENABLE', esAlmacenable: true, estadoCapacidad: 'SOBRECAPACIDAD', pasillo: 'B01', rack: 'R01', nivel: 'N1', zona: { codigo: 'ZONA-ALIM', nombre: 'Zona Almacenaje Alimentos (FEFO)' } }
-];
 
 // ============================================================================
 // PLANO FÍSICO 2D INTERACTIVO (FASE 3A DE ADAPTACIÓN AL ALMACÉN REAL)

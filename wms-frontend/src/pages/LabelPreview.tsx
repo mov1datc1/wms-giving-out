@@ -2,11 +2,15 @@ import { useState, useEffect, useMemo } from 'react';
 import { Tag, Printer, Copy, Search, RefreshCw, Layers, Building2, Package, CheckCircle, Filter, X, History, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
+import { formatCalendarDate } from '../utils/dateUtils';
+import { getLocationHuRowPresentation, isContainerMasterHu } from '../utils/locationHuDisplay';
 
 interface LabelData {
   huId: string;
   sku: string;
   desc: string;
+  skuFilterKey: string;
+  skuFilterDesc: string;
   lote: string;
   cantidad: number;
   uom: string;
@@ -16,31 +20,12 @@ interface LabelData {
   tipoHu?: string;
   estadoHu?: string;
   isHistorico?: boolean;
+  isContainerMaster?: boolean;
+  cajasCount?: number;
+  childSkus?: string[];
   documentoSalida?: string;
   destinoSalida?: string;
 }
-
-const defaultClients = [
-  { id: 'c1', nombre: 'Fashion Forward' },
-  { id: 'c2', nombre: 'ALIMENTOS_3M' },
-  { id: 'c3', nombre: 'ProVarios' },
-  { id: 'c4', nombre: 'Textil MX' },
-  { id: 'c5', nombre: 'Distribuidora Norte' },
-];
-
-const fullDemoLabels: LabelData[] = [
-  { huId: 'HU-2026-0101', sku: 'CAM-BLA-S', desc: 'Camiseta Básica Blanca (S)', lote: 'LOT-FF-2026-A', cantidad: 30, uom: 'PZA', ubicacion: 'A01-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0102', sku: 'CAM-BLA-L', desc: 'Camiseta Básica Blanca (L)', lote: 'LOT-FF-2026-A', cantidad: 100, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0103', sku: 'CAM-BLA-M', desc: 'Camiseta Básica Blanca (M)', lote: 'LOT-FF-2026-A', cantidad: 100, uom: 'PZA', ubicacion: 'A02-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0104', sku: 'CAM-NEG-M', desc: 'Camiseta Básica Negra (M)', lote: 'LOT-FF-2026-B', cantidad: 60, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0105', sku: 'CHA-CUE-L', desc: 'Chamarra de Cuero Sintético (L)', lote: 'LOT-FF-2026-B', cantidad: 25, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0106', sku: 'PAN-JEA-32', desc: 'Pantalón Jeans Clásico (32)', lote: 'LOT-FF-2026-C', cantidad: 50, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0107', sku: 'PAN-JEA-30', desc: 'Pantalón Jeans Clásico (30)', lote: 'LOT-FF-2026-C', cantidad: 60, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0108', sku: 'SUD-GRI-XL', desc: 'Sudadera con Capucha (XL)', lote: 'LOT-FF-2026-D', cantidad: 70, uom: 'PZA', ubicacion: 'A03-R01-N1', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0109', sku: 'VES-FLO-M', desc: 'Vestido Floral Verano (M)', lote: 'LOT-FF-2026-D', cantidad: 40, uom: 'PZA', ubicacion: 'REC-01', cliente: 'Fashion Forward', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0110', sku: 'ACE-OLI-1L', desc: 'Aceite de Oliva Extra Virgen 1L', lote: 'LOT-3M-2026', cantidad: 150, uom: 'CJA', ubicacion: 'B01-R01-N1', cliente: 'ALIMENTOS_3M', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-  { huId: 'HU-2026-0111', sku: 'ATU-AGU-140G', desc: 'Atún en Agua 140g Enlatado', lote: 'LOT-3M-2027', cantidad: 300, uom: 'CJA', ubicacion: 'B02-R01-N1', cliente: 'ALIMENTOS_3M', fecha: '2026-08-26', tipoHu: 'CAJA', estadoHu: 'ACTIVO', isHistorico: false },
-];
 
 /** Genera un código de barras vectorial Code128 en SVG ultra nítido */
 function generateBarcodeSVG(code: string, height = 34) {
@@ -119,24 +104,25 @@ function generateQRCodeSVG(size = 70) {
 export function LabelPreview() {
   const { token } = useAuth();
   const [scopeTab, setScopeTab] = useState<'FISICO' | 'HISTORICO'>('FISICO');
-  const [fisicasLabels, setFisicasLabels] = useState<LabelData[]>(fullDemoLabels);
+  const [fisicasLabels, setFisicasLabels] = useState<LabelData[]>([]);
   const [historicasLabels, setHistoricasLabels] = useState<LabelData[]>([]);
-  const [clients, setClients] = useState<any[]>(defaultClients);
+  const [clients, setClients] = useState<any[]>([]);
   const [selectedCliente, setSelectedCliente] = useState<string>('ALL');
   const [selectedSku, setSelectedSku] = useState<string>('ALL');
   const [selectedLabelIdx, setSelectedLabelIdx] = useState(0);
   const [search, setSearch] = useState('');
   const [format, setFormat] = useState<'4x2' | '4x3' | '4x6'>('4x2');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const headers: any = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
+    setLoadError(null);
     try {
-      const [lotsRes, fisicasRes, historicasRes, clientsRes] = await Promise.all([
-        fetch(`${API}/inventory/lots`, { headers }),
+      const [fisicasRes, historicasRes, clientsRes] = await Promise.all([
         fetch(`${API}/inventory/handling-units?scope=FISICO`, { headers }),
         fetch(`${API}/inventory/handling-units?scope=HISTORICO`, { headers }),
         fetch(`${API}/clients`, { headers }),
@@ -144,74 +130,107 @@ export function LabelPreview() {
 
       if (clientsRes.ok) {
         const cData = await clientsRes.json();
-        if (Array.isArray(cData) && cData.length > 0) {
+        if (Array.isArray(cData)) {
           setClients(cData.map((c: any) => ({ id: c.id, nombre: c.nombreComercial || c.razonSocial })));
         }
       }
 
-      const mapHuToLabel = (h: any, isHist = false): LabelData => ({
-        huId: h.codigo || `HU-${h.id?.substring(0, 8)}`,
-        sku: h.lote?.sku?.codigo || h.skuCodigo || 'SKU-N/A',
-        desc: h.lote?.sku?.descripcion || h.skuDescripcion || 'Sin descripción',
-        lote: h.lote?.lote || h.loteTexto || 'N/LOTE',
-        cantidad: h.cantidad || h.lote?.cantidadDisponible || 0,
-        uom: h.lote?.sku?.uomBase || h.uom || 'PZA',
-        ubicacion: h.ubicacionActual || h.lote?.ubicacion?.codigo || (isHist ? 'DESPACHADO' : 'RECEPCIÓN'),
-        cliente: h.cliente?.nombreComercial || h.lote?.cliente?.nombreComercial || 'Fashion Forward',
-        fecha: new Date(h.createdAt || Date.now()).toISOString().split('T')[0],
-        tipoHu: h.tipoHu || 'CAJA',
-        estadoHu: h.estadoHu || (isHist ? 'DESPACHADO' : 'ACTIVO'),
-        isHistorico: isHist,
-        documentoSalida: h.lineasSalida?.[0]?.orden?.codigo || (h.estadoHu === 'DESPACHADO' ? 'Despachado' : undefined),
-        destinoSalida: h.lineasSalida?.[0]?.orden?.endCustomer?.nombre,
-      });
-
-      let loadedFisicas: LabelData[] = [];
-      let loadedHistoricas: LabelData[] = [];
-
-      if (fisicasRes.ok) {
-        const fData = await fisicasRes.json();
-        if (Array.isArray(fData)) {
-          loadedFisicas = fData.map((h: any) => mapHuToLabel(h, false));
-        }
+      if (!fisicasRes.ok || !historicasRes.ok) {
+        const errStatus = !fisicasRes.ok ? fisicasRes.status : historicasRes.status;
+        setFisicasLabels([]);
+        setHistoricasLabels([]);
+        setLoadError(`Error al consultar unidades logísticas del servidor (HTTP ${errStatus}).`);
+        setLoading(false);
+        return;
       }
 
-      if (historicasRes.ok) {
-        const hData = await historicasRes.json();
-        if (Array.isArray(hData)) {
-          loadedHistoricas = hData.map((h: any) => mapHuToLabel(h, true));
-        }
-      }
+      const fRaw = await fisicasRes.json();
+      const hRaw = await historicasRes.json();
+      const fList = Array.isArray(fRaw) ? fRaw : [];
+      const hList = Array.isArray(hRaw) ? hRaw : [];
+      const allRawHus = [...fList, ...hList];
 
-      // Fallback a demo labels si el endpoint no devuelve existencias
-      if (loadedFisicas.length === 0 && lotsRes.ok) {
-        const lotsData = await lotsRes.json();
-        if (Array.isArray(lotsData) && lotsData.length > 0) {
-          loadedFisicas = lotsData
-            .filter((l: any) => (l.cantidadDisponible || 0) > 0)
-            .map((l: any, i: number) => ({
-              huId: `HU-2026-${String(i + 101).padStart(4, '0')}`,
-              sku: l.sku?.codigo || 'SKU-N/A',
-              desc: l.sku?.descripcion || 'Sin descripción',
-              lote: l.lote || 'LOT-2026',
-              cantidad: l.cantidadDisponible || 0,
-              uom: l.sku?.uomBase || 'PZA',
-              ubicacion: l.ubicacion?.codigo || 'RECEPCIÓN',
-              cliente: l.cliente?.nombreComercial || 'Fashion Forward',
-              fecha: new Date(l.createdAt || Date.now()).toISOString().split('T')[0],
-              tipoHu: 'CAJA',
-              estadoHu: 'ACTIVO',
-              isHistorico: false,
-            }));
-        }
-      }
+      const mapHuToLabel = (h: any, isHist = false): LabelData => {
+        const isMaster = isContainerMasterHu(h, allRawHus);
+        const pres = getLocationHuRowPresentation(h, allRawHus);
+        const childSkus = pres.childSkus || [];
+        const childDescriptions = pres.childDescriptions || [];
+        const childLots = pres.childLots || [];
+        const cajasCount = pres.associatedChildrenCount || Number(h.cantidad || 0);
 
-      setFisicasLabels(loadedFisicas.length > 0 ? loadedFisicas : fullDemoLabels);
-      setHistoricasLabels(loadedHistoricas);
+        const baseCliente =
+          h.cliente?.nombreComercial ||
+          h.lote?.cliente?.nombreComercial ||
+          pres.childClientName ||
+          'Sin depositante';
+
+        if (isMaster) {
+          const singleSku = childSkus.length === 1 ? childSkus[0] : null;
+          const singleDesc = childDescriptions.length === 1 ? childDescriptions[0] : null;
+          const skuLabel =
+            childSkus.length > 0
+              ? `SKU contenido: ${childSkus.join(', ')}`
+              : 'Contenedor logístico';
+          const masterDesc =
+            cajasCount > 0
+              ? `Contenedor de ${cajasCount} ${cajasCount === 1 ? 'caja' : 'cajas'}${singleDesc ? ` · ${singleDesc}` : ''}`
+              : 'Tarima Master (contenedor logístico)';
+
+          return {
+            huId: h.codigo || `HU-${h.id?.substring(0, 8)}`,
+            sku: skuLabel,
+            desc: masterDesc,
+            skuFilterKey: singleSku || 'TARIMA_MASTER',
+            skuFilterDesc: singleSku ? (singleDesc || singleSku) : 'Tarimas Master (Contenedores logísticos)',
+            lote: childLots.length === 1 ? childLots[0] : (childLots.length > 1 ? 'Múltiples lotes' : 'Contenedor'),
+            cantidad: 1,
+            uom: 'tarima',
+            ubicacion: h.ubicacionActual || h.lote?.ubicacion?.codigo || (isHist ? 'DESPACHADO' : 'Sin asignar'),
+            cliente: baseCliente,
+            fecha: formatCalendarDate(h.createdAt, '—'),
+            tipoHu: 'PALLET',
+            estadoHu: h.estadoHu || (isHist ? 'DESPACHADO' : 'ACTIVO'),
+            isHistorico: isHist,
+            isContainerMaster: true,
+            cajasCount,
+            childSkus,
+            documentoSalida: h.lineasSalida?.[0]?.orden?.codigo || (h.estadoHu === 'DESPACHADO' ? 'Despachado' : undefined),
+            destinoSalida: h.lineasSalida?.[0]?.orden?.endCustomer?.nombre,
+          };
+        }
+
+        const unitSku = h.lote?.sku?.codigo || h.skuCodigo || 'Sin SKU';
+        const unitDesc = h.lote?.sku?.descripcion || h.skuDescripcion || 'Sin descripción';
+        return {
+          huId: h.codigo || `HU-${h.id?.substring(0, 8)}`,
+          sku: unitSku,
+          desc: unitDesc,
+          skuFilterKey: unitSku,
+          skuFilterDesc: unitDesc,
+          lote: h.lote?.lote || h.loteTexto || 'Sin lote',
+          cantidad: Number(h.cantidad ?? h.lote?.cantidadDisponible ?? 0),
+          uom: h.lote?.sku?.uomBase || h.uom || 'PZA',
+          ubicacion: h.ubicacionActual || h.lote?.ubicacion?.codigo || (isHist ? 'DESPACHADO' : 'Sin asignar'),
+          cliente: baseCliente,
+          fecha: formatCalendarDate(h.createdAt, '—'),
+          tipoHu: h.tipoHu || 'CAJA',
+          estadoHu: h.estadoHu || (isHist ? 'DESPACHADO' : 'ACTIVO'),
+          isHistorico: isHist,
+          isContainerMaster: false,
+          cajasCount: 0,
+          childSkus: [],
+          documentoSalida: h.lineasSalida?.[0]?.orden?.codigo || (h.estadoHu === 'DESPACHADO' ? 'Despachado' : undefined),
+          destinoSalida: h.lineasSalida?.[0]?.orden?.endCustomer?.nombre,
+        };
+      };
+
+      setFisicasLabels(fList.map((h: any) => mapHuToLabel(h, false)));
+      setHistoricasLabels(hList.map((h: any) => mapHuToLabel(h, true)));
     } catch (err) {
       console.error('Error al cargar HUs en LabelPreview:', err);
-      setFisicasLabels(fullDemoLabels);
+      setFisicasLabels([]);
       setHistoricasLabels([]);
+      setLoadError('No se pudo conectar con el servidor para obtener las etiquetas.');
     }
     setLoading(false);
   }
@@ -233,12 +252,12 @@ export function LabelPreview() {
     const map = new Map<string, { sku: string; desc: string; count: number }>();
     const baseList = selectedCliente === 'ALL' ? currentLabels : currentLabels.filter(l => l.cliente === selectedCliente);
     for (const l of baseList) {
-      if (l.isHistorico || l.cantidad > 0) {
-        const existing = map.get(l.sku);
+      if (l.isHistorico || l.cantidad > 0 || l.isContainerMaster) {
+        const existing = map.get(l.skuFilterKey);
         if (existing) {
           existing.count += 1;
         } else {
-          map.set(l.sku, { sku: l.sku, desc: l.desc, count: 1 });
+          map.set(l.skuFilterKey, { sku: l.skuFilterKey, desc: l.skuFilterDesc, count: 1 });
         }
       }
     }
@@ -247,9 +266,9 @@ export function LabelPreview() {
 
   const filteredLabels = useMemo(() => {
     return currentLabels.filter(l => {
-      if (!l.isHistorico && l.cantidad <= 0) return false;
+      if (!l.isHistorico && !l.isContainerMaster && l.cantidad <= 0) return false;
       if (selectedCliente !== 'ALL' && l.cliente !== selectedCliente) return false;
-      if (selectedSku !== 'ALL' && l.sku !== selectedSku) return false;
+      if (selectedSku !== 'ALL' && l.skuFilterKey !== selectedSku) return false;
       if (search) {
         const s = search.toLowerCase();
         return (
@@ -311,11 +330,11 @@ export function LabelPreview() {
           </div>
           <div style="flex: 1;">
             <div class="hu-id">${activeLabel.huId}</div>
-            <div class="info-line">SKU: <strong>${activeLabel.sku}</strong> [${activeLabel.tipoHu || 'CAJA'}]</div>
+            <div class="info-line">${activeLabel.isContainerMaster ? `<strong>Tarima Master</strong> · ${activeLabel.sku}` : `SKU: <strong>${activeLabel.sku}</strong>`} [${activeLabel.isContainerMaster ? 'TARIMA MASTER' : (activeLabel.tipoHu || 'CAJA')}]</div>
             <div class="info-line" style="font-weight: 600;">${activeLabel.desc}</div>
             <div class="info-line" style="margin-top: 3px; display: flex; justify-content: space-between; border-top: 1px solid #ccc; padding-top: 2px;">
               <span>Lote: <strong>${activeLabel.lote}</strong></span>
-              <span>Cant: <strong>${activeLabel.cantidad} ${activeLabel.uom}${activeLabel.isHistorico ? ' (HIST)' : activeLabel.estadoHu === 'CUARENTENA' ? ' (CUAR)' : activeLabel.estadoHu === 'BLOQUEADO' ? ' (BLOQ)' : ''}</strong></span>
+              <span>Cant: <strong>${activeLabel.isContainerMaster ? '1 tarima (CONTENEDOR)' : `${activeLabel.cantidad} ${activeLabel.uom}`}${activeLabel.isHistorico ? ' (HIST)' : activeLabel.estadoHu === 'CUARENTENA' ? ' (CUAR)' : activeLabel.estadoHu === 'BLOQUEADO' ? ' (BLOQ)' : ''}</strong></span>
             </div>
           </div>
         </div>
@@ -481,10 +500,10 @@ export function LabelPreview() {
   };
 
   const getTipoHuBadge = (tipo?: string) => {
-    const isPallet = (tipo || '').toUpperCase() === 'PALLET';
+    const isPallet = (tipo || '').toUpperCase() === 'PALLET' || (tipo || '').toUpperCase() === 'TARIMA';
     return (
       <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: isPallet ? '#E0E7FF' : '#F3F4F6', color: isPallet ? '#3730A3' : '#374151', border: '1px solid #D1D5DB' }}>
-        {isPallet ? 'PALLET' : 'CAJA'}
+        {isPallet ? 'Tarima Master' : 'CAJA'}
       </span>
     );
   };
@@ -500,6 +519,18 @@ export function LabelPreview() {
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Actualizar Inventario
         </button>
       </div>
+
+      {loadError && (
+        <div style={{ background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8, padding: '12px 16px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#991B1B', fontSize: 13 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={16} />
+            <span>{loadError}</span>
+          </div>
+          <button type="button" className="btn btn-sm btn-secondary" onClick={loadData}>
+            Reintentar
+          </button>
+        </div>
+      )}
 
       {popupWarning && (
         <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '12px 16px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#92400E', fontSize: 13 }}>
@@ -679,11 +710,20 @@ export function LabelPreview() {
                     </div>
                   </div>
 
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{l.sku} — {l.desc}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {l.isContainerMaster ? l.sku : `${l.sku} — ${l.desc}`}
+                  </div>
+                  {l.isContainerMaster && (
+                    <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>{l.desc}</div>
+                  )}
 
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>Lote: <strong>{l.lote}</strong></span>
-                    {l.isHistorico ? (
+                    {l.isContainerMaster ? (
+                      <span style={{ color: '#3730A3', fontWeight: 700 }}>
+                        1 tarima{l.cajasCount ? ` · Contenedor (${l.cajasCount} ${l.cajasCount === 1 ? 'caja' : 'cajas'})` : ''}
+                      </span>
+                    ) : l.isHistorico ? (
                       <span style={{ color: 'var(--text-tertiary)', fontWeight: 700 }}>
                         {l.cantidad} {l.uom} históricas
                       </span>
@@ -712,9 +752,16 @@ export function LabelPreview() {
               );
             })}
 
-            {filteredLabels.length === 0 && (
+            {loading && filteredLabels.length === 0 ? (
               <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13, background: 'var(--bg-secondary)', borderRadius: 8 }}>
-                {selectedCliente !== 'ALL' ? (
+                <RefreshCw size={22} className="animate-spin" style={{ margin: '0 auto 8px', opacity: 0.6 }} />
+                <div>Cargando unidades logísticas del servidor...</div>
+              </div>
+            ) : filteredLabels.length === 0 && (
+              <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13, background: 'var(--bg-secondary)', borderRadius: 8 }}>
+                {loadError ? (
+                  <div>No se pudieron cargar unidades logísticas debido a un error de servidor.</div>
+                ) : selectedCliente !== 'ALL' ? (
                   <>
                     <Package size={28} style={{ opacity: 0.4, margin: '0 auto 8px' }} />
                     <div style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>Depositante {selectedCliente} seleccionado</div>
@@ -723,7 +770,11 @@ export function LabelPreview() {
                     </div>
                   </>
                 ) : (
-                  <div>No hay unidades logísticas que coincidan con la búsqueda.</div>
+                  <div>
+                    {currentLabels.length === 0
+                      ? `No hay unidades logísticas registradas en ${scopeTab === 'FISICO' ? 'almacén físico' : 'el histórico'}.`
+                      : 'No hay unidades logísticas que coincidan con la búsqueda.'}
+                  </div>
                 )}
               </div>
             )}
@@ -783,7 +834,7 @@ export function LabelPreview() {
                   REIMPRESIÓN HISTÓRICA — UNIDAD LOGÍSTICA FUERA DE ALMACÉN
                 </div>
                 <div>
-                  Esta HU fue despachada en la orden <strong>{activeLabel.documentoSalida || 'PED-2026-0008'}</strong>{activeLabel.destinoSalida ? ` con destino a ${activeLabel.destinoSalida}` : ''}. Última ubicación registrada: <strong>{activeLabel.ubicacion}</strong>. La reimpresión es exclusivamente para reposición de etiqueta dañada o trazabilidad de salida. <strong>NO genera inventario, NO reactiva stock comercial y NO genera movimientos de kárdex.</strong>
+                  Esta HU fue despachada en la orden <strong>{activeLabel.documentoSalida || 'Salida registrada'}</strong>{activeLabel.destinoSalida ? ` con destino a ${activeLabel.destinoSalida}` : ''}. Última ubicación registrada: <strong>{activeLabel.ubicacion}</strong>. La reimpresión es exclusivamente para reposición de etiqueta dañada o trazabilidad de salida. <strong>NO genera inventario, NO reactiva stock comercial y NO genera movimientos de kárdex.</strong>
                 </div>
               </div>
             </div>
@@ -876,21 +927,26 @@ export function LabelPreview() {
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: 1, color: '#000' }}>{activeLabel.huId}</div>
                       <span style={{ fontSize: 9, fontWeight: 800, border: '1px solid #000', padding: '1px 4px', borderRadius: 3 }}>
-                        {activeLabel.tipoHu || 'CAJA'}
+                        {activeLabel.isContainerMaster ? 'TARIMA MASTER' : (activeLabel.tipoHu || 'CAJA')}
                       </span>
                     </div>
                     <div style={{ fontSize: 12, marginTop: 4 }}>
-                      <span style={{ color: '#555' }}>SKU:</span> <strong>{activeLabel.sku}</strong>
+                      {activeLabel.isContainerMaster ? (
+                        <><strong>Tarima Master</strong> · <span>{activeLabel.sku}</span></>
+                      ) : (
+                        <><span style={{ color: '#555' }}>SKU:</span> <strong>{activeLabel.sku}</strong></>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, marginTop: 2, color: '#222', fontWeight: 600 }}>{activeLabel.desc}</div>
                     <div style={{ fontSize: 12, marginTop: 6, display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #ddd', paddingTop: 4 }}>
                       <span>Lote: <strong>{activeLabel.lote}</strong></span>
                       <span>
-                        Cant: <strong>{activeLabel.cantidad} {activeLabel.uom}</strong>
-                        {activeLabel.isHistorico && <span style={{ fontSize: 10, color: '#666', marginLeft: 4 }}>(HISTÓRICO)</span>}
-                        {activeLabel.estadoHu === 'CUARENTENA' && <span style={{ fontSize: 10, color: '#D97706', marginLeft: 4 }}>(CUARENTENA)</span>}
-                        {activeLabel.estadoHu === 'BLOQUEADO' && <span style={{ fontSize: 10, color: '#DC2626', marginLeft: 4 }}>(BLOQUEADO)</span>}
-                        {activeLabel.estadoHu === 'ACTIVO' && <span style={{ fontSize: 10, color: '#065F46', marginLeft: 4 }}>(FÍSICO)</span>}
+                        Cant: <strong>{activeLabel.isContainerMaster ? '1 tarima' : `${activeLabel.cantidad} ${activeLabel.uom}`}</strong>
+                        {activeLabel.isContainerMaster && <span style={{ fontSize: 10, color: '#3730A3', marginLeft: 4 }}>(CONTENEDOR)</span>}
+                        {!activeLabel.isContainerMaster && activeLabel.isHistorico && <span style={{ fontSize: 10, color: '#666', marginLeft: 4 }}>(HISTÓRICO)</span>}
+                        {!activeLabel.isContainerMaster && activeLabel.estadoHu === 'CUARENTENA' && <span style={{ fontSize: 10, color: '#D97706', marginLeft: 4 }}>(CUARENTENA)</span>}
+                        {!activeLabel.isContainerMaster && activeLabel.estadoHu === 'BLOQUEADO' && <span style={{ fontSize: 10, color: '#DC2626', marginLeft: 4 }}>(BLOQUEADO)</span>}
+                        {!activeLabel.isContainerMaster && activeLabel.estadoHu === 'ACTIVO' && <span style={{ fontSize: 10, color: '#065F46', marginLeft: 4 }}>(FÍSICO)</span>}
                       </span>
                     </div>
                   </div>

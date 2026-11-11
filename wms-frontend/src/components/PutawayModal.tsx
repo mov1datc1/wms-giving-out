@@ -243,14 +243,14 @@ export function PutawayModal({
     (currentBox?.ubicacionActual && !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'ANDEN', 'STAGING'].includes(currentBox.ubicacionActual) ? currentBox.ubicacionActual : null) ||
     (currentValidation.detalle?.match(/en rack físico ([A-Z0-9-]+)/i)?.[1]) ||
     currentBox?.suggestedLocation?.codigo ||
-    'A01-R02-N1';
+    'Sin asignar';
 
   const confirmedOperator =
     currentValidation.operator ||
     (currentValidation.detalle?.match(/Operador:\s*([^.]+)\./i)?.[1]) ||
-    'Jonathan Palacios';
+    'No disponible';
 
-  let confirmedFormattedDate = '19/10/2026, 02:26:54 p.m.';
+  let confirmedFormattedDate = 'No disponible';
   if (currentValidation.validatedAt) {
     try {
       confirmedFormattedDate = new Date(currentValidation.validatedAt).toLocaleString('es-MX', {
