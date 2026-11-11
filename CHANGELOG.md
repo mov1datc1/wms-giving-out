@@ -4,6 +4,57 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.26] — 2026-11-11 (Cierre de Fase 3 — Layout Físico Real, Hardening Integral y Certificación E2E REC-2026-0020)
+
+### 🏁 Consolidación Final de Fase 3 y Promoción a `dev`
+
+Esta versión cierra formalmente la **Fase 3 de Adaptación al Layout Físico Real**, integrando el mapa físico operativo `G0001`–`G0045`, la regla física estricta de 1 tarima por posición, la segregación semántica de Tarima Master como contenedor logístico sin duplicar inventario, el hardening transversal de trazabilidad lote/caducidad, la corrección semántica de calidad conforme vs rescate real, el cierre atómico e idempotente de recepciones, la normalización calendar-day y de terminología en Trazabilidad/Kárdex, y las 5 suites automatizadas de regresión (32/32 PASS) tras la certificación E2E completa de `REC-2026-0020`.
+
+### Layout Físico Real, Regla de 1 Tarima y Contenedores Logísticos
+- **Layout Oficial Operativo (`G0001`–`G0045`):**
+  - 45 posiciones físicas de piso (`TARIMA_PISO`) activas en operación: **35 en Área Interior** (`G0001`–`G0035`) y **10 en Exterior Techado** (`G0036`–`G0045`).
+  - **3 posiciones designadas para Producto No Conforme (PNC):** `G0036`, `G0041` y `G0042`, con mutabilidad bidireccional Comercial $\leftrightarrow$ PNC resguardada por validación de stock/HUs, RBAC y asiento obligatorio en `AuditLog`.
+  - **6 áreas especiales activas preservadas:** `REC-01`, `REC-02` (`RECIBO`), `STG-01`, `STG-02` (`STAGING`), `DEV-01` (`PISO`) y `NC-EXCESO-01` (`CUARENTENA`).
+  - **48 racks históricos (`Axx/Bxx`):** Inactivados operativamente (`activo = false`) y aislados exclusivamente en la pestaña de consulta histórica de `Locations.tsx`.
+- **Regla `1 Posición Física = 1 Tarima` y Tarima Master Sin Duplicación Contable:**
+  - En `putaway-engine.service.ts`: compatibilidad general de áreas comerciales (`INTERIOR`, `EXTERIOR_TECHADO`), exclusión de posiciones PNC y cálculo estricto de ocupación física por contenedor raíz (`parentHuId`), consolidando cajas hermanas bajo la misma Tarima Master (`isSamePalletConsolidation`) sin consumir capacidad adicional ni falsos `2/1`.
+  - En `PutawayModal.tsx`: visualización clara de consolidación (`1/1 tarima (Misma Tarima Master en curso)`) y formateo calendar-day de caducidad.
+  - En `locationHuDisplay.ts` y `Locations.tsx`: separación canónica entre contenedores padre (`PALLET` / `TARIMA` Master mostrados como contenedor lógico de cajas asociadas) y HUs comerciales inventariables, eliminando falsos desacuerdos contables (e.g. `24 PZA` vs `26 PZA` en `G0001`).
+
+### Hardening Operativo E2E de Recepción, Calidad, Etiquetado y Cierre
+- **Trazabilidad Obligatoria Lote / Caducidad (`inventory-operational-state.util.ts` & `operations.controller.ts`):**
+  - Nuevos validadores centrales `resolveTraceabilityRequirements`, `isMissingLotValue`, `parseStrictCalendarDate` y `validateMandatoryLotAndExpiry` aplicados transversalmente en carga/edición de previo, conciliación en andén, generación de HUs/etiquetas, Putaway y cierre oficial, rechazando lotes vacíos/centinelas (`S/LOTE`, `N/A`, etc.), formatos inválidos o caducidades vencidas (`exp <= hoy`).
+- **Hardening de Recepción y Etiquetado (`Receiving.tsx` & `DualLabelModal.tsx`):**
+  - Refuerzo de validaciones de recepción y reflejo explícito del andén asignado (`Andén 01`, vía `receipt.andenAsignado`) en impresión de etiquetas duales junto con la jerarquía de Tarima Master + cajas hijas.
+- **Calidad Conforme vs. Rescate Real (`operations.controller.ts`, `qualityReportClassification.ts`, `ReceiptReportModal.tsx`, `QualityInspectionModal.tsx`, `Receiving.tsx`):**
+  - En `reconcileAnden` y emisión de dictamen técnico: recepciones 100% conformes sin daño ni reacondicionamiento registran `totalPiezasRescatadas = 0`, `totalPiezasMerma = 0` y `totalPiezasInspeccionadas = conformes`; `totalPiezasRescatadas` queda reservado exclusivamente para piezas recuperadas de mercancía dañada.
+  - Clasificador compartido `qualityReportClassification.ts` (`classifyQualityOutcome`, `isActiveRescuedBox`, `parseQualityDetalles`, `hasDetailsDamageEvidence`) para emitir reporte principal, Firma 2 y **Anexo B** diferenciando *Liberación Técnica de Calidad en Andén (`LIBERADO / CONFORME`)* vs *Inspección / Reacondicionamiento por Daño*, con compatibilidad retroactiva para expedientes previos (incluido `REC-2026-0020` sin alterar su histórico en BD) y exclusión de HUs `DEV-01` / inactivas.
+- **Cierre Atómico e Idempotente + `AuditLog` (`POST /api/receipts/:id/close`):**
+  - Bloqueos defensivos generales ante: conteo en andén incompleto (`conteoAndenEstado != COMPLETADO`), inspección de calidad pendiente, etiquetas sin colocar cuando existen HUs físicas, partidas conformes sin HUs comerciales activas, HUs sin `lotId` o detenidas en tránsito/andén/staging, ausencia o desbalance de `LotInventory`, ubicación física no almacenable para saldo conforme, lote/caducidad faltante/inválida/vencida o discrepancias sin justificación/clasificación.
+  - Operación idempotente que no duplica `LotInventory`, `HandlingUnit` ni `InventoryMovement` y registra el asiento legal `CERRAR_RECEPCION` en `AuditLog`.
+
+### Inventario, Ubicaciones y Trazabilidad / Kárdex
+- **Corrección Calendar-Day Sin Desfase Horario (`traceabilityDisplay.ts`, `Traceability.tsx`, `PutawayModal.tsx`):**
+  - Eliminación del desfase de `-1` día generado por conversiones UTC $\rightarrow$ hora local sobre fechas límite/caducidad (e.g. `2027-06-30T00:00:00.000Z` ahora se presenta consistentemente como `30/06/2027` en detalle de movimiento y exportación CSV, nunca `29/6/2027`).
+- **Terminología Posición Física vs. Rack Histórico (`inventory.controller.ts`, `operations.controller.ts`, `traceabilityDisplay.ts`, `Traceability.tsx`):**
+  - `GET /api/inventory/movements` incorpora `tipoUbicacion` de solo lectura en `fromLocation` y `toLocation`.
+  - Nuevos movimientos de Putaway / conciliación emplean `formatDestinationLocationPhrase` (`en posición física <CODIGO>` para `TARIMA_PISO` / piso vs `a rack <CODIGO>` únicamente en estanterías `ESTANTERIA`/`RACK`).
+  - Movimientos históricos inmutables en BD (p. ej. `"Alojamiento Putaway confirmado a rack G0001 (Fase 4)"`) se normalizan en UI mediante `formatMovementMotivoDisplay` / `isHistoricalRackLocation` a `"Alojamiento Putaway confirmado en posición física G0001 (Fase 4)"` sin mutar BD ni alterar racks históricos `Axx`/`Bxx`.
+
+### Suites Automatizadas Añadidas y Certificación E2E
+- **Backend Jest (`wms-backend/src/modules/operations/` — `5 suites / 32 tests PASS`):**
+  - `putaway-engine.service.spec.ts`: Reglas de áreas `INTERIOR` / `EXTERIOR_TECHADO`, exclusión PNC, capacidad 1 tarima y consolidación de Tarima Master.
+  - `receipt-closure.spec.ts`: Hardening integral de `POST /api/receipts/:id/close` e idempotencia.
+  - `quality-inspection.spec.ts`: Clasificación conforme vs rescate real y compatibilidad de Reporte / Anexo B.
+  - `location-hu-display.spec.ts`: Segregación de Tarima Master en cálculo y detalle de ubicaciones.
+  - `traceability-display.spec.ts`: Formato calendar-day (`2027-06-30` $\rightarrow$ `30/06/2027`), terminología `TARIMA_PISO` vs rack histórico y proyección `tipoUbicacion`.
+- **Resultado E2E Real Validado (`REC-2026-0020` & Control `REC-2026-0019`):**
+  - **`REC-2026-0020` (AlimNorte · `FAC-QA-E2E-001` · `ACE-OLI-1L`):** Flujo completo **Previo → Rampa → Calidad → Etiquetas → Putaway → Cierre** aprobado técnica y visualmente; `estado = CERRADA`, `bloqueado = true`, `24` esperadas / `24` recibidas / `24` conformes / `0` merma / `0` faltante, lote `LOT-QA-E2E-001`, caducidad `2027-06-30`, `1` Tarima Master (`PLT-REC-2026-0020-01`) + `2` cajas x `12 PZA` (`BOX-REC-2026-0020-0001`, `BOX-REC-2026-0020-0002`) alojadas en **`G0001`** (`OCUPADO`, `1/1` tarima), `LotInventory = 1` (`24` disponibles vendibles, `0` reservado, `0` bloqueado, `LIBERADO`), `InventoryMovement = 2 TRASIEGOS` (`REC-01` $\rightarrow$ `G0001`, `12 + 12 = 24 PZA`); Reporte Final, Anexos, Inventario, Ubicaciones, Plano Físico 2D y Trazabilidad/Kárdex en **PASS**.
+  - **`REC-2026-0019` (`CELERA SA DE CV`):** Permanece intacta como control en **`PENDIENTE_ARRIBO`** (`18` esperadas / `0` recibidas).
+- **Recomendación Baseline Pre-QA:** Se recomienda tomar un snapshot/respaldo de BD antes de iniciar la fase de **QA integral del sistema desde `dev`** sobre esta baseline estable de Fase 3.
+
+---
+
 ## [1.9.25] — 2026-11-09 (Hardening de Seguridad en Rampa y Cierre Pre-Operativo — REC-2026-0019)
 
 ### 🛡️ Hardening de Rampa, Validación de Sellos y Preparación Pre-Operativa Real

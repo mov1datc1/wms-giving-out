@@ -2,6 +2,10 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
+  formatMovementExpiryDate,
+  formatMovementMotivoDisplay,
+} from '../utils/traceabilityDisplay';
+import {
   GitBranch, Search, RefreshCw, Package, ArrowRight, MapPin,
   Calendar, User, ArrowDown, ArrowUp, Building2,
   Tag, Box, FileText, Plus, Minus, Download, X, RotateCcw,
@@ -144,9 +148,11 @@ interface InventoryMovementRecord {
   };
   fromLocation?: {
     codigo?: string;
+    tipoUbicacion?: string | null;
   };
   toLocation?: {
     codigo?: string;
+    tipoUbicacion?: string | null;
   };
   almacen?: {
     codigo?: string;
@@ -471,7 +477,7 @@ export function Traceability() {
         escapeCsv(m.sku?.codigo || 'N/A'),
         escapeCsv(m.sku?.descripcion || 'N/A'),
         escapeCsv(m.lote?.lote || 'N/A'),
-        escapeCsv(m.lote?.fechaVencimiento ? new Date(m.lote.fechaVencimiento).toLocaleDateString('es-MX') : 'N/A'),
+        escapeCsv(formatMovementExpiryDate(m.lote?.fechaVencimiento, 'N/A')),
         escapeCsv(m.hu?.codigo || 'N/A'),
         escapeCsv(m.cantidad),
         escapeCsv(uom),
@@ -479,7 +485,7 @@ export function Traceability() {
         escapeCsv(toLoc),
         escapeCsv(m.usuario || 'Sistema'),
         escapeCsv(almac),
-        escapeCsv(m.motivo || 'Operacion estandar')
+        escapeCsv(formatMovementMotivoDisplay(m) || 'Operacion estandar')
       ].join(',');
     });
 
@@ -821,9 +827,9 @@ export function Traceability() {
                         </div>
 
                         {/* Reason / Details */}
-                        {m.motivo && (
+                        {formatMovementMotivoDisplay(m) && (
                           <div className="timeline-details" style={{ marginTop: 2 }}>
-                            <span className="timeline-detail">{m.motivo}</span>
+                            <span className="timeline-detail">{formatMovementMotivoDisplay(m)}</span>
                           </div>
                         )}
 
@@ -1048,7 +1054,7 @@ export function Traceability() {
                       </div>
                       <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
                         {selectedMovement.lote?.fechaVencimiento
-                          ? `Vence: ${new Date(selectedMovement.lote.fechaVencimiento).toLocaleDateString('es-MX')}`
+                          ? `Vence: ${formatMovementExpiryDate(selectedMovement.lote.fechaVencimiento)}`
                           : 'Sin fecha de vencimiento'}
                       </div>
                     </div>
@@ -1126,7 +1132,7 @@ export function Traceability() {
                         <FileText size={12} /> MOTIVO OPERATIVO
                       </div>
                       <div style={{ fontSize: 13, color: '#0F172A', marginTop: 4 }}>
-                        {selectedMovement.motivo || 'Operación estándar registrada en sistema'}
+                        {formatMovementMotivoDisplay(selectedMovement) || 'Operación estándar registrada en sistema'}
                       </div>
                     </div>
                   </div>

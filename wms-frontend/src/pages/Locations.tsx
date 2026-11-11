@@ -9,6 +9,10 @@ import {
 } from 'lucide-react';
 import { formatCalendarDate } from '../utils/dateUtils';
 import {
+  getLocationHuRowPresentation,
+  summarizeLocationHus,
+} from '../utils/locationHuDisplay';
+import {
   REAL_WAREHOUSE_POSITIONS,
   SPATIAL_LANDMARKS,
   WAREHOUSE_CANVAS_DIMENSIONS,
@@ -1753,6 +1757,17 @@ export function Locations() {
                   // Datos a mostrar según toggle de usuario (Punto 7)
                   const displayLots = (filterCliente && showOnlyFilterClientInModal) ? clientLotsInModal : allLots;
                   const displayHus = (filterCliente && showOnlyFilterClientInModal) ? clientHusInModal : allHus;
+                  const clientHuSummary = summarizeLocationHus({
+                    lots: clientLotsInModal,
+                    hus: clientHusInModal,
+                    allHusInPosition: allHus,
+                  });
+                  const clientPhysicalBultosCount = clientHuSummary.physicalPalletsCount;
+                  const displayHuSummary = summarizeLocationHus({
+                    lots: displayLots,
+                    hus: displayHus,
+                    allHusInPosition: allHus,
+                  });
 
                   return (
                     <>
@@ -1920,7 +1935,7 @@ export function Locations() {
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
                               {filterCliente && showOnlyFilterClientInModal
-                                ? `${clientHusInModal.length} ${clientHusInModal.length === 1 ? 'bulto' : 'bultos'} de ${selectedClientName}`
+                                ? `${clientPhysicalBultosCount} ${clientPhysicalBultosCount === 1 ? 'bulto' : 'bultos'} de ${selectedClientName}`
                                 : `${locDetailData?.ocupacionBultos ?? locDetailData?.handlingUnits?.length ?? 0} ${(locDetailData?.ocupacionBultos ?? locDetailData?.handlingUnits?.length ?? 0) === 1 ? 'bulto total' : 'bultos totales'}`}
                             </div>
                           </div>
@@ -2035,9 +2050,9 @@ export function Locations() {
                               <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
                                 {filterCliente && showOnlyFilterClientInModal ? (
                                   <>
-                                    <span>{clientHusInModal.length}</span>{' '}
+                                    <span>{clientPhysicalBultosCount}</span>{' '}
                                     <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                      {clientHusInModal.length === 1 ? 'bulto' : 'bultos'} de {selectedClientName} (Total: {locDetailData?.ocupacionBultos ?? 0}{' '}
+                                      {clientPhysicalBultosCount === 1 ? 'bulto' : 'bultos'} de {selectedClientName} (Total: {locDetailData?.ocupacionBultos ?? 0}{' '}
                                       {locDetailData?.capacidadBultos
                                         ? `/${locDetailData.capacidadBultos} bultos`
                                         : `${(locDetailData?.ocupacionBultos ?? 0) === 1 ? 'bulto alojado' : 'bultos alojados'} · límite no configurado`})
@@ -2256,10 +2271,16 @@ export function Locations() {
                       {/* Tabla 2: Unidades de Manejo (HUs) Físicas en Posición */}
                       {displayHus.length > 0 && (
                         <div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
                             <h4 style={{ fontSize: 13, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
                               <Layers size={15} color="var(--primary)" /> Unidades de Manejo (HUs) Físicas en Posición ({displayHus.length})
                             </h4>
+                            <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', fontWeight: 600 }}>
+                              {displayHuSummary.totalPiecesInInventariableHus.toLocaleString()} piezas inventariables en {displayHuSummary.inventariableHus.length} {displayHuSummary.inventariableHus.length === 1 ? 'caja' : 'cajas'}
+                              {displayHuSummary.containerHus.length > 0
+                                ? ` · ${displayHuSummary.containerHus.length} ${displayHuSummary.containerHus.length === 1 ? 'tarima master' : 'tarimas master'}`
+                                : ''}
+                            </span>
                           </div>
                           <div style={{ borderRadius: 8, overflowX: 'auto', border: '1px solid var(--border)', backgroundColor: 'var(--bg-primary)' }}>
                             <table className="data-table" style={{ fontSize: 12, width: '100%', borderCollapse: 'collapse' }}>
@@ -2274,54 +2295,97 @@ export function Locations() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {displayHus.map((h: any) => (
-                                  <tr key={h.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
-                                      <span style={{ fontFamily: 'monospace', fontWeight: 800, color: 'var(--primary)', fontSize: 12 }}>
-                                        {h.codigo}
-                                      </span>
-                                    </td>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle', textTransform: 'capitalize' }}>
-                                      {h.tipoHu?.toLowerCase() || 'caja'}
-                                    </td>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle', whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                                      <div style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: 12 }}>
-                                        {h.skuCodigo || h.lote?.sku?.codigo || '—'}
-                                      </div>
-                                      {h.lote?.sku?.descripcion && (
-                                        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                                          {h.lote.sku.descripcion}
+                                {displayHus.map((h: any) => {
+                                  const huRow = getLocationHuRowPresentation(h, allHus);
+                                  return (
+                                    <tr
+                                      key={h.id}
+                                      style={{
+                                        borderBottom: '1px solid var(--border)',
+                                        backgroundColor: huRow.isContainer ? 'rgba(15, 118, 110, 0.035)' : undefined,
+                                      }}
+                                    >
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
+                                        <span style={{ fontFamily: 'monospace', fontWeight: 800, color: huRow.isContainer ? '#0F766E' : 'var(--primary)', fontSize: 12 }}>
+                                          {h.codigo}
+                                        </span>
+                                        {huRow.isContainer ? (
+                                          <div style={{ fontSize: 10.5, color: '#0F766E', fontWeight: 700, marginTop: 2 }}>
+                                            Contenedor padre
+                                          </div>
+                                        ) : huRow.parentCodigo ? (
+                                          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                                            Tarima: <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{huRow.parentCodigo}</span>
+                                          </div>
+                                        ) : null}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle', textTransform: huRow.isContainer ? 'none' : 'capitalize' }}>
+                                        {huRow.isContainer ? (
+                                          <span
+                                            style={{
+                                              fontSize: 10.5,
+                                              fontWeight: 700,
+                                              padding: '2px 7px',
+                                              borderRadius: 4,
+                                              backgroundColor: 'rgba(15, 118, 110, 0.12)',
+                                              color: '#0F766E',
+                                              border: '1px solid rgba(15, 118, 110, 0.25)',
+                                              display: 'inline-block',
+                                            }}
+                                          >
+                                            {huRow.tipoLabel}
+                                          </span>
+                                        ) : (
+                                          huRow.tipoLabel
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle', whiteSpace: 'normal', wordBreak: 'break-word' }}>
+                                        <div style={{ fontWeight: 700, fontFamily: huRow.isContainer ? 'inherit' : 'monospace', fontSize: 12, color: huRow.isContainer ? '#0F172A' : undefined }}>
+                                          {huRow.contenidoLabel}
                                         </div>
-                                      )}
-                                    </td>
-                                    <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
-                                      <span className="badge badge-default" style={{ fontFamily: 'monospace' }}>
-                                        {h.loteTexto || h.lote?.lote || '—'}
-                                      </span>
-                                    </td>
-                                    <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, verticalAlign: 'middle' }}>
-                                      {h.cantidad} piezas
-                                    </td>
-                                    <td style={{ padding: '10px 14px', textAlign: 'center', verticalAlign: 'middle' }}>
-                                      <span className="badge badge-success" style={{ fontSize: 10, fontWeight: 700 }}>
-                                        {h.estadoHu || 'ALMACENADA'}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
+                                        {huRow.contenidoSublabel && (
+                                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                            {huRow.contenidoSublabel}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', verticalAlign: 'middle' }}>
+                                        <span className="badge badge-default" style={{ fontFamily: 'monospace' }}>
+                                          {h.loteTexto || h.lote?.lote || '—'}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, verticalAlign: 'middle' }}>
+                                        <div>{huRow.cantidadLabel}</div>
+                                        {huRow.cantidadSublabel && (
+                                          <div style={{ fontSize: 11, fontWeight: 600, color: '#0F766E', marginTop: 2 }}>
+                                            {huRow.cantidadSublabel}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '10px 14px', textAlign: 'center', verticalAlign: 'middle' }}>
+                                        <span className="badge badge-success" style={{ fontSize: 10, fontWeight: 700 }}>
+                                          {h.estadoHu || 'ALMACENADA'}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
 
-                          {/* Nota de trazabilidad cuando el inventario físico difiere de la cantidad en HU (Punto 4) */}
+                          {/* Nota de trazabilidad cuando el inventario físico difiere de la cantidad en HUs inventariables */}
                           {(() => {
-                            const totalPiecesInLots = displayLots.reduce((s: number, l: any) => s + ((l.cantidadDisponible || 0) + (l.cantidadBloqueada || 0)), 0);
-                            const totalPiecesInHus = displayHus.reduce((s: number, h: any) => s + Number(h.cantidad || 0), 0);
-                            const hasHuDiscrepancy = displayHus.length > 0 && totalPiecesInLots !== totalPiecesInHus;
+                            const {
+                              inventariableHus,
+                              totalPiecesInLots,
+                              totalPiecesInInventariableHus,
+                              hasHuDiscrepancy,
+                            } = displayHuSummary;
 
                             if (!hasHuDiscrepancy) return null;
 
-                            const specificCause = displayHus.find((h: any) => h.motivoDano || h.notas)?.motivoDano || displayHus.find((h: any) => h.notas)?.notas;
+                            const specificCause = inventariableHus.find((h: any) => h.motivoDano || h.notas)?.motivoDano || inventariableHus.find((h: any) => h.notas)?.notas;
 
                             return (
                               <div style={{
@@ -2339,7 +2403,7 @@ export function Locations() {
                               }}>
                                 <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
                                 <span>
-                                  <strong>Nota de trazabilidad:</strong> El saldo físico actual registrado en inventario ({totalPiecesInLots.toLocaleString()} piezas) difiere de la cantidad registrada en {displayHus.length === 1 ? 'la HU' : 'las HUs'} ({totalPiecesInHus.toLocaleString()} piezas). {specificCause
+                                  <strong>Nota de trazabilidad:</strong> El saldo físico actual registrado en inventario ({totalPiecesInLots.toLocaleString()} piezas) difiere de la cantidad registrada en {inventariableHus.length === 1 ? 'la HU inventariable' : 'las HUs inventariables'} ({totalPiecesInInventariableHus.toLocaleString()} piezas). {specificCause
                                     ? `Causa documentada: ${specificCause}. Se recomienda revisar la trazabilidad de la HU.`
                                     : 'Esta diferencia puede estar asociada a movimientos parciales históricos, ajustes o movimientos realizados sin re-etiquetado/split físico de la unidad de manejo. Se recomienda revisar la trazabilidad de la HU.'
                                   }

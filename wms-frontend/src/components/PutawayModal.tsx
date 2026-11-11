@@ -7,6 +7,7 @@ import {
   Truck, QrCode, Search, CheckCheck, PackageCheck, Info, Lock
 } from 'lucide-react';
 import { API } from '../config/api';
+import { formatCalendarDate } from '../utils/dateUtils';
 
 interface PutawayModalProps {
   receipt: any;
@@ -1209,7 +1210,7 @@ export function PutawayModal({
                                 Lote: <strong style={{ fontFamily: 'monospace' }}>{mov.lote || 'S/L'}</strong>
                               </div>
                               <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
-                                Cad: {mov.fechaVencimiento || 'N/A'}
+                                Cad: {formatCalendarDate(mov.fechaVencimiento, 'N/A')}
                               </div>
                             </td>
                             <td
@@ -1850,7 +1851,7 @@ export function PutawayModal({
                                   Lote: <strong style={{ color: '#0F172A' }}>{currentBox.lote || 'S/L'}</strong>
                                 </div>
                                 <div style={{ fontSize: 11, color: '#64748B' }}>
-                                  Caducidad: <strong style={{ color: '#0F172A' }}>{currentBox.fechaVencimiento || 'N/A'}</strong>
+                                  Caducidad: <strong style={{ color: '#0F172A' }}>{formatCalendarDate(currentBox.fechaVencimiento, 'N/A')}</strong>
                                 </div>
                               </div>
                             </div>
@@ -1947,15 +1948,33 @@ export function PutawayModal({
                                         <strong style={{ color: '#0F766E', fontSize: 13, display: 'block' }}>
                                           1 Tarima Física
                                         </strong>
-                                        <span style={{ color: (currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1 ? '#DC2626' : '#16A34A', fontSize: 10.5, fontWeight: 700 }}>
-                                          {(currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1 ? '1/1 tarimas ocupadas (Completa)' : '0/1 tarimas ocupadas (Libre)'}
+                                        <span
+                                          style={{
+                                            color: currentBox.suggestedLocation.isSamePalletConsolidation
+                                              ? '#059669'
+                                              : (currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1
+                                                ? '#DC2626'
+                                                : '#16A34A',
+                                            fontSize: 10.5,
+                                            fontWeight: 700,
+                                          }}
+                                        >
+                                          {currentBox.suggestedLocation.isSamePalletConsolidation
+                                            ? '1/1 tarima (Misma Tarima Master en curso)'
+                                            : (currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1
+                                              ? '1/1 tarimas ocupadas (Completa)'
+                                              : '0/1 tarimas ocupadas (Libre)'}
                                         </span>
                                       </div>
 
                                       <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, padding: '8px 12px' }}>
                                         <span style={{ color: '#64748B', display: 'block', fontSize: 10.5 }}>Capacidad Disponible:</span>
-                                        <strong style={{ color: '#0284C7', fontSize: 13, display: 'block' }}>
-                                          {(currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1 ? '0 tarimas' : 'Capacidad disponible: 1 tarima'}
+                                        <strong style={{ color: currentBox.suggestedLocation.isSamePalletConsolidation ? '#059669' : '#0284C7', fontSize: 13, display: 'block' }}>
+                                          {currentBox.suggestedLocation.isSamePalletConsolidation
+                                            ? 'Consolidación en tarima activa'
+                                            : (currentBox.suggestedLocation.ocupacionBultosActual ?? 0) >= 1
+                                              ? '0 tarimas'
+                                              : 'Capacidad disponible: 1 tarima'}
                                         </strong>
                                         <span style={{ color: '#64748B', fontSize: 10.5 }}>
                                           1/1 tarimas ocupadas tras acomodo
@@ -2720,7 +2739,7 @@ export function PutawayModal({
 
                                 <td style={{ padding: '10px 14px' }}>
                                   <div style={{ fontSize: 11.5, color: '#0F172A' }}>Lote: <strong>{box.lote || 'S/L'}</strong></div>
-                                  <div style={{ fontSize: 11, color: '#64748B' }}>Cad: {box.fechaVencimiento || 'N/A'}</div>
+                                  <div style={{ fontSize: 11, color: '#64748B' }}>Cad: {formatCalendarDate(box.fechaVencimiento, 'N/A')}</div>
                                 </td>
 
                                 <td style={{ padding: '10px 14px', textAlign: 'center' }}>

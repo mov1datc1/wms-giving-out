@@ -235,8 +235,8 @@ export class InventoryController {
       where,
       include: {
         sku: { select: { codigo: true, descripcion: true, uomBase: true } },
-        fromLocation: { select: { codigo: true } },
-        toLocation: { select: { codigo: true } },
+        fromLocation: { select: { codigo: true, tipoUbicacion: true } },
+        toLocation: { select: { codigo: true, tipoUbicacion: true } },
         almacen: { select: { codigo: true, nombre: true } },
         lote: { select: { lote: true, fechaVencimiento: true } },
         hu: { select: { codigo: true } },
@@ -1214,6 +1214,7 @@ export class InventoryController {
                   huId: item.huId || '',
                   huCodigo: originHu?.codigo || '',
                   tipoHu: originHu?.tipoHu || 'CAJA',
+                  parentHuId: originHu?.parentHuId || null,
                   skuId: originLot.skuId,
                   skuCodigo: originLot.sku?.codigo || '',
                   skuDescripcion: originLot.sku?.descripcion || '',
