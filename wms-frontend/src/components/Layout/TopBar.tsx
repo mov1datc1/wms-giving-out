@@ -30,16 +30,19 @@ const routeNames: Record<string, string> = {
   '/etiquetado': 'Etiquetado',
   '/admin': 'Administración',
   '/conteo-ciclico': 'Conteo Cíclico',
-  '/clientes': 'Clientes',
+  '/clientes': 'Depositantes',
+  '/depositantes': 'Depositantes',
+  '/clientes-finales': 'Clientes Finales',
+  '/proveedores': 'Proveedores',
   '/comercial': 'Cotizaciones',
   '/alertas': 'Alertas',
 };
 
 export function TopBar() {
-  const { user, token, logout } = useAuth();
+  const { user, token, logout, hasPermission } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const pageName = routeNames[location.pathname] || 'Página';
+  const pageName = routeNames[location.pathname] || 'WMS';
 
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -60,10 +63,11 @@ export function TopBar() {
     : '??';
 
   useEffect(() => {
+    if (!token || !user) return;
     loadNotifications();
     const interval = setInterval(loadNotifications, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [token, user?.id]);
 
   // Close dropdowns on click outside
   useEffect(() => {
@@ -118,19 +122,24 @@ export function TopBar() {
   }
 
   async function loadNotifications() {
+    if (!token || !user) return;
     try {
       const readIds: string[] = JSON.parse(localStorage.getItem('wms_read_notifs') || '[]');
       const dismissedIds: string[] = JSON.parse(localStorage.getItem('wms_dismissed_notifs') || '[]');
 
+      const canAlerts = !user.clienteId && hasPermission('alertas');
+      const canOrders = !user.clienteId && (hasPermission('despacho') || hasPermission('picking'));
+      const canCycleCounts = !user.clienteId && hasPermission('conteo-ciclico');
+
       const [alertsRes, ordersRes, ccRes] = await Promise.all([
-        fetch(`${API}/alerts`, { headers }),
-        fetch(`${API}/orders?estado=SOLICITADO,PENDIENTE_APROBACION,EN_PICKING,EN_PROGRESO`, { headers }),
-        fetch(`${API}/cycle-counts?estado=EN_PROGRESO`, { headers }),
+        canAlerts ? fetch(`${API}/alerts`, { headers }) : Promise.resolve(null),
+        canOrders ? fetch(`${API}/orders?estado=SOLICITADO,PENDIENTE_APROBACION,EN_PICKING,EN_PROGRESO`, { headers }) : Promise.resolve(null),
+        canCycleCounts ? fetch(`${API}/cycle-counts?estado=EN_PROGRESO`, { headers }) : Promise.resolve(null),
       ]);
 
       const items: NotificationItem[] = [];
 
-      if (ordersRes.ok) {
+      if (ordersRes?.ok) {
         const orders = await ordersRes.json();
         orders.slice(0, 8).forEach((o: any) => {
           const id = `order-${o.id}`;
@@ -147,7 +156,7 @@ export function TopBar() {
         });
       }
 
-      if (alertsRes.ok) {
+      if (alertsRes?.ok) {
         const alerts = await alertsRes.json();
         alerts.filter((a: any) => !a.resuelta).slice(0, 5).forEach((a: any) => {
           const id = `alert-${a.id}`;
@@ -163,7 +172,7 @@ export function TopBar() {
         });
       }
 
-      if (ccRes.ok) {
+      if (ccRes?.ok) {
         const counts = await ccRes.json();
         counts.slice(0, 3).forEach((c: any) => {
           const id = `cc-${c.id}`;
@@ -518,14 +527,21 @@ export function TopBar() {
           )}
         </div>
 
-        <div className="topbar-user" onClick={logout} title="Cerrar sesión">
+        <button
+          type="button"
+          className="topbar-user"
+          onClick={logout}
+          title="Cerrar sesión"
+          aria-label="Cerrar sesión"
+          style={{ background: 'transparent', border: 'none', textAlign: 'left', fontFamily: 'inherit', cursor: 'pointer' }}
+        >
           <div className="topbar-avatar">{initials}</div>
           <div>
             <div className="topbar-user-name">{user?.nombre || 'Usuario'}</div>
             <div className="topbar-user-role">{user?.rolNombre || 'Sin rol'}</div>
           </div>
           <LogOut size={15} style={{ color: 'var(--text-muted)', marginLeft: 4 }} />
-        </div>
+        </button>
       </div>
     </header>
   );

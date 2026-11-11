@@ -2,11 +2,13 @@ import { Controller, Get, Post, Put, Delete, Param, Body, HttpException, HttpSta
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 import { AdminAuthGuard } from './admin.guard';
+import { RequireAccess } from './auth.decorators';
 import * as bcrypt from 'bcrypt';
 
 @ApiTags('Auth')
 @Controller('api/admin')
 @UseGuards(AdminAuthGuard)
+@RequireAccess({ modules: ['admin'], allowPortal: false })
 export class AdminController {
   constructor(private prisma: PrismaService) {}
 

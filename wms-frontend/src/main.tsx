@@ -58,9 +58,36 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user, hasPermission, loading } = useAuth();
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
+  if (user.clienteId) return <Navigate to="/portal" replace />;
   if (!user.isSuperAdmin && !hasPermission('admin')) {
     return <Navigate to="/" replace />;
   }
+  return <>{children}</>;
+}
+
+/** Guardia de ruta por módulo y separación Staff vs Portal Depositante */
+function ModuleRoute({
+  modulos,
+  allowPortal = false,
+  children,
+}: {
+  modulos: string | string[];
+  allowPortal?: boolean;
+  children: React.ReactNode;
+}) {
+  const { user, hasPermission, loading } = useAuth();
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+
+  if (user.clienteId && !allowPortal) {
+    return <Navigate to="/portal" replace />;
+  }
+
+  const requiredModules = Array.isArray(modulos) ? modulos : [modulos];
+  if (!user.isSuperAdmin && !requiredModules.some(m => hasPermission(m))) {
+    return <Navigate to={user.clienteId ? '/portal' : '/'} replace />;
+  }
+
   return <>{children}</>;
 }
 
@@ -84,10 +111,10 @@ createRoot(document.getElementById('root')!).render(
               <PortalLayout />
             </ProtectedRoute>
           }>
-            <Route path="/portal" element={<PortalDashboard />} />
-            <Route path="/portal/inventario" element={<PortalInventory />} />
-            <Route path="/portal/pedidos" element={<PortalOrders />} />
-            <Route path="/portal/nuevo-pedido" element={<PortalNewOrder />} />
+            <Route path="/portal" element={<ModuleRoute modulos="dashboard" allowPortal><PortalDashboard /></ModuleRoute>} />
+            <Route path="/portal/inventario" element={<ModuleRoute modulos="inventario" allowPortal><PortalInventory /></ModuleRoute>} />
+            <Route path="/portal/pedidos" element={<ModuleRoute modulos="despacho" allowPortal><PortalOrders /></ModuleRoute>} />
+            <Route path="/portal/nuevo-pedido" element={<ModuleRoute modulos="despacho" allowPortal><PortalNewOrder /></ModuleRoute>} />
           </Route>
 
           {/* === MAIN WMS (Giving Out Staff) === */}
@@ -97,26 +124,26 @@ createRoot(document.getElementById('root')!).render(
             </ProtectedRoute>
           }>
             <Route path="/" element={<SmartRedirect />} />
-            <Route path="/inventario" element={<Inventory />} />
-            <Route path="/recepcion" element={<Receiving />} />
-            <Route path="/picking" element={<Picking />} />
-            <Route path="/despacho" element={<Dispatch />} />
-            <Route path="/ubicaciones" element={<Locations />} />
-            <Route path="/maestros" element={<MasterData />} />
+            <Route path="/inventario" element={<ModuleRoute modulos="inventario"><Inventory /></ModuleRoute>} />
+            <Route path="/recepcion" element={<ModuleRoute modulos="recepcion"><Receiving /></ModuleRoute>} />
+            <Route path="/picking" element={<ModuleRoute modulos="picking"><Picking /></ModuleRoute>} />
+            <Route path="/despacho" element={<ModuleRoute modulos="despacho"><Dispatch /></ModuleRoute>} />
+            <Route path="/ubicaciones" element={<ModuleRoute modulos="ubicaciones"><Locations /></ModuleRoute>} />
+            <Route path="/maestros" element={<ModuleRoute modulos="maestros"><MasterData /></ModuleRoute>} />
             <Route path="/admin" element={
               <AdminRoute>
                 <AdminPanel />
               </AdminRoute>
             } />
-            <Route path="/etiquetado" element={<LabelPreview />} />
-            <Route path="/depositantes" element={<Clients />} />
-            <Route path="/clientes-finales" element={<EndCustomers />} />
-            <Route path="/proveedores" element={<Suppliers />} />
-            <Route path="/conteo-ciclico" element={<CycleCount />} />
-            <Route path="/alertas" element={<Alerts />} />
-            <Route path="/trazabilidad" element={<Traceability />} />
+            <Route path="/etiquetado" element={<ModuleRoute modulos="etiquetado"><LabelPreview /></ModuleRoute>} />
+            <Route path="/depositantes" element={<ModuleRoute modulos="depositantes"><Clients /></ModuleRoute>} />
+            <Route path="/clientes-finales" element={<ModuleRoute modulos="clientes-finales"><EndCustomers /></ModuleRoute>} />
+            <Route path="/proveedores" element={<ModuleRoute modulos={['proveedores', 'maestros']}><Suppliers /></ModuleRoute>} />
+            <Route path="/conteo-ciclico" element={<ModuleRoute modulos="conteo-ciclico"><CycleCount /></ModuleRoute>} />
+            <Route path="/alertas" element={<ModuleRoute modulos="alertas"><Alerts /></ModuleRoute>} />
+            <Route path="/trazabilidad" element={<ModuleRoute modulos="trazabilidad"><Traceability /></ModuleRoute>} />
             {/* Legacy redirect */}
-            <Route path="/clientes" element={<Navigate to="/depositantes" replace />} />
+            <Route path="/clientes" element={<ModuleRoute modulos="depositantes"><Navigate to="/depositantes" replace /></ModuleRoute>} />
           </Route>
         </Routes>
       </AuthProvider>

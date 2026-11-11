@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Put, Delete, Param, Query, Body, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
+import { RequireAccess } from '../auth/auth.decorators';
 
 @ApiTags('UoM Conversions')
 @Controller('api/uom-conversions')
@@ -8,6 +9,10 @@ export class UomController {
   constructor(private prisma: PrismaService) {}
 
   @Get()
+  @RequireAccess({
+    modules: ['maestros', 'recepcion', 'inventario', 'picking', 'despacho', 'dashboard'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Listar conversiones UoM (filtrar por skuId)' })
   async getConversions(@Query('skuId') skuId?: string) {
     const where: any = {};
@@ -23,6 +28,7 @@ export class UomController {
   }
 
   @Post()
+  @RequireAccess({ modules: ['maestros'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear conversión UoM' })
   async createConversion(@Body() data: any) {
     if (!data.skuId || !data.uomOrigen || !data.uomDestino || !data.factorConversion) {
@@ -40,6 +46,7 @@ export class UomController {
   }
 
   @Put(':id')
+  @RequireAccess({ modules: ['maestros'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar conversión UoM' })
   async updateConversion(@Param('id') id: string, @Body() data: any) {
     return this.prisma.uomConversion.update({
@@ -50,12 +57,17 @@ export class UomController {
   }
 
   @Delete(':id')
+  @RequireAccess({ modules: ['maestros'], actions: ['editar', 'cancelar'], allowPortal: false })
   @ApiOperation({ summary: 'Eliminar conversión UoM' })
   async deleteConversion(@Param('id') id: string) {
     return this.prisma.uomConversion.delete({ where: { id } });
   }
 
   @Get('convert')
+  @RequireAccess({
+    modules: ['maestros', 'recepcion', 'inventario', 'picking', 'despacho', 'dashboard'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Convertir cantidades entre unidades de medida' })
   async convert(
     @Query('skuId') skuId: string,

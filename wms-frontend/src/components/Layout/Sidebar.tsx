@@ -20,7 +20,7 @@ const menuSections = [
     items: [
       { path: '/depositantes', icon: Users, label: 'Depositantes', modulo: 'depositantes' },
       { path: '/clientes-finales', icon: Store, label: 'Clientes Finales', modulo: 'clientes-finales' },
-      { path: '/proveedores', icon: Building, label: 'Proveedores', modulo: 'depositantes' },
+      { path: '/proveedores', icon: Building, label: 'Proveedores', modulos: ['proveedores', 'maestros'] },
     ],
   },
   {
@@ -64,6 +64,7 @@ export function Sidebar() {
 
   // Fetch pending approvals count
   useEffect(() => {
+    if (!token) return;
     async function fetchPending() {
       try {
         const res = await fetch(`${API}/dashboard/stats`, { headers: { Authorization: `Bearer ${token}` } });
@@ -94,7 +95,11 @@ export function Sidebar() {
 
       <nav className="sidebar-nav">
         {menuSections.map((section) => {
-          const visibleItems = section.items.filter(item => hasPermission(item.modulo));
+          const visibleItems = section.items.filter((item: any) =>
+            Array.isArray(item.modulos)
+              ? item.modulos.some((m: string) => hasPermission(m))
+              : hasPermission(item.modulo)
+          );
           if (visibleItems.length === 0) return null;
 
           return (

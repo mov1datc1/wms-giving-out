@@ -11,6 +11,7 @@ interface UserData {
   clienteId: string | null;
   isSuperAdmin: boolean;
   permisos: string[];
+  permisosDetalle?: string[];
 }
 
 interface AuthContextType {
@@ -22,13 +23,14 @@ interface AuthContextType {
   requestOtp: (email: string) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   hasPermission: (modulo: string) => boolean;
+  hasActionPermission: (modulo: string, accion: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null, token: null, loading: true,
   login: async () => {}, loginOtp: async () => {},
   requestOtp: async () => ({ success: false, message: '' }),
-  logout: () => {}, hasPermission: () => false,
+  logout: () => {}, hasPermission: () => false, hasActionPermission: () => false,
 });
 
 export function useAuth() { return useContext(AuthContext); }
@@ -140,8 +142,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return user.permisos?.includes(modulo) ?? false;
   }
 
+  function hasActionPermission(modulo: string, accion: string) {
+    if (!user) return false;
+    if (user.isSuperAdmin) return true;
+    if (Array.isArray(user.permisosDetalle) && user.permisosDetalle.length > 0) {
+      return user.permisosDetalle.includes(`${modulo}:${accion}`);
+    }
+    return accion === 'ver' && (user.permisos?.includes(modulo) ?? false);
+  }
+
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, loginOtp, requestOtp, logout, hasPermission }}>
+    <AuthContext.Provider value={{ user, token, loading, login, loginOtp, requestOtp, logout, hasPermission, hasActionPermission }}>
       {children}
     </AuthContext.Provider>
   );

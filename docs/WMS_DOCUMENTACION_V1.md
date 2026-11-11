@@ -524,13 +524,14 @@ SyncLog
 
 ## 9. Sistema de Autenticación
 
-### Flujo de Login
+### Flujo de Login y Guardia Global JWT/RBAC
 ```
 1. POST /api/auth/login { email, password }
 2. Backend: bcrypt.compare(password, user.passwordHash)
-3. Respuesta: { token: JWT, user: { id, email, nombre, rol } }
-4. Frontend: Bearer token en header Authorization
-5. Token expira en 24h (configurable via JWT_EXPIRES_IN)
+3. Respuesta: { token: JWT, user: { id, email, nombre, rol, permisos, permisosDetalle } }
+4. Frontend: Bearer token en header Authorization (AuthContext + ModuleRoute por módulo/acción)
+5. WmsAuthGuard (APP_GUARD): valida JWT Bearer contra User.activo y RolePermission en PostgreSQL (@Public / @RequireAccess), ignora headers x-user-role y aísla clienteId para Portal
+6. Token expira en 24h (configurable via JWT_EXPIRES_IN)
 ```
 
 ### Credenciales por Defecto (Desarrollo)
@@ -759,6 +760,33 @@ npm run build          # Build completo
 - **Suites Jest Backend (`5/5 suites`, `32/32 tests PASS`):** `putaway-engine.service.spec.ts`, `receipt-closure.spec.ts`, `quality-inspection.spec.ts`, `location-hu-display.spec.ts` y `traceability-display.spec.ts`.
 - **Certificación E2E (`REC-2026-0020`):** Ciclo completo `Previo → Rampa → Calidad → Etiquetas → Putaway → Cierre` (`estado = CERRADA`, `24/24/24`, `0` merma, `0` faltante, lote `LOT-QA-E2E-001`, caducidad `2027-06-30`, `1` Tarima Master + `2` cajas x `12 PZA` en `G0001` `1/1`, `LotInventory = 24 PZA LIBERADO`, `InventoryMovement = 2 TRASIEGOS REC-01 → G0001`). Control `REC-2026-0019` intacto en `PENDIENTE_ARRIBO` (`18` esperadas / `0` recibidas).
 - **Respaldo Recomendado Pre-QA:** Antes de ejecutar pruebas destructivas o funcionales de la etapa de **QA integral del sistema en `dev`**, tomar un snapshot completo de la base de datos como baseline estable de cierre de Fase 3.
+
+---
+
+## 16. Actualización Bloque 1 RC — Auth/RBAC Global, Dashboard Real y Catálogos 3PL
+
+**Estado:** Aprobado en QA Bloque 1 (`0 BLOQUEANTES`, `0 ALTOS`) e integrado en `dev` (`main` intacta sin deploy).
+
+### 16.1 Seguridad Transversal JWT/RBAC y Aislamiento Multi-Tenant
+- **`WmsAuthGuard` (`APP_GUARD`), `@Public()` y `@RequireAccess()` (`auth.decorators.ts`, `wms-auth.guard.ts`):** Protección obligatoria en `AdminController`, `ClientsController`, `EndCustomersController`, `MasterDataController`, `InventoryController`, `OperationsController` y `UomController`. Cualquier petición sin Bearer JWT, con `'demo-token'`, JWT inválido o usuario inactivo recibe `401 Unauthorized`; permisos insuficientes o acceso Portal prohibido devuelven `403 Forbidden`.
+- **Anti-Spoofing (`x-user-role`):** `ClientsController` (`resolveVerifiedActor`) y `WmsAuthGuard` ignoran por completo `x-user-role`; se eliminó el switch `"Probar como Operario"` en `Clients.tsx`.
+- **Multi-Tenancy Portal (`req.user.clienteId`):** Aislamiento obligatorio de `clienteId` en `ClientsController`, `EndCustomersController`, `MasterDataController` (`GET /api/skus`), `InventoryController` (`lots`, `handling-units`, `summary`, `movements`, `consolidated`) y `OperationsController` (`orders`, `orders/:id`, `createOrder`, `dashboard/stats`), junto con cierre del bypass sin auth en `finalizeCycleCount`.
+- **Frontend (`AuthContext.tsx`, `main.tsx`, `Sidebar.tsx`, `TopBar.tsx`, `ReceiptReportModal.tsx`):** `GET /api/auth/me` retorna `permisosDetalle` (`modulo:accion`); `ModuleRoute` bloquea navegación directa no autorizada en SPA; `Proveedores` usa `['proveedores', 'maestros']` en lugar de `'depositantes'`; `TopBar` usa `<button class="topbar-user">` y `ReceiptReportModal.tsx` envía `Authorization: Bearer`.
+
+### 16.2 Dashboard Ejecutivo WMS Real (`Dashboard.tsx`)
+- Eliminados valores/textos hardcodeados (`239`, `72`, `274`, `66.7%`, `48 Racks`, `'1 en picking (100 pza)'`, `'REC-01'`, `'Alejandra'`) usando coalescencia `?? 0` y fetch por permisos.
+- Conteo físico de piso calculado sobre posiciones activas (`l.activo !== false`): **45 posiciones** (`42` comerciales + `3` PNC; baseline `1/45` = `2.2%`, `44` libres, `24 PZA` vendibles, `0 Órdenes`).
+
+### 16.3 Catálogos 3PL (`Clients`, `EndCustomers`, `Suppliers`)
+- **Depositantes:** Campos fiscales independientes (`direccionFiscal`, `ciudad`, `estado`) y cálculo real de `totalTarimas` (`parentHuId || id`) excluyendo cajas hijas.
+- **Clientes Finales y Proveedores:** Eliminación total de fallbacks demo (`demoClients`, `demoEndCustomers`, `demoSuppliers`), DTO whitelist, validación `P2002 -> 409 Conflict`, filtros de estado (`?activo=true|false|all`), edición, baja lógica (`DELETE`), reactivación (`PUT :id/reactivate`) y trazabilidad en `AuditLog`.
+
+### 16.4 Validación Automatizada, Deudas Aceptadas y Siguiente Bloque
+- **Pruebas:** `7/7 suites Jest` (**46/46 tests PASS**, incluyendo `wms-auth-rbac.spec.ts` y `block1-catalogs.spec.ts`), `npx nest build` PASS, `tsc -b && vite build` PASS, `git diff --check` PASS y Chrome headless E2E PASS (`0 consoleErrors`, `0 pageExceptions`, `0 unexpectedHttpErrors`).
+- **Deudas No Bloqueantes Aceptadas:** `POST /api/auth/otp/request` sin envío SMTP (`WARNING` en Módulo A) y `3` registros previos `CLI-TEST-PUTAWAY-*` conservados como deuda de limpieza.
+- **Siguiente Fase:** **BLOQUE 2 — REGRESIÓN OPERATIVA INBOUND POST-RBAC** (Recepción, Etiquetado, Inventario, Ubicaciones y Trazabilidad sobre `REC-2026-0020` / `G0001`), seguido de **BLOQUE 3 — PICKING + RESERVA + DESPACHO E2E**.
+
+---
 
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline

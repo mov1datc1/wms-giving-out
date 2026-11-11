@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body, Headers, HttpException, HttpStatus, UseInterceptors, UploadedFile, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body, Headers, Req, HttpException, HttpStatus, UseInterceptors, UploadedFile, HttpCode } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBody, ApiConsumes, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as XLSX from 'xlsx';
 import * as jwt from 'jsonwebtoken';
 import { PrismaService } from '../../prisma.service';
+import { RequireAccess } from '../auth/auth.decorators';
 import { withConcurrencyRetry } from '../../common/concurrency.util';
 import { PutawayEngineService, PutawayItemInput } from './putaway-engine.service';
 import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
@@ -130,6 +131,7 @@ export class OperationsController {
   }
 
   @Get('receipts/:id')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['ver'], allowPortal: false })
   @ApiOperation({
     summary: 'Obtener detalle de una recepción previa por ID o Folio',
   })
@@ -215,6 +217,7 @@ export class OperationsController {
   }
 
   @Get('receipts/:id/history')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['ver'], allowPortal: false })
   @ApiOperation({
     summary: 'Obtener bitácora de auditoría y movimientos de kárdex de una recepción previa',
   })
@@ -262,6 +265,7 @@ export class OperationsController {
 
   // ============ ACTA DE ENTRADA EN RAMPA & LIBERACIÓN DE CHOFER (FASE 1) ============
   @Post('receipts/:id/rampa-arribo')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Registrar arribo a rampa y emitir Acta de Chofer Exprés (Fase 1)',
     description: 'Registra el conteo exterior de bultos contra chofer, daños visibles en empaque, firmas digitales y libera la unidad de transporte sin alterar la disponibilidad de inventario.',
@@ -475,6 +479,7 @@ export class OperationsController {
   }
 
   @Get('receipts/:id/acuse-rampa')
+  @RequireAccess({ modules: ['recepcion'], actions: ['ver'], allowPortal: false })
   @ApiOperation({
     summary: 'Consultar Acta Oficial de Entrada en Rampa y Chofer (Fase 1)',
     description: 'Devuelve la información estructurada del acta de rampa, firmas, transporte, conteo exterior y aviso legal para impresión y auditoría.',
@@ -605,6 +610,7 @@ export class OperationsController {
 
   // ============ DOBLE ETIQUETADO GIVING OUT (MASTER PALLET VS CAJAS ÚNICAS) ============
   @Post('receipts/:id/generate-labels')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['crear', 'imprimir', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Generar doble etiquetado industrial Giving Out (Pallets Master + Cajas Únicas)',
     description: 'Genera de forma idempotente las Handling Units de nivel Tarima Master (con QR) y Cajas Únicas (con Code-128, lote y factura, sin ubicación física impresa) según el desglose real de partidas.',
@@ -1132,6 +1138,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/labels/print')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['crear', 'imprimir', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar evento de impresión de etiquetas Giving Out' })
   @HttpCode(HttpStatus.OK)
   async printLabels(@Param('id') receiptId: string, @Body() body: { usuario?: string; tipo?: string; motivo?: string; huIds?: string[] }) {
@@ -1192,6 +1199,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/labels/confirm-placement')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['crear', 'imprimir', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Confirmar colocación física de etiquetas en andén' })
   @HttpCode(HttpStatus.OK)
   async confirmLabelPlacement(@Param('id') receiptId: string, @Body() body: ConfirmPlacementDto) {
@@ -1243,6 +1251,7 @@ export class OperationsController {
   }
 
   @Get('receipts/:id/labels')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Consultar etiquetas Master y de Caja de una recepción' })
   async getReceiptLabels(@Param('id') receiptId: string) {
     const receipt = await this.prisma.receipt.findFirst({
@@ -1378,6 +1387,7 @@ export class OperationsController {
 
   // ============ RECEPTION ============
   @Get('receipts')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['ver'], allowPortal: false })
   @ApiOperation({
     summary: 'Listar recepciones previas (ASN)',
     description: 'Obtiene el listado general de recepciones previas y manifiestos de entrada con desglose de cliente depositante, estatus operacional y líneas de SKUs programadas.',
@@ -1480,6 +1490,7 @@ export class OperationsController {
 
   // ============ GLOBAL SEARCH ============
   @Get('global-search')
+  @RequireAccess({ modules: ['dashboard'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Búsqueda global inteligente para TopBar' })
   async globalSearch(@Query('q') query?: string) {
     if (!query || query.trim().length < 2) {
@@ -1538,6 +1549,7 @@ export class OperationsController {
   }
 
   @Post('receipts')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Crear recepción previa (Modelo de datos recepciones_previas - Tarea 1)',
     description: 'Registra una nueva recepción previa en estado PENDIENTE_ARRIBO a partir de una estructura JSON con validación rigurosa de depositante, partidas esperadas (> 0), documento de respaldo y congruencia de catálogo.',
@@ -1799,6 +1811,7 @@ export class OperationsController {
   }
 
   @Post('receipts/previo')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Crear y cargar previo de recepción mediante formulario y/o carga de archivo (Tarea 2)',
     description: 'Endpoint dual para registrar un previo mediante captura de formulario o mediante subida de archivo Excel (.xlsx / .xls) con parseo automático en servidor y cruce con catálogo.',
@@ -2439,6 +2452,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/lock')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Confirmar previo y activar candado de bloqueo de edición (Tarea 3)',
     description: 'Confirma el arribo del transporte a andén y bloquea la edición del previo para resguardar la integridad contra el conteo físico a ciegas.',
@@ -2529,6 +2543,7 @@ export class OperationsController {
   // =========================================================================
 
   @Get('receipts/:id/inspection-pending')
+  @RequireAccess({ modules: ['recepcion'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Obtener cajas retenidas pendientes de inspección de calidad (Fase 2)' })
   async getPendingInspectionBoxes(@Param('id') receiptId: string) {
     const receipt = await this.prisma.receipt.findFirst({
@@ -2609,6 +2624,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/identify-damaged-box')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Identificar físicamente un bulto dañado y vincularlo con su partida (Fase 2)' })
   @HttpCode(HttpStatus.OK)
   async identifyDamagedBox(
@@ -2708,6 +2724,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/inspection/execute')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Ejecutar inspección de calidad, rescate y reacondicionamiento en maquila' })
   @HttpCode(HttpStatus.OK)
   async executeQualityInspection(
@@ -3139,6 +3156,7 @@ export class OperationsController {
   }
 
   @Get('receipts/:id/inspection/report')
+  @RequireAccess({ modules: ['recepcion'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Consultar informe y dictamen de calidad para depositante (Fase 2)' })
   async getQualityInspectionReport(@Param('id') receiptId: string) {
     const receipt = await this.prisma.receipt.findFirst({
@@ -3221,6 +3239,7 @@ export class OperationsController {
   // =========================================================================
 
   @Post('receipts/:id/reconcile-anden')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Registrar y conciliar conteo físico de mercancía sana en andén por partida (Fase 2 -> Conteo)',
@@ -3501,6 +3520,7 @@ export class OperationsController {
   // =========================================================================
 
   @Get('receipts/:id/putaway-suggestions')
+  @RequireAccess({ modules: ['recepcion'], actions: ['ver'], allowPortal: false })
   @ApiOperation({
     summary: 'Obtener sugerencias inteligentes de alojamiento a racks (Etapa 4)',
     description: 'Valida candado de etiquetas colocadas, calcula ubicaciones óptimas mediante el motor configurable con Layout y disponibilidad real del almacén (filtrado estricto, compatibilidad 3PL, consolidación de SKU/lote y FEFO/nivel).',
@@ -3515,6 +3535,7 @@ export class OperationsController {
   // =========================================================================
 
   @Post('receipts/:id/putaway/confirm-item')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Validar y registrar confirmación individual de Escaneo Dual (HU + Rack)',
@@ -3851,6 +3872,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/putaway/reset-item')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar', 'aprobar'], allowPortal: false })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Restablecer validación individual de HU para permitir re-escaneo dual auditado',
@@ -3921,6 +3943,7 @@ export class OperationsController {
   }
 
   @Get('receipts/:id/putaway-validations')
+  @RequireAccess({ modules: ['recepcion'], actions: ['ver'], allowPortal: false })
   @ApiOperation({
     summary: 'Obtener estado y auditoría de validaciones de escaneo dual registradas',
   })
@@ -3979,6 +4002,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/putaway/confirm')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Confirmar Alojamiento a Racks y Activar Stock a DISPONIBLE (Fase 4)',
@@ -4767,6 +4791,7 @@ export class OperationsController {
   // =========================================================================
 
   @Get('receipts/:id/post-closure-reconciliation/preview')
+  @RequireAccess({ modules: ['recepcion'], actions: ['aprobar', 'editar', 'ajustar'], allowPortal: false })
   @ApiOperation({
     summary: 'Vista previa de reconciliación post-cierre de Putaway (Strict Read-Only)',
     description: 'Detecta de forma automática si un expediente cerrado tiene HUs físicas en racks sin contabilización canónica y muestra las acciones a proyectar sin alterar la BD.',
@@ -4976,6 +5001,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/post-closure-reconciliation/execute')
+  @RequireAccess({ modules: ['recepcion'], actions: ['aprobar', 'editar', 'ajustar'], allowPortal: false })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Ejecutar Reconciliación Post-Cierre de Putaway (Transaccional y Trazable)',
@@ -5343,6 +5369,7 @@ export class OperationsController {
 
   // Generic Putaway fallback endpoint protegido con protocolo transaccional (Regla 9)
   @Post('putaway')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Ejecutar movimientos generales de alojamiento (Putaway)' })
   async executePutawayGeneric(@Body() body: any) {
@@ -5417,6 +5444,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/unlock')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar', 'aprobar'], allowPortal: false })
   @ApiOperation({
     summary: 'Desbloquear previo para corrección excepcional (Supervisor - Tarea 3)',
     description: 'Permite a un supervisor abrir temporalmente el candado de un previo activo para corregir discrepancias de captura, exigiendo justificación obligatoria. No aplica para recepciones CERRADAS.',
@@ -5507,6 +5535,7 @@ export class OperationsController {
   }
 
   @Put('receipts/:id')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Editar metadatos de previo de recibo' })
   async updateReceipt(@Param('id') receiptId: string, @Body() data: any) {
     try {
@@ -5546,6 +5575,7 @@ export class OperationsController {
   }
 
   @Delete('receipts/:id')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar', 'cancelar'], allowPortal: false })
   @ApiOperation({ summary: 'Eliminar previo de recibo completo' })
   async deleteReceipt(@Param('id') receiptId: string) {
     try {
@@ -5568,6 +5598,7 @@ export class OperationsController {
   }
 
   @Put('receipt-lines/:id')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Editar línea de previo de recibo' })
   async updateReceiptLine(
     @Param('id') lineId: string,
@@ -5615,6 +5646,7 @@ export class OperationsController {
   }
 
   @Delete('receipt-lines/:id')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar', 'cancelar'], allowPortal: false })
   @ApiOperation({ summary: 'Eliminar línea de previo de recibo' })
   async deleteReceiptLine(@Param('id') lineId: string) {
     try {
@@ -5634,6 +5666,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/lines')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Agregar nueva partida de SKU a recepción previa existente (Tarea 1 / Tarea 4)',
     description: 'Permite registrar una partida de SKU esperado en un previo abierto, validando que el producto pertenezca al catálogo del cliente depositante y que la cantidad esperada sea estrictamente mayor a 0. Rechaza modificaciones con 403 si el previo está bloqueado o cerrado.',
@@ -5771,6 +5804,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/generate-barcodes')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['crear', 'imprimir', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Generar códigos de barras EAN-13 para los SKUs del previo' })
   async generateReceiptBarcodes(@Param('id') receiptId: string, @Body() body?: { forceRegenerate?: boolean }) {
     const receipt = await this.prisma.receipt.findUnique({
@@ -5822,6 +5856,7 @@ export class OperationsController {
   }
 
   @Post('print-log')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['crear', 'imprimir', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar log de impresión de etiquetas' })
   async createPrintLog(@Body() data: { usuario: string; tipoEtiqueta: string; referencia: string; motivo?: string }) {
     return this.prisma.printLog.create({
@@ -5835,6 +5870,7 @@ export class OperationsController {
   }
 
   @Post('reception')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar recepción de mercancía (Conforme y No Conforme)' })
   async registerReception(@Body() data: {
     skuId: string; clienteId: string; lote?: string; serie?: string;
@@ -6133,6 +6169,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/batch-reception')
+  @RequireAccess({ modules: ['recepcion'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({
     summary: 'Registrar recepción física masiva por factura completa (Planilla Matricial)',
     description: 'Procesa todas las partidas de una factura en una sola transacción atómica, asentando producto conforme (LIBERADO) y no conforme (CUARENTENA), actualizando líneas del previo y activando candado de andén.',
@@ -6564,11 +6601,17 @@ export class OperationsController {
 
   // ============ ORDERS ============
   @Get('orders')
+  @RequireAccess({
+    modules: ['despacho', 'picking', 'dashboard', 'trazabilidad'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Listar órdenes de salida' })
   async getOrders(
     @Query('estado') estado?: string,
     @Query('clienteId') clienteId?: string,
     @Headers('authorization') authHeader?: string,
+    @Req() req?: any,
   ) {
     const where: any = {};
     if (estado) {
@@ -6579,8 +6622,8 @@ export class OperationsController {
       }
     }
 
-    let activeClienteId = clienteId;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+    let activeClienteId = req?.user?.clienteId || clienteId;
+    if (!req?.user && authHeader && authHeader.startsWith('Bearer ')) {
       try {
         const token = authHeader.split(' ')[1];
         const decoded: any = jwt.verify(token, JWT_SECRET);
@@ -6612,8 +6655,13 @@ export class OperationsController {
   }
 
   @Get('orders/:id')
+  @RequireAccess({
+    modules: ['despacho', 'picking'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Obtener detalle de orden de salida' })
-  async getOrderById(@Param('id') id: string) {
+  async getOrderById(@Param('id') id: string, @Req() req?: any) {
     const order = await this.prisma.salesOrder.findFirst({
       where: { OR: [{ id }, { codigo: id }] },
       include: {
@@ -6631,10 +6679,14 @@ export class OperationsController {
       },
     });
     if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+    if (req?.user?.clienteId && order.clienteId !== req.user.clienteId) {
+      throw new HttpException('ACCESO_DENEGADO: Esta orden pertenece a otro depositante.', HttpStatus.FORBIDDEN);
+    }
     return order;
   }
 
   @Get('receipts/:id/report')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Obtener reporte detallado de cierre de recepción (Hoja de Entrada ASN)' })
   async getReceiptReport(@Param('id') receiptId: string) {
     const receipt = await this.prisma.receipt.findFirst({
@@ -6834,6 +6886,7 @@ export class OperationsController {
   }
 
   @Post('receipts/:id/close')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar', 'aprobar'], allowPortal: false })
   @ApiOperation({
     summary: 'Finalizar y cerrar recepción de mercancía (Cierre definitivo de almacén - Tarea 3 / Tarea 5)',
     description: 'Finiquita la recepción, cambia el estatus operacional a CERRADA, activa candado permanente inmutable y genera bitácora de auditoría.',
@@ -7395,6 +7448,7 @@ export class OperationsController {
   }
 
   @Patch('receipts/:id/status')
+  @RequireAccess({ modules: ['recepcion'], actions: ['editar', 'aprobar'], allowPortal: false })
   @ApiOperation({
     summary: 'Actualizar bandera de estatus operacional de la recepción (Tarea 5)',
     description: 'Actualiza la bandera de estado de la recepción entre PENDIENTE_ARRIBO, EN_PROCESO_CONTEO y CERRADA. Activa el candado de seguridad automáticamente en conteo o cierre y rechaza modificaciones si ya se encuentra CERRADA.',
@@ -7535,9 +7589,17 @@ export class OperationsController {
   }
 
   @Post('orders')
+  @RequireAccess({
+    modules: ['despacho', 'picking'],
+    actions: ['crear'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Crear orden de salida con reserva automática de stock (Anti-Backorders)' })
-  async createOrder(@Body() data: any, @Headers('authorization') authHeader?: string) {
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+  async createOrder(@Body() data: any, @Headers('authorization') authHeader?: string, @Req() req?: any) {
+    if (req?.user?.clienteId && data.clienteId !== req.user.clienteId) {
+      throw new HttpException('ACCESO_DENEGADO: No puede crear pedidos a nombre de otro depositante.', HttpStatus.FORBIDDEN);
+    }
+    if (!req?.user && authHeader && authHeader.startsWith('Bearer ')) {
       try {
         const token = authHeader.split(' ')[1];
         const decoded: any = jwt.verify(token, JWT_SECRET);
@@ -7703,6 +7765,7 @@ export class OperationsController {
   }
 
   @Put('orders/:id/status')
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['editar', 'aprobar', 'crear'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar estado de orden' })
   async updateOrderStatus(@Param('id') id: string, @Body() body: { estado: string; usuario?: string }) {
     const updateData: any = { estado: body.estado };
@@ -7717,6 +7780,7 @@ export class OperationsController {
   }
 
   @Get('orders/:id/suggest-allocation')
+  @RequireAccess({ modules: ['picking', 'despacho'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Sugerencia inteligente de asignación de lotes y ubicaciones (FEFO / FIFO) para Supervisor' })
   async suggestOrderAllocation(@Param('id') id: string) {
     const order = await this.prisma.salesOrder.findFirst({
@@ -7965,12 +8029,14 @@ export class OperationsController {
   }
 
   @Post('orders/:id/allocate')
+  @RequireAccess({ modules: ['picking', 'despacho'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Asignar/reservar stock para orden de salida (Alias para integración continua)' })
   async allocateOrder(@Param('id') id: string, @Body() data: any) {
     return this.prepareOrder(id, data);
   }
 
   @Post('orders/:id/prepare')
+  @RequireAccess({ modules: ['picking', 'despacho'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Asignar lotes y ubicaciones a orden de salida (Panel Supervisor / Alejandra)' })
   async prepareOrder(
     @Param('id') id: string,
@@ -8149,6 +8215,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/approve')
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['aprobar', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Aprobar orden de salida (3PL workflow)' })
   async approveOrder(@Param('id') id: string, @Body() body: { usuario: string; notas?: string }) {
     const order = await this.prisma.salesOrder.findUnique({ where: { id } });
@@ -8172,6 +8239,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/reject')
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['aprobar', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Rechazar o cancelar orden de salida y liberar reservas (3PL workflow)' })
   async rejectOrder(@Param('id') id: string, @Body() body: { usuario: string; motivo: string; notas?: string }) {
     const order = await this.prisma.salesOrder.findUnique({ 
@@ -8222,6 +8290,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/start-picking')
+  @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Fase 6: Iniciar picking de orden por surtidor (Regla de oro: 1 pedido por surtidor)' })
   async startPicking(@Param('id') id: string, @Body() body: { surtidor: string; forzarReasignacion?: boolean }) {
     const order = await this.prisma.salesOrder.findFirst({
@@ -8258,6 +8327,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/validate-scan')
+  @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Fase 6: Doble validación por escaneo (Ubicación en rack y Etiqueta de Caja/Lote)' })
   async validatePickingScan(
     @Param('id') id: string,
@@ -8507,6 +8577,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/record-pick')
+  @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Fase 6: Registrar conteo pickeado por línea con doble escaneo y revalidación canónica' })
   async recordPick(
     @Param('id') id: string,
@@ -8759,6 +8830,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/pick')
+  @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Fase 6: Pickear unidades de rack bajo protocolo transaccional con bloqueo pesimista (Etapa 5A.1)' })
   async pickOrderItem(
     @Param('id') id: string,
@@ -8921,6 +8993,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/dispatch')
+  @RequireAccess({ modules: ['despacho'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario físico y reservas bajo protocolo transaccional de concurrencia (Etapa 5A.1)' })
   async dispatchOrder(
     @Param('id') id: string,
@@ -9218,6 +9291,7 @@ export class OperationsController {
   }
 
   @Get('orders/:id/manifest')
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Fase 6: Obtener datos completos del manifiesto de embarque y acuse de salida' })
   async getDispatchManifest(@Param('id') id: string) {
     const order = await this.prisma.salesOrder.findFirst({
@@ -9385,6 +9459,7 @@ export class OperationsController {
   }
 
   @Post('orders/:id/confirm-delivery')
+  @RequireAccess({ modules: ['despacho'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Confirmar entrega al cliente final' })
   async confirmDelivery(@Param('id') id: string, @Body() data: { usuario: string; nombreReceptor: string; notasEntrega?: string; firmaBase64?: string }) {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -9510,8 +9585,9 @@ export class OperationsController {
 
   // ============ MOVEMENTS (manual) ============
   @Post('movements')
+  @RequireAccess({ modules: ['inventario', 'ubicaciones'], actions: ['editar', 'ajustar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar movimiento manual (trasiego, ajuste)' })
-  async createMovement(@Body() data: any) {
+  async createMovement(@Body() data: any, @Req() req?: any) {
     const movement = await this.prisma.inventoryMovement.create({
       data,
       include: { sku: true, fromLocation: true, toLocation: true },
@@ -9524,12 +9600,17 @@ export class OperationsController {
       });
     }
 
-    await this.audit(data.usuario, data.tipoMovimiento, 'InventoryMovement', movement.id, `Cant: ${data.cantidad}`);
+    await this.audit(req?.user?.email || req?.user?.nombre || data.usuario, data.tipoMovimiento, 'InventoryMovement', movement.id, `Cant: ${data.cantidad}`);
     return movement;
   }
 
   // ============ TRACEABILITY ============
   @Get('traceability')
+  @RequireAccess({
+    modules: ['trazabilidad', 'inventario', 'recepcion', 'picking', 'despacho'],
+    actions: ['ver'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Consultar trazabilidad' })
   async getTraceability(@Query('skuId') skuId?: string, @Query('clienteId') clienteId?: string) {
     const where: any = {};
@@ -9548,6 +9629,7 @@ export class OperationsController {
 
   // ============ CYCLE COUNTS ============
   @Get('cycle-counts')
+  @RequireAccess({ modules: ['conteo-ciclico', 'inventario'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Listar conteos cíclicos' })
   async getCycleCounts(@Query('estado') estado?: string) {
     const where: any = {};
@@ -9603,6 +9685,7 @@ export class OperationsController {
   }
 
   @Post('cycle-counts')
+  @RequireAccess({ modules: ['conteo-ciclico'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Crear conteo cíclico con snapshot granular inequívoco' })
   async createCycleCount(@Body() data: any) {
     const lotWhere: any = {};
@@ -9751,6 +9834,7 @@ export class OperationsController {
   }
 
   @Put('cycle-counts/:id/count')
+  @RequireAccess({ modules: ['conteo-ciclico'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar conteo físico de líneas' })
   async registerCycleCount(@Param('id') id: string, @Body() data: any) {
     const cc = await this.prisma.cycleCount.findUnique({ where: { id } });
@@ -9790,14 +9874,16 @@ export class OperationsController {
   }
 
   @Post('cycle-counts/:id/reconcile')
+  @RequireAccess({ modules: ['conteo-ciclico'], actions: ['aprobar', 'ajustar', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Conciliar conteo cíclico y ajustar inventario real bajo protocolo transaccional (Etapa 5A.1)' })
-  async reconcileCycleCount(@Param('id') id: string, @Body() data: any, @Headers('authorization') authHeader?: string) {
-    return this.finalizeCycleCount(id, data, authHeader);
+  async reconcileCycleCount(@Param('id') id: string, @Body() data: any, @Headers('authorization') authHeader?: string, @Req() req?: any) {
+    return this.finalizeCycleCount(id, data, authHeader, req);
   }
 
   @Post('cycle-counts/:id/finalize')
+  @RequireAccess({ modules: ['conteo-ciclico'], actions: ['aprobar', 'ajustar', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Finalizar conteo y ajustar inventario real bajo protocolo transaccional seguro' })
-  async finalizeCycleCount(@Param('id') id: string, @Body() data: any, @Headers('authorization') authHeader?: string) {
+  async finalizeCycleCount(@Param('id') id: string, @Body() data: any, @Headers('authorization') authHeader?: string, @Req() req?: any) {
     const cc = await this.prisma.cycleCount.findUnique({
       where: { id },
       include: { lineas: { include: { sku: true } } },
@@ -9815,16 +9901,29 @@ export class OperationsController {
     // 2. Control de Permisos / Rol Reutilizable
     let userRole = '';
     let userEmail = data.usuario || '';
-    if (authHeader) {
+    if (req?.user) {
+      const actor = req.user;
+      const hasPrivilege =
+        actor.isSuperAdmin ||
+        (typeof actor.rolNivel === 'number' && actor.rolNivel <= 4) ||
+        actor.permisosDetalle?.some((p: string) => p.startsWith('conteo-ciclico:') && ['aprobar', 'ajustar', 'editar'].includes(p.split(':')[1]));
+      if (!hasPrivilege) {
+        throw new HttpException(`Permiso denegado: El rol "${actor.rolNombre || 'Usuario'}" no tiene autorización para finalizar y ajustar inventario. Requiere Supervisor o Administrador.`, HttpStatus.FORBIDDEN);
+      }
+      userRole = actor.rolNombre || '';
+      userEmail = actor.email || actor.nombre || userEmail;
+    } else if (authHeader) {
       try {
         const token = authHeader.replace('Bearer ', '');
         const decoded: any = jwt.verify(token, JWT_SECRET);
         userRole = decoded.rol || '';
         userEmail = decoded.email || userEmail;
       } catch (e) {}
-    }
-    if (userRole && !['Super Admin', 'Administrador', 'Supervisor', 'DIRECTOR', 'ADMIN', 'SUPER_ADMIN'].some(r => r.toLowerCase() === userRole.toLowerCase())) {
-      throw new HttpException(`Permiso denegado: El rol "${userRole}" no tiene autorización para finalizar y ajustar inventario. Requiere Supervisor o Administrador.`, HttpStatus.FORBIDDEN);
+      if (!userRole || !['Super Admin', 'Administrador', 'Supervisor', 'Supervisor Almacén', 'Gerente Operaciones', 'DIRECTOR', 'ADMIN', 'SUPER_ADMIN'].some(r => r.toLowerCase() === userRole.toLowerCase())) {
+        throw new HttpException(`Permiso denegado: El rol "${userRole || 'Desconocido'}" no tiene autorización para finalizar y ajustar inventario. Requiere Supervisor o Administrador.`, HttpStatus.FORBIDDEN);
+      }
+    } else {
+      throw new HttpException('Autenticación requerida para finalizar y ajustar inventario.', HttpStatus.UNAUTHORIZED);
     }
 
     // 3. Verificación de completitud de conteo físico
@@ -10118,8 +10217,9 @@ export class OperationsController {
   }
 
   @Delete('cycle-counts/:id')
+  @RequireAccess({ modules: ['conteo-ciclico'], actions: ['editar', 'cancelar'], allowPortal: false })
   @ApiOperation({ summary: 'Cancelar conteo cíclico programado (Inmutable si completado/en proceso)' })
-  async deleteCycleCount(@Param('id') id: string, @Body() body?: any) {
+  async deleteCycleCount(@Param('id') id: string, @Body() body?: any, @Req() req?: any) {
     const cc = await this.prisma.cycleCount.findUnique({
       where: { id },
       include: { lineas: true },
@@ -10155,7 +10255,7 @@ export class OperationsController {
 
     await this.prisma.auditLog.create({
       data: {
-        usuario: body?.usuario || 'Usuario Operativo',
+        usuario: req?.user?.email || req?.user?.nombre || body?.usuario || 'Usuario Operativo',
         accion: 'CANCELAR_CONTEO_CICLICO',
         entidad: 'CycleCount',
         entidadId: cc.id,
@@ -10168,16 +10268,24 @@ export class OperationsController {
 
 
   @Get('dashboard/stats')
+  @RequireAccess({ modules: ['dashboard'], actions: ['ver'], allowPortal: true })
   @ApiOperation({ summary: 'Estadísticas para dashboard' })
-  async getDashboardStats() {
+  async getDashboardStats(@Req() req?: any) {
+    const tenantClienteId = req?.user?.clienteId || null;
     const [totalSkus, totalClients, totalLots, totalOrders, pendingOrders, activeAlerts, recentMovements] = await Promise.all([
-      this.prisma.skuMaster.count({ where: { activo: true } }),
-      this.prisma.client.count({ where: { activo: true } }),
-      this.prisma.lotInventory.count({ where: { cantidadDisponible: { gt: 0 } } }),
-      this.prisma.salesOrder.count(),
-      this.prisma.salesOrder.count({ where: { estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING'] } } }),
-      this.prisma.alert.count({ where: { resuelta: false } }),
+      this.prisma.skuMaster.count({ where: { activo: true, ...(tenantClienteId ? { clienteId: tenantClienteId } : {}) } }),
+      this.prisma.client.count({ where: { activo: true, ...(tenantClienteId ? { id: tenantClienteId } : {}) } }),
+      this.prisma.lotInventory.count({ where: { cantidadDisponible: { gt: 0 }, ...(tenantClienteId ? { clienteId: tenantClienteId } : {}) } }),
+      this.prisma.salesOrder.count({ where: tenantClienteId ? { clienteId: tenantClienteId } : undefined }),
+      this.prisma.salesOrder.count({
+        where: {
+          estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING'] },
+          ...(tenantClienteId ? { clienteId: tenantClienteId } : {}),
+        },
+      }),
+      this.prisma.alert.count({ where: { resuelta: false, ...(tenantClienteId ? { clienteId: tenantClienteId } : {}) } }),
       this.prisma.inventoryMovement.findMany({
+        where: tenantClienteId ? { clienteId: tenantClienteId } : undefined,
         orderBy: { fechaHora: 'desc' },
         take: 10,
         include: {
@@ -10189,9 +10297,17 @@ export class OperationsController {
     ]);
 
     const [totalUnidades, pendingApprovals, totalEndCustomers] = await Promise.all([
-      this.prisma.lotInventory.aggregate({ _sum: { cantidadDisponible: true }, where: { cantidadDisponible: { gt: 0 } } }),
-      this.prisma.salesOrder.count({ where: { estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION'] } } }),
-      this.prisma.endCustomer.count({ where: { activo: true } }),
+      this.prisma.lotInventory.aggregate({
+        _sum: { cantidadDisponible: true },
+        where: { cantidadDisponible: { gt: 0 }, ...(tenantClienteId ? { clienteId: tenantClienteId } : {}) },
+      }),
+      this.prisma.salesOrder.count({
+        where: {
+          estado: { in: ['SOLICITADO', 'PENDIENTE_APROBACION'] },
+          ...(tenantClienteId ? { clienteId: tenantClienteId } : {}),
+        },
+      }),
+      this.prisma.endCustomer.count({ where: { activo: true, ...(tenantClienteId ? { clienteId: tenantClienteId } : {}) } }),
     ]);
 
     return {

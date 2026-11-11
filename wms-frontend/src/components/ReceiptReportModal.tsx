@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { API } from '../config/api';
+import { useAuth } from '../contexts/AuthContext';
 import { formatCalendarDate, formatDateTime } from '../utils/dateUtils';
 import {
   classifyQualityOutcome,
@@ -22,6 +23,7 @@ export interface ReceiptReportModalProps {
 }
 
 export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps) {
+  const { token } = useAuth();
   if (!receipt) return null;
 
   // Detección automática del tipo de operación guardado en base de datos
@@ -71,10 +73,11 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
 
     async function fetchFullDetails() {
       try {
+        const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
         const [repRes, rampaRes, inspRes] = await Promise.all([
-          fetch(`${API}/receipts/${identifier}/report`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${API}/receipts/${identifier}/acuse-rampa`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${API}/receipts/${identifier}/inspection/report`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${API}/receipts/${identifier}/report`, { headers: authHeaders }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${API}/receipts/${identifier}/acuse-rampa`, { headers: authHeaders }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${API}/receipts/${identifier}/inspection/report`, { headers: authHeaders }).then(r => r.ok ? r.json() : null).catch(() => null),
         ]);
 
         if (isMounted) {
@@ -91,7 +94,7 @@ export function ReceiptReportModal({ receipt, onClose }: ReceiptReportModalProps
 
     fetchFullDetails();
     return () => { isMounted = false; };
-  }, [receipt.id, receipt.codigo]);
+  }, [receipt.id, receipt.codigo, token]);
 
   // Metadatos consolidados
   const folioTransporte = receipt.codigo || receipt.folioTransporte || '—';
