@@ -1,6 +1,7 @@
 import { Controller, Post, Get, Body, Headers, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
+import { Public } from './auth.decorators';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 
@@ -11,6 +12,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 export class AuthController {
   constructor(private prisma: PrismaService) {}
 
+  @Public()
   @Post('login')
   @ApiOperation({ summary: 'Login con email y contraseña' })
   async login(@Body() body: { email: string; password: string }) {
@@ -30,7 +32,7 @@ export class AuthController {
       throw new HttpException('Credenciales inválidas', HttpStatus.UNAUTHORIZED);
     }
 
-    const isSuperAdmin = user.rol?.nombre === 'Super Admin';
+    const isSuperAdmin = user.rol?.nombre === 'Super Admin' || user.rol?.nivel === 1;
     const permisos = user.rol?.permisos?.map(p => `${p.modulo}:${p.accion}`) || [];
     const modulos = [...new Set(user.rol?.permisos?.map(p => p.modulo) || [])];
 
@@ -61,6 +63,7 @@ export class AuthController {
     };
   }
 
+  @Public()
   @Post('otp/request')
   @ApiOperation({ summary: 'Solicitar código OTP por email' })
   async requestOtp(@Body() body: { email: string }) {
@@ -84,6 +87,7 @@ export class AuthController {
     return { success: true, message: 'Código enviado al email registrado' };
   }
 
+  @Public()
   @Post('otp/verify')
   @ApiOperation({ summary: 'Verificar código OTP' })
   async verifyOtp(@Body() body: { email: string; code: string }) {
@@ -108,9 +112,10 @@ export class AuthController {
       include: { rol: { include: { permisos: true } } },
     });
 
-    if (!user) throw new HttpException('Usuario no encontrado', HttpStatus.NOT_FOUND);
+    if (!user || !user.activo) throw new HttpException('Usuario no encontrado', HttpStatus.NOT_FOUND);
 
-    const isSuperAdmin = user.rol?.nombre === 'Super Admin';
+    const isSuperAdmin = user.rol?.nombre === 'Super Admin' || user.rol?.nivel === 1;
+    const permisos = user.rol?.permisos?.map(p => `${p.modulo}:${p.accion}`) || [];
     const modulos = [...new Set(user.rol?.permisos?.map(p => p.modulo) || [])];
 
     const token = jwt.sign(
@@ -131,6 +136,7 @@ export class AuthController {
         clienteId: user.clienteId,
         isSuperAdmin,
         permisos: modulos,
+        permisosDetalle: permisos,
       },
     };
   }
@@ -153,7 +159,8 @@ export class AuthController {
         throw new HttpException('Sesión inválida', HttpStatus.UNAUTHORIZED);
       }
 
-      const isSuperAdmin = user.rol?.nombre === 'Super Admin';
+      const isSuperAdmin = user.rol?.nombre === 'Super Admin' || user.rol?.nivel === 1;
+      const permisos = user.rol?.permisos?.map(p => `${p.modulo}:${p.accion}`) || [];
       const modulos = [...new Set(user.rol?.permisos?.map(p => p.modulo) || [])];
 
       return {
@@ -166,6 +173,7 @@ export class AuthController {
         clienteId: user.clienteId,
         isSuperAdmin,
         permisos: modulos,
+        permisosDetalle: permisos,
       };
     } catch {
       throw new HttpException('Token inválido', HttpStatus.UNAUTHORIZED);

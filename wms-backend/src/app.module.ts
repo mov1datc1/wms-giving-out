@@ -1,8 +1,11 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { PrismaService } from './prisma.service';
 import { AuthModule } from './modules/auth/auth.module';
+import { WmsAuthGuard } from './modules/auth/wms-auth.guard';
 import { UsersModule } from './modules/users/users.module';
 import { ClientsModule } from './modules/clients/clients.module';
 import { EndCustomersModule } from './modules/end-customers/end-customers.module';
@@ -24,6 +27,13 @@ import { OperationsModule } from './modules/operations/operations.module';
     OperationsModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    PrismaService,
+    {
+      provide: APP_GUARD,
+      useClass: WmsAuthGuard,
+    },
+  ],
 })
 export class AppModule {}

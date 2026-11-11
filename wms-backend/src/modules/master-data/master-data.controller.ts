@@ -1,8 +1,10 @@
-import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body, Headers, HttpException, HttpStatus, BadRequestException, NotFoundException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body, Headers, Req, HttpException, HttpStatus, BadRequestException, ConflictException, NotFoundException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
 import { EmailService } from '../../email.service';
 import * as jwt from 'jsonwebtoken';
+import { RequireAccess } from '../auth/auth.decorators';
+import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
 import {
   evaluateInventoryItemOperationalState,
@@ -12,6 +14,13 @@ import {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 
+function cleanOptionalSupplierText(value: any): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 @ApiTags('Master Data')
 @Controller('api')
 export class MasterDataController {
@@ -19,17 +28,23 @@ export class MasterDataController {
 
   // ============ SKUs ============
   @Get('skus')
+  @RequireAccess({
+    modules: ['maestros', 'inventario', 'recepcion', 'picking', 'despacho', 'trazabilidad', 'conteo-ciclico'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Listar catálogo de SKUs' })
   async getSkus(
     @Query('clienteId') clienteId?: string,
     @Query('categoria') categoria?: string,
     @Query('buscar') buscar?: string,
     @Headers('authorization') authHeader?: string,
+    @Req() req?: any,
   ) {
     const where: any = {};
-    let activeClienteId = clienteId;
+    let activeClienteId = req?.user?.clienteId || clienteId;
 
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+    if (!req?.user && authHeader && authHeader.startsWith('Bearer ')) {
       try {
         const token = authHeader.split(' ')[1];
         const decoded: any = jwt.verify(token, JWT_SECRET);
@@ -73,6 +88,7 @@ export class MasterDataController {
   }
 
   @Post('skus')
+  @RequireAccess({ modules: ['maestros'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear SKU' })
   async createSku(@Body() body: any) {
     try {
@@ -197,6 +213,7 @@ export class MasterDataController {
   }
 
   @Put('skus/:id')
+  @RequireAccess({ modules: ['maestros'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar SKU' })
   async updateSku(@Param('id') id: string, @Body() body: any) {
     try {
@@ -321,6 +338,7 @@ export class MasterDataController {
   }
 
   @Patch('skus/:id/toggle-activo')
+  @RequireAccess({ modules: ['maestros'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Alternar o definir estado activo/inactivo de un SKU' })
   async toggleSkuActivo(@Param('id') id: string, @Body() body?: { activo?: boolean }) {
     const existingSku = await this.prisma.skuMaster.findUnique({ where: { id } });
@@ -359,6 +377,7 @@ export class MasterDataController {
   }
 
   @Delete('skus/:id')
+  @RequireAccess({ modules: ['maestros'], actions: ['editar', 'cancelar'], allowPortal: false })
   @ApiOperation({ summary: 'Eliminar físicamente un SKU sin historial operativo' })
   async deleteSku(@Param('id') id: string) {
     const sku = await this.prisma.skuMaster.findUnique({
@@ -421,25 +440,219 @@ export class MasterDataController {
 
   // ============ SUPPLIERS ============
   @Get('suppliers')
+  @RequireAccess({
+    modules: ['proveedores', 'maestros', 'recepcion'],
+    actions: ['ver'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Listar proveedores' })
-  async getSuppliers() {
-    return this.prisma.supplier.findMany({ where: { activo: true }, orderBy: { nombre: 'asc' } });
+  async getSuppliers(
+    @Query('activo') activo?: string,
+    @Query('buscar') buscar?: string,
+  ) {
+    const where: any = {};
+    if (activo === 'all') {
+      // Sin filtro de estado: mostrar activos e inactivos
+    } else if (activo === 'false') {
+      where.activo = false;
+    } else {
+      where.activo = true;
+    }
+
+    if (buscar && buscar.trim()) {
+      const q = buscar.trim();
+      where.OR = [
+        { codigo: { contains: q, mode: 'insensitive' } },
+        { nombre: { contains: q, mode: 'insensitive' } },
+        { rfc: { contains: q, mode: 'insensitive' } },
+        { contacto: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    return this.prisma.supplier.findMany({
+      where,
+      include: { _count: { select: { recepciones: true } } },
+      orderBy: { nombre: 'asc' },
+    });
   }
 
   @Post('suppliers')
+  @RequireAccess({ modules: ['proveedores', 'maestros'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear proveedor' })
-  async createSupplier(@Body() data: any) {
-    return this.prisma.supplier.create({ data });
+  async createSupplier(@Body() data: CreateSupplierDto, @Req() req?: any) {
+    const cleanCodigo = String(data?.codigo || '').trim().toUpperCase();
+    const cleanNombre = String(data?.nombre || '').trim();
+    if (!cleanCodigo || !cleanNombre) {
+      throw new BadRequestException('codigo y nombre son obligatorios para crear el proveedor.');
+    }
+
+    try {
+      const created = await this.prisma.supplier.create({
+        data: {
+          codigo: cleanCodigo,
+          nombre: cleanNombre,
+          rfc: cleanOptionalSupplierText(data?.rfc) ?? null,
+          telefono: cleanOptionalSupplierText(data?.telefono) ?? null,
+          email: cleanOptionalSupplierText(data?.email) ?? null,
+          direccion: cleanOptionalSupplierText(data?.direccion) ?? null,
+          contacto: cleanOptionalSupplierText(data?.contacto) ?? null,
+        },
+        include: { _count: { select: { recepciones: true } } },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          usuario: req?.user?.email || req?.user?.nombre || 'sistema',
+          accion: 'CREAR_PROVEEDOR',
+          entidad: 'Supplier',
+          entidadId: created.id,
+          detalle: `Alta de proveedor ${created.codigo} (${created.nombre})`,
+        },
+      });
+
+      return created;
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException({
+          statusCode: HttpStatus.CONFLICT,
+          message: `Ya existe un proveedor con el código [${cleanCodigo}].`,
+          error: 'Conflict',
+          codigo: 'CODIGO_DUPLICADO',
+        });
+      }
+      throw error;
+    }
   }
 
   @Put('suppliers/:id')
+  @RequireAccess({ modules: ['proveedores', 'maestros'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar proveedor' })
-  async updateSupplier(@Param('id') id: string, @Body() data: any) {
-    return this.prisma.supplier.update({ where: { id }, data });
+  async updateSupplier(@Param('id') id: string, @Body() data: UpdateSupplierDto, @Req() req?: any) {
+    const existing = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Proveedor no encontrado.');
+    }
+
+    const updateData: any = {};
+    if (data.codigo !== undefined) {
+      const cleanCodigo = String(data.codigo).trim().toUpperCase();
+      if (!cleanCodigo) throw new BadRequestException('El código del proveedor no puede quedar vacío.');
+      updateData.codigo = cleanCodigo;
+    }
+    if (data.nombre !== undefined) {
+      const cleanNombre = String(data.nombre).trim();
+      if (!cleanNombre) throw new BadRequestException('El nombre del proveedor no puede quedar vacío.');
+      updateData.nombre = cleanNombre;
+    }
+    if (data.rfc !== undefined) updateData.rfc = cleanOptionalSupplierText(data.rfc);
+    if (data.telefono !== undefined) updateData.telefono = cleanOptionalSupplierText(data.telefono);
+    if (data.email !== undefined) updateData.email = cleanOptionalSupplierText(data.email);
+    if (data.direccion !== undefined) updateData.direccion = cleanOptionalSupplierText(data.direccion);
+    if (data.contacto !== undefined) updateData.contacto = cleanOptionalSupplierText(data.contacto);
+    if (typeof data.activo === 'boolean') updateData.activo = data.activo;
+
+    try {
+      const updated = await this.prisma.supplier.update({
+        where: { id },
+        data: updateData,
+        include: { _count: { select: { recepciones: true } } },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          usuario: req?.user?.email || req?.user?.nombre || 'sistema',
+          accion: 'ACTUALIZAR_PROVEEDOR',
+          entidad: 'Supplier',
+          entidadId: updated.id,
+          detalle: `Actualización de proveedor ${updated.codigo} (${updated.nombre})`,
+        },
+      });
+
+      return updated;
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException({
+          statusCode: HttpStatus.CONFLICT,
+          message: `Ya existe un proveedor con el código [${updateData.codigo || existing.codigo}].`,
+          error: 'Conflict',
+          codigo: 'CODIGO_DUPLICADO',
+        });
+      }
+      throw error;
+    }
+  }
+
+  @Delete('suppliers/:id')
+  @RequireAccess({ modules: ['proveedores', 'maestros'], actions: ['editar', 'cancelar'], allowPortal: false })
+  @ApiOperation({ summary: 'Desactivar proveedor (baja lógica)' })
+  async deactivateSupplier(@Param('id') id: string, @Req() req?: any) {
+    const existing = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Proveedor no encontrado.');
+    }
+
+    const updated = await this.prisma.supplier.update({
+      where: { id },
+      data: { activo: false },
+      include: { _count: { select: { recepciones: true } } },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        usuario: req?.user?.email || req?.user?.nombre || 'sistema',
+        accion: 'DESACTIVAR_PROVEEDOR',
+        entidad: 'Supplier',
+        entidadId: updated.id,
+        detalle: `Baja lógica de proveedor ${updated.codigo} (${updated.nombre})`,
+      },
+    });
+
+    return {
+      success: true,
+      supplier: updated,
+      message: `Proveedor "${updated.nombre}" desactivado correctamente.`,
+    };
+  }
+
+  @Put('suppliers/:id/reactivate')
+  @RequireAccess({ modules: ['proveedores', 'maestros'], actions: ['editar'], allowPortal: false })
+  @ApiOperation({ summary: 'Reactivar proveedor inactivo' })
+  async reactivateSupplier(@Param('id') id: string, @Req() req?: any) {
+    const existing = await this.prisma.supplier.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Proveedor no encontrado.');
+    }
+
+    const updated = await this.prisma.supplier.update({
+      where: { id },
+      data: { activo: true },
+      include: { _count: { select: { recepciones: true } } },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        usuario: req?.user?.email || req?.user?.nombre || 'sistema',
+        accion: 'REACTIVAR_PROVEEDOR',
+        entidad: 'Supplier',
+        entidadId: updated.id,
+        detalle: `Reactivación de proveedor ${updated.codigo} (${updated.nombre})`,
+      },
+    });
+
+    return {
+      success: true,
+      supplier: updated,
+      message: `Proveedor "${updated.nombre}" reactivado correctamente.`,
+    };
   }
 
   // ============ WAREHOUSES ============
   @Get('warehouses')
+  @RequireAccess({
+    modules: ['ubicaciones', 'maestros', 'inventario', 'recepcion', 'picking', 'despacho', 'dashboard', 'conteo-ciclico', 'etiquetado'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Listar almacenes' })
   async getWarehouses() {
     return this.prisma.warehouse.findMany({
@@ -449,6 +662,7 @@ export class MasterDataController {
   }
 
   @Post('warehouses')
+  @RequireAccess({ modules: ['ubicaciones', 'maestros'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear almacén' })
   async createWarehouse(@Body() data: any) {
     return this.prisma.warehouse.create({ data });
@@ -456,6 +670,11 @@ export class MasterDataController {
 
   // ============ ZONES ============
   @Get('zones')
+  @RequireAccess({
+    modules: ['ubicaciones', 'maestros', 'inventario', 'recepcion', 'picking', 'despacho', 'dashboard', 'conteo-ciclico', 'etiquetado'],
+    actions: ['ver'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Listar zonas' })
   async getZones(@Query('almacenId') almacenId?: string) {
     const where: any = {};
@@ -468,6 +687,7 @@ export class MasterDataController {
   }
 
   @Post('zones')
+  @RequireAccess({ modules: ['ubicaciones', 'maestros'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear zona' })
   async createZone(@Body() data: any) {
     return this.prisma.zone.create({ data });
@@ -475,6 +695,11 @@ export class MasterDataController {
 
   // ============ LOCATIONS ============
   @Get('locations')
+  @RequireAccess({
+    modules: ['ubicaciones', 'maestros', 'inventario', 'recepcion', 'picking', 'despacho', 'dashboard', 'conteo-ciclico', 'etiquetado'],
+    actions: ['ver'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Listar ubicaciones con modelo de capacidad enriquecida, clasificación y estado' })
   async getLocations(@Query('almacenId') almacenId?: string, @Query('zonaId') zonaId?: string, @Query('estado') estado?: string) {
     const where: any = {};
@@ -670,6 +895,11 @@ export class MasterDataController {
   }
 
   @Get('locations/:id')
+  @RequireAccess({
+    modules: ['ubicaciones', 'maestros', 'inventario', 'recepcion', 'picking', 'despacho', 'dashboard', 'conteo-ciclico', 'etiquetado'],
+    actions: ['ver'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Consultar contenido y stock detallado de una ubicación con desglose de capacidad' })
   async getLocationById(@Param('id') id: string) {
     const loc = await this.prisma.location.findFirst({
@@ -914,52 +1144,58 @@ export class MasterDataController {
   }
 
   @Post('locations')
+  @RequireAccess({ modules: ['ubicaciones', 'maestros'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear ubicación' })
   async createLocation(@Body() data: any) {
     return this.prisma.location.create({ data });
   }
 
   @Put('locations/:id')
+  @RequireAccess({ modules: ['ubicaciones', 'maestros'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar ubicación' })
   async updateLocation(@Param('id') id: string, @Body() data: any) {
     return this.prisma.location.update({ where: { id }, data });
   }
 
   @Patch('locations/:id/pnc-designation')
+  @RequireAccess({ modules: ['ubicaciones'], actions: ['editar', 'ajustar'], allowPortal: false })
   @ApiOperation({ summary: 'Alternar designación operativa entre Almacenamiento Comercial (TARIMA_PISO) y No Conforme (PNC) con blindaje y RBAC' })
   async setLocationPncDesignation(
     @Param('id') id: string,
     @Body() body: { usoPnc: boolean; motivo?: string; usuario?: string },
     @Headers('authorization') authHeader?: string,
+    @Req() req?: any,
   ) {
-    // 1. AUTENTICACIÓN Y VALIDACIÓN DE TOKEN JWT
-    if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedException('No autenticado: Token de sesión requerido');
-    }
+    // 1. AUTENTICACIÓN Y RESOLUCIÓN DE USUARIO VERIFICADO
+    let user: any = null;
+    if (req?.user?.id) {
+      user = await this.prisma.user.findUnique({
+        where: { id: req.user.id },
+        include: { rol: { include: { permisos: true } } },
+      });
+    } else {
+      if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+        throw new UnauthorizedException('No autenticado: Token de sesión requerido');
+      }
 
-    const token = authHeader.replace('Bearer ', '').trim();
-    let decoded: any;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch {
-      throw new UnauthorizedException('Token de sesión inválido o expirado');
-    }
+      const token = authHeader.replace('Bearer ', '').trim();
+      let decoded: any;
+      try {
+        decoded = jwt.verify(token, JWT_SECRET);
+      } catch {
+        throw new UnauthorizedException('Token de sesión inválido o expirado');
+      }
 
-    const userId = decoded.userId || decoded.id;
-    if (!userId) {
-      throw new UnauthorizedException('Token inválido: falta identificador de usuario');
-    }
+      const userId = decoded.userId || decoded.id;
+      if (!userId) {
+        throw new UnauthorizedException('Token inválido: falta identificador de usuario');
+      }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        rol: {
-          include: {
-            permisos: true,
-          },
-        },
-      },
-    });
+      user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        include: { rol: { include: { permisos: true } } },
+      });
+    }
 
     if (!user || !user.activo) {
       throw new UnauthorizedException('Sesión inválida: usuario inactivo o no encontrado');
@@ -1136,6 +1372,7 @@ export class MasterDataController {
 
   // ============ ALERTS ============
   @Get('alerts')
+  @RequireAccess({ modules: ['alertas', 'dashboard'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Listar alertas' })
   async getAlerts(@Query('clienteId') clienteId?: string, @Query('todas') todas?: string) {
     const where: any = {};
@@ -1148,6 +1385,7 @@ export class MasterDataController {
   }
 
   @Get('alerts/status')
+  @RequireAccess({ modules: ['alertas', 'dashboard'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Obtener estado y fecha de último escaneo de alertas' })
   async getAlertsStatus() {
     const setting = await this.prisma.systemSetting.findUnique({
@@ -1167,21 +1405,24 @@ export class MasterDataController {
   }
 
   @Post('alerts')
+  @RequireAccess({ modules: ['alertas'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear alerta manual' })
   async createAlert(@Body() data: any) {
     return this.prisma.alert.create({ data });
   }
 
   @Put('alerts/:id/resolve')
+  @RequireAccess({ modules: ['alertas'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Resolver alerta' })
-  async resolveAlert(@Param('id') id: string, @Body() data: any) {
+  async resolveAlert(@Param('id') id: string, @Body() data: any, @Req() req?: any) {
     return this.prisma.alert.update({
       where: { id },
-      data: { resuelta: true, resueltaPor: data.usuario || 'admin', resueltaEn: new Date() },
+      data: { resuelta: true, resueltaPor: req?.user?.nombre || req?.user?.email || data?.usuario || 'sistema', resueltaEn: new Date() },
     });
   }
 
   @Post('alerts/generate')
+  @RequireAccess({ modules: ['alertas'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Generar alertas inteligentes escaneando inventario' })
   async generateAlerts() {
     const candidateAlerts: any[] = [];
@@ -1520,6 +1761,7 @@ export class MasterDataController {
 
   // ============ TASKS ============
   @Get('tasks')
+  @RequireAccess({ modules: ['alertas', 'dashboard'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Listar tareas' })
   async getTasks(@Query('estado') estado?: string, @Query('area') area?: string) {
     const where: any = {};
@@ -1534,8 +1776,9 @@ export class MasterDataController {
   }
 
   @Post('tasks')
+  @RequireAccess({ modules: ['alertas'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear tarea desde alerta' })
-  async createTask(@Body() data: any) {
+  async createTask(@Body() data: any, @Req() req?: any) {
     const task = await this.prisma.task.create({
       data: {
         titulo: data.titulo,
@@ -1547,7 +1790,7 @@ export class MasterDataController {
         fechaLimite: data.fechaLimite ? new Date(data.fechaLimite) : null,
         notas: data.notas,
         alertaId: data.alertaId,
-        creadoPor: data.creadoPor,
+        creadoPor: req?.user?.nombre || req?.user?.email || data.creadoPor,
       },
       include: { alerta: { select: { id: true, tipo: true, titulo: true } } },
     });
@@ -1563,18 +1806,20 @@ export class MasterDataController {
   }
 
   @Put('tasks/:id/status')
+  @RequireAccess({ modules: ['alertas'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar estado de tarea' })
-  async updateTaskStatus(@Param('id') id: string, @Body() data: any) {
+  async updateTaskStatus(@Param('id') id: string, @Body() data: any, @Req() req?: any) {
     const updateData: any = { estado: data.estado };
     if (data.estado === 'COMPLETADA') {
       updateData.completadaEn = new Date();
-      updateData.completadaPor = data.usuario || 'admin';
+      updateData.completadaPor = req?.user?.nombre || req?.user?.email || data.usuario || 'sistema';
     }
     return this.prisma.task.update({ where: { id }, data: updateData });
   }
 
   // ============ SYSTEM SETTINGS ============
   @Get('settings')
+  @RequireAccess({ modules: ['admin'], actions: ['ver'], allowPortal: false })
   @ApiOperation({ summary: 'Obtener configuraciones del sistema' })
   async getSettings(@Query('category') category?: string) {
     const where: any = {};
@@ -1593,6 +1838,7 @@ export class MasterDataController {
   }
 
   @Put('settings')
+  @RequireAccess({ modules: ['admin'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Guardar configuraciones (batch)' })
   async saveSettings(@Body() data: { settings: { key: string; value: string; category?: string; label?: string }[] }) {
     const results: any[] = [];
@@ -1613,6 +1859,7 @@ export class MasterDataController {
   }
 
   @Post('settings/test-email')
+  @RequireAccess({ modules: ['admin'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Probar conexión SMTP' })
   async testEmail(@Body() data?: { host?: string; port?: string | number; user?: string; pass?: string }) {
     return this.emailService.testConnection(data);

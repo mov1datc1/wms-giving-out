@@ -1,7 +1,7 @@
-import { Controller, Get, Post, Put, Delete, Param, Query, Body, Headers, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Query, Body, Req, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
-import * as jwt from 'jsonwebtoken';
+import { RequireAccess, AuthenticatedRequestUser } from '../auth/auth.decorators';
 import { 
   CreateClientDto, 
   UpdateClientDto, 
@@ -13,38 +13,38 @@ import {
 import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
 import { evaluateInventoryItemOperationalState, isExpired } from '../../common/inventory-operational-state.util';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
-
 @ApiTags('Depositantes')
 @Controller('api/clients')
 export class ClientsController {
   constructor(private prisma: PrismaService) {}
 
   /**
-   * Helper privado para extraer y validar el rol del usuario autenticado
+   * Extrae el usuario y rol verificados exclusivamente desde el token/sesión autenticada (WmsAuthGuard).
+   * Nunca confía en encabezados manipulables (x-user-role) ni asume privilegios por defecto.
    */
-  private resolveUserRole(headerRole?: string, authHeader?: string): { rol: string; isOperador: boolean } {
-    let rol = 'Super Admin'; // Default seguro si no viene especificado en pruebas abiertas
-
-    if (headerRole) {
-      rol = headerRole;
-    } else if (authHeader && authHeader.startsWith('Bearer ')) {
-      try {
-        const token = authHeader.split(' ')[1];
-        const decoded: any = jwt.verify(token, JWT_SECRET);
-        if (decoded?.rol) rol = decoded.rol;
-      } catch {
-        // En caso de token inválido o demo, se tolera para no romper endpoints abiertos
-      }
+  private resolveVerifiedActor(req: any): {
+    user: AuthenticatedRequestUser;
+    rol: string;
+    auditUser: string;
+    isOperador: boolean;
+  } {
+    const user: AuthenticatedRequestUser | undefined = req?.user;
+    if (!user) {
+      throw new HttpException('No autenticado: Sesión verificada requerida', HttpStatus.UNAUTHORIZED);
     }
-
+    const rol = user.rolNombre || 'Sin Rol';
     const lower = rol.toLowerCase();
-    const isOperador = lower.includes('operador') || lower.includes('operario') || lower.includes('almacenista');
-    return { rol, isOperador };
+    const isOperador =
+      lower.includes('operador') ||
+      lower.includes('operario') ||
+      lower.includes('almacenista');
+    const auditUser = user.email || user.nombre || user.id;
+    return { user, rol, auditUser, isOperador };
   }
 
   // ============ CATÁLOGOS ============
   @Get('catalogos/giros')
+  @RequireAccess({ allowPortal: true })
   @ApiOperation({ summary: 'Obtener catálogo oficial de giros y sus reglas operativas por defecto' })
   async getCatalogGiros() {
     return Object.values(GiroComercial).map(giro => ({
@@ -55,13 +55,21 @@ export class ClientsController {
 
   // ============ LISTADO ============
   @Get()
+  @RequireAccess({
+    modules: ['depositantes', 'dashboard', 'recepcion', 'inventario', 'ubicaciones', 'picking', 'despacho', 'maestros', 'etiquetado', 'trazabilidad'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Listar depositantes con filtros avanzados y conteo de existencias' })
   async getClients(
     @Query('activo') activo?: string, 
     @Query('giro') giro?: string,
-    @Query('search') search?: string
+    @Query('search') search?: string,
+    @Req() req?: any,
   ) {
     const where: any = {};
+    if (req?.user?.clienteId) {
+      where.id = req.user.clienteId;
+    }
     if (activo !== undefined) where.activo = activo === 'true';
     if (giro) where.giro = giro;
     if (search && search.trim()) {
@@ -74,16 +82,36 @@ export class ClientsController {
       ];
     }
 
-    const clients = await this.prisma.client.findMany({
-      where,
-      include: {
-        contactos: true,
-        direccionesEntrega: true,
-        endCustomers: { where: { activo: true }, select: { id: true, codigo: true, nombre: true, ciudad: true } },
-        _count: { select: { skus: true, ordenesSalida: true, recepciones: true, endCustomers: true, lotes: true } },
-      },
-      orderBy: { nombreComercial: 'asc' },
-    });
+    const [clients, activeHus] = await Promise.all([
+      this.prisma.client.findMany({
+        where,
+        include: {
+          contactos: true,
+          direccionesEntrega: true,
+          endCustomers: { where: { activo: true }, select: { id: true, codigo: true, nombre: true, ciudad: true } },
+          _count: { select: { skus: true, ordenesSalida: true, recepciones: true, endCustomers: true, lotes: true } },
+        },
+        orderBy: { nombreComercial: 'asc' },
+      }),
+      this.prisma.handlingUnit.findMany({
+        where: {
+          estadoHu: 'ACTIVO',
+          ...(req?.user?.clienteId ? { clienteId: req.user.clienteId } : {}),
+        },
+        select: { id: true, clienteId: true, parentHuId: true, tipoHu: true },
+      }),
+    ]);
+
+    const palletsByClient: Record<string, Set<string>> = {};
+    const boxesByClient: Record<string, number> = {};
+    for (const hu of activeHus as any[]) {
+      if (!hu.clienteId) continue;
+      if (!palletsByClient[hu.clienteId]) palletsByClient[hu.clienteId] = new Set<string>();
+      palletsByClient[hu.clienteId].add(hu.parentHuId || hu.id);
+      if (hu.tipoHu === 'CAJA') {
+        boxesByClient[hu.clienteId] = (boxesByClient[hu.clienteId] || 0) + 1;
+      }
+    }
 
     return clients.map(client => ({
       ...client,
@@ -93,6 +121,8 @@ export class ClientsController {
         totalRecepciones: client._count.recepciones,
         totalClientesFinales: client._count.endCustomers,
         totalLotes: client._count.lotes,
+        totalTarimas: palletsByClient[client.id]?.size || 0,
+        totalCajas: boxesByClient[client.id] || 0,
       },
       reglasHeredadas: {
         requiereLote: client.requiereLote,
@@ -106,18 +136,38 @@ export class ClientsController {
 
   // ============ DETALLE ============
   @Get(':id')
+  @RequireAccess({
+    modules: ['depositantes', 'dashboard', 'recepcion', 'inventario', 'ubicaciones', 'picking', 'despacho', 'maestros', 'etiquetado', 'trazabilidad'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Detalle de depositante con reglas operativas e inventario consolidado' })
-  async getClient(@Param('id') id: string) {
-    const client = await this.prisma.client.findUnique({
-      where: { id },
-      include: {
-        contactos: true,
-        direccionesEntrega: true,
-        endCustomers: { where: { activo: true }, orderBy: { nombre: 'asc' } },
-        _count: { select: { skus: true, ordenesSalida: true, recepciones: true, lotes: true, handlingUnits: true, endCustomers: true } },
-      },
-    });
+  async getClient(@Param('id') id: string, @Req() req?: any) {
+    if (req?.user?.clienteId && req.user.clienteId !== id) {
+      throw new HttpException('ACCESO_DENEGADO: No tiene autorización para consultar otro depositante.', HttpStatus.FORBIDDEN);
+    }
+
+    const [client, activeHus] = await Promise.all([
+      this.prisma.client.findUnique({
+        where: { id },
+        include: {
+          contactos: true,
+          direccionesEntrega: true,
+          endCustomers: { where: { activo: true }, orderBy: { nombre: 'asc' } },
+          _count: { select: { skus: true, ordenesSalida: true, recepciones: true, lotes: true, handlingUnits: true, endCustomers: true } },
+        },
+      }),
+      this.prisma.handlingUnit.findMany({
+        where: { clienteId: id, estadoHu: 'ACTIVO' },
+        select: { id: true, parentHuId: true, tipoHu: true },
+      }),
+    ]);
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
+
+    // Contar tarimas físicas reales agrupando cajas hijas bajo su Tarima Master padre (parentHuId)
+    const physicalPalletsCount = new Set(
+      activeHus.map((h: any) => h.parentHuId || h.id).filter(Boolean),
+    ).size;
+    const activeBoxesCount = activeHus.filter((h: any) => h.tipoHu === 'CAJA').length;
 
     return {
       ...client,
@@ -126,7 +176,8 @@ export class ClientsController {
         totalOrdenes: client._count.ordenesSalida,
         totalRecepciones: client._count.recepciones,
         totalLotes: client._count.lotes,
-        totalTarimas: client._count.handlingUnits,
+        totalTarimas: physicalPalletsCount,
+        totalCajas: activeBoxesCount,
       },
       reglasHeredadas: {
         requiereLote: client.requiereLote,
@@ -140,12 +191,25 @@ export class ClientsController {
 
   // ============ CREACIÓN (SUBTAREA 2 & 4) ============
   @Post()
+  @RequireAccess({ modules: ['depositantes'], actions: ['crear'], allowPortal: false })
   @ApiOperation({ summary: 'Crear nuevo depositante con reglas operativas heredables según giro' })
   async createClient(
     @Body() data: CreateClientDto,
-    @Headers('x-user-role') headerRole?: string,
-    @Headers('authorization') authHeader?: string
+    @Req() req?: any,
   ) {
+    const { auditUser, isOperador, rol } = this.resolveVerifiedActor(req);
+    if (isOperador) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.FORBIDDEN,
+          message: 'OPERARIO_NO_AUTORIZADO: Los operarios no tienen autorización para crear depositantes.',
+          error: 'Forbidden',
+          codigo: 'OPERARIO_NO_AUTORIZADO',
+          rolDetectado: rol,
+        },
+        HttpStatus.FORBIDDEN,
+      );
+    }
     // Validaciones estrictas de campos obligatorios
     if (!data.codigo || !data.codigo.trim()) {
       throw new HttpException({
@@ -254,7 +318,7 @@ export class ClientsController {
 
       await this.prisma.auditLog.create({
         data: {
-          usuario: 'Sistema Admin',
+          usuario: auditUser,
           accion: 'CREAR_DEPOSITANTE',
           entidad: 'Client',
           entidadId: newClient.id,
@@ -273,17 +337,17 @@ export class ClientsController {
 
   // ============ ACTUALIZACIÓN (SUBTAREAS 2 & 5) ============
   @Put(':id')
+  @RequireAccess({ modules: ['depositantes'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Actualizar depositante con candado estricto contra operarios' })
   async updateClient(
     @Param('id') id: string, 
     @Body() data: UpdateClientDto,
-    @Headers('x-user-role') headerRole?: string,
-    @Headers('authorization') authHeader?: string
+    @Req() req?: any,
   ) {
     const client = await this.prisma.client.findUnique({ where: { id } });
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
 
-    const { rol, isOperador } = this.resolveUserRole(headerRole, authHeader);
+    const { rol, auditUser, isOperador } = this.resolveVerifiedActor(req);
 
     // SUBTAREA 5: Candado de seguridad RBAC contra operarios
     if (isOperador) {
@@ -298,11 +362,11 @@ export class ClientsController {
       if (fixedRulesTouched) {
         await this.prisma.auditLog.create({
           data: {
-            usuario: `Operador (${rol})`,
+            usuario: auditUser,
             accion: 'VIOLACION_REGLAS_RECHAZADA',
             entidad: 'Client',
             entidadId: id,
-            detalle: `Intento de mutación no autorizada de reglas operativas fijas del cliente ${client.codigo}`,
+            detalle: `Intento de mutación no autorizada de reglas operativas fijas del cliente ${client.codigo} por rol ${rol}`,
           }
         });
 
@@ -316,8 +380,9 @@ export class ClientsController {
       }
     }
 
-    // Normalizar caducidad si viene como alias
+    // Normalizar caducidad si viene como alias y excluir llave primaria del payload
     const updatePayload: any = { ...data };
+    delete updatePayload.id;
     if (data.manejaCaducidad !== undefined && data.requiereCaducidad === undefined) {
       updatePayload.requiereCaducidad = Boolean(data.manejaCaducidad);
     }
@@ -331,7 +396,7 @@ export class ClientsController {
 
     await this.prisma.auditLog.create({
       data: {
-        usuario: rol,
+        usuario: auditUser,
         accion: 'ACTUALIZAR_DEPOSITANTE',
         entidad: 'Client',
         entidadId: id,
@@ -344,17 +409,17 @@ export class ClientsController {
 
   // ============ CONFIGURACIÓN DE REGLAS 3PL (SUBTAREA 4 & 5) ============
   @Put(':id/config')
+  @RequireAccess({ modules: ['depositantes'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Configurar parámetros operativos 3PL del depositante con candado de seguridad' })
   async updateConfig(
     @Param('id') id: string, 
     @Body() data: UpdateClientConfigDto,
-    @Headers('x-user-role') headerRole?: string,
-    @Headers('authorization') authHeader?: string
+    @Req() req?: any,
   ) {
     const client = await this.prisma.client.findUnique({ where: { id } });
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
 
-    const { rol, isOperador } = this.resolveUserRole(headerRole, authHeader);
+    const { rol, auditUser, isOperador } = this.resolveVerifiedActor(req);
 
     // SUBTAREA 5: Bloqueo categórico a operarios
     if (isOperador) {
@@ -381,7 +446,7 @@ export class ClientsController {
 
     await this.prisma.auditLog.create({
       data: {
-        usuario: rol,
+        usuario: auditUser,
         accion: 'ACTUALIZAR_CONFIG_3PL',
         entidad: 'Client',
         entidadId: id,
@@ -394,11 +459,11 @@ export class ClientsController {
 
   // ============ DESACTIVACIÓN / BAJA LÓGICA (SUBTAREA 2) ============
   @Delete(':id')
+  @RequireAccess({ modules: ['depositantes'], actions: ['editar', 'cancelar'], allowPortal: false })
   @ApiOperation({ summary: 'Desactivar depositante (baja lógica segura preservando trazabilidad)' })
   async deleteClient(
     @Param('id') id: string,
-    @Headers('x-user-role') headerRole?: string,
-    @Headers('authorization') authHeader?: string
+    @Req() req?: any,
   ) {
     const client = await this.prisma.client.findUnique({
       where: { id },
@@ -413,7 +478,7 @@ export class ClientsController {
     });
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
 
-    const { rol, isOperador } = this.resolveUserRole(headerRole, authHeader);
+    const { auditUser, isOperador } = this.resolveVerifiedActor(req);
     if (isOperador) {
       throw new HttpException({
         statusCode: HttpStatus.FORBIDDEN,
@@ -431,7 +496,7 @@ export class ClientsController {
 
     await this.prisma.auditLog.create({
       data: {
-        usuario: rol,
+        usuario: auditUser,
         accion: 'DESACTIVAR_DEPOSITANTE',
         entidad: 'Client',
         entidadId: id,
@@ -448,16 +513,16 @@ export class ClientsController {
 
   // ============ REACTIVACIÓN (SUBTAREA 2 EXTENDIDA) ============
   @Put(':id/reactivate')
+  @RequireAccess({ modules: ['depositantes'], actions: ['editar'], allowPortal: false })
   @ApiOperation({ summary: 'Reactivar depositante previamente desactivado' })
   async reactivateClient(
     @Param('id') id: string,
-    @Headers('x-user-role') headerRole?: string,
-    @Headers('authorization') authHeader?: string
+    @Req() req?: any,
   ) {
     const client = await this.prisma.client.findUnique({ where: { id } });
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
 
-    const { rol, isOperador } = this.resolveUserRole(headerRole, authHeader);
+    const { auditUser, isOperador } = this.resolveVerifiedActor(req);
     if (isOperador) {
       throw new HttpException({
         statusCode: HttpStatus.FORBIDDEN,
@@ -474,7 +539,7 @@ export class ClientsController {
 
     await this.prisma.auditLog.create({
       data: {
-        usuario: rol,
+        usuario: auditUser,
         accion: 'REACTIVAR_DEPOSITANTE',
         entidad: 'Client',
         entidadId: id,
@@ -491,6 +556,7 @@ export class ClientsController {
 
   // ============ CONTACTS ============
   @Post(':id/contacts')
+  @RequireAccess({ modules: ['depositantes'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Agregar contacto a depositante' })
   async addContact(@Param('id') clienteId: string, @Body() data: any) {
     return this.prisma.clientContact.create({ data: { ...data, clienteId } });
@@ -498,6 +564,7 @@ export class ClientsController {
 
   // ============ ADDRESSES ============
   @Post(':id/addresses')
+  @RequireAccess({ modules: ['depositantes'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Agregar dirección de entrega' })
   async addAddress(@Param('id') clienteId: string, @Body() data: any) {
     return this.prisma.clientAddress.create({ data: { ...data, clienteId } });
@@ -505,26 +572,17 @@ export class ClientsController {
 
   // ============ CLIENT INVENTORY SUMMARY ============
   @Get(':id/inventory')
+  @RequireAccess({
+    modules: ['inventario', 'depositantes', 'dashboard', 'despacho', 'picking'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Resumen completo de inventario del depositante con desglose de estados y almacén' })
   async getClientInventory(
     @Param('id') clienteId: string,
-    @Headers('authorization') authHeader?: string,
+    @Req() req?: any,
   ) {
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      try {
-        const token = authHeader.split(' ')[1];
-        const decoded: any = jwt.verify(token, JWT_SECRET);
-        let userClienteId = decoded?.clienteId;
-        if (!userClienteId && decoded?.userId) {
-          const user = await this.prisma.user.findUnique({ where: { id: decoded.userId } });
-          userClienteId = user?.clienteId;
-        }
-        if (userClienteId && userClienteId !== clienteId) {
-          throw new HttpException('ACCESO_DENEGADO: No tiene autorización para consultar el inventario de otro depositante.', HttpStatus.FORBIDDEN);
-        }
-      } catch (err: any) {
-        if (err instanceof HttpException) throw err;
-      }
+    if (req?.user?.clienteId && req.user.clienteId !== clienteId) {
+      throw new HttpException('ACCESO_DENEGADO: No tiene autorización para consultar el inventario de otro depositante.', HttpStatus.FORBIDDEN);
     }
 
     const lots = await this.prisma.lotInventory.findMany({

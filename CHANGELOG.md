@@ -4,6 +4,50 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.27] — 2026-11-11 (Hardening Bloque 1 RC: Auth/RBAC Global, Dashboard Real y Catálogos 3PL)
+
+### 🛡️ Remediación Bloque 1 Pre-Release Candidate (Rama `fix/rc-block1-auth-dashboard-catalogs` -> `dev`)
+
+Cierre del Bloque 1 de QA Integral (**0 BLOQUEANTES**, **0 ALTOS**), endureciendo la seguridad transversal JWT/RBAC, eliminando métricas y catálogos demo en Dashboard/3PL y asegurando trazabilidad multi-tenant e invariantes en base de datos.
+
+### Autenticación, Autorización RBAC y Anti-Spoofing (Módulo A)
+- **Guardia Global Backend (`WmsAuthGuard` & `@RequireAccess` / `@Public`):**
+  - Registrado `WmsAuthGuard` como `APP_GUARD` en `app.module.ts`. Toda ruta protegida exige JWT `Bearer` válido contra `User.activo` y `RolePermission` en PostgreSQL; rechaza ausencia de token, `'demo-token'`, firmas inválidas o usuarios inactivos con `401 Unauthorized` y accesos insuficientes con `403 Forbidden`.
+  - Cobertura total sobre `AdminController`, `ClientsController`, `EndCustomersController`, `MasterDataController`, `InventoryController`, `OperationsController` y `UomController`, manteniendo `@Public()` en `GET /health`, `POST /api/auth/login`, `POST /api/auth/otp/request` y `POST /api/auth/otp/verify`.
+- **Anti-Spoofing (`x-user-role`) y Aislamiento Multi-Tenant:**
+  - Eliminada toda lectura de `x-user-role` y el fallback inseguro a `'Super Admin'` en `ClientsController` (`resolveVerifiedActor(req)` usa únicamente `req.user` verificado por JWT) y eliminado el switch simulador en `Clients.tsx`.
+  - Forzado `req.user.clienteId` para usuarios Portal (`Depositante`) en `ClientsController`, `EndCustomersController`, `MasterDataController` (`GET /skus`), `InventoryController` (`lots`, `handling-units`, `summary`, `movements`, `consolidated`) y `OperationsController` (`orders`, `orders/:id`, `createOrder`, `dashboard/stats`), además de cierre del bypass de autenticación en `finalizeCycleCount`.
+- **Protección SPA y Permisos por Acción (`main.tsx`, `AuthContext.tsx`, `Sidebar.tsx`, `TopBar.tsx`, `ReceiptReportModal.tsx`):**
+  - `GET /api/auth/me` y `POST /api/auth/otp/verify` exponen `permisosDetalle` (`modulo:accion`); `AuthContext` incorpora `hasActionPermission(modulo, accion)`.
+  - `main.tsx` implementa `ModuleRoute` en todas las rutas Staff y separación estricta Staff vs Portal (`/portal/*`).
+  - `Sidebar.tsx` desacopla `Proveedores` de `'depositantes'` usando `['proveedores', 'maestros']`.
+  - `TopBar.tsx` completa breadcrumbs (`/depositantes`, `/clientes-finales`, `/proveedores`), filtra notificaciones por permiso/rol y migra logout a `<button type="button" className="topbar-user">`.
+  - `ReceiptReportModal.tsx` adjunta `Authorization: Bearer` en `/report`, `/acuse-rampa` e `/inspection/report`.
+
+### Dashboard Ejecutivo WMS Real (Módulo B)
+- **`wms-frontend/src/pages/Dashboard.tsx`:**
+  - Eliminados subtextos y fallbacks demo (`'1 en picking (100 pza) · 1 consolidado'`, `239`, `72`, `274`, `66.7%`, `48 Racks`, `'REC-01'`, `'Alejandra'`) reemplazando `||` sobre ceros con coalescencia segura `?? 0`.
+  - Cálculo real de posiciones físicas activas (`l.activo !== false`): **45 posiciones** (`42` comerciales + `3` PNC), reflejando estado baseline (`24 PZA`, `0 Órdenes`, `1/45` tarimas = `2.2%`, `44` libres). Fetch condicionado por `hasPermission`.
+
+### Catálogos 3PL: Depositantes, Clientes Finales y Proveedores (Módulos C, D, E)
+- **Depositantes (`Clients.tsx`, `clients.controller.ts`):**
+  - Añadido `direccionFiscal` al formulario e interfaz `ClientForm` desacoplándola de `form.ciudad` y agregando campos dedicados de `Ciudad` y `Estado`.
+  - `GET /api/clients` y `GET /api/clients/:id` calculan `totalTarimas` agrupando cajas por contenedor raíz (`parentHuId || id`) e incluyen `totalCajas` (`1` tarima + `2` cajas para `AlimNorte`).
+- **Clientes Finales (`EndCustomers.tsx`, `end-customers.controller.ts`, `end-customer.dto.ts`):**
+  - Eliminados `demoClients` y `demoEndCustomers`; ante depositantes sin destinos (ej. `CELERA`) muestra estado vacío real `"Sin destinos registrados"`.
+  - Implementado DTO whitelist, filtro `?activo=true|false|all`, manejo `P2002 -> 409 Conflict`, auditoría en `AuditLog` e interfaz completa de alta, edición (`razonSocial`, `rfc`, `referencia`), baja lógica y reactivación (`PUT :id/reactivate`).
+- **Proveedores (`Suppliers.tsx`, `master-data.controller.ts`, `supplier.dto.ts`):**
+  - Eliminado `demoSuppliers`; implementado CRUD completo con `direccion`, filtro `?activo=true|false|all`, manejo `P2002 -> 409 Conflict`, `DELETE /api/suppliers/:id` (baja lógica), `PUT /api/suppliers/:id/reactivate` y `AuditLog`.
+
+### Pruebas, Deudas Aceptadas y Continuación QA
+- **Validación Automatizada y E2E:** `7/7 suites Jest` (**46/46 tests PASS**, incluyendo `wms-auth-rbac.spec.ts` y `block1-catalogs.spec.ts`), `npx nest build` PASS, `tsc -b && vite build` PASS, `git diff --check` PASS, y verificación E2E en Chrome headless con `0 consoleErrors`, `0 pageExceptions` y `0 unexpectedHttpErrors`.
+- **Deudas No Bloqueantes Aceptadas en Bloque 1:**
+  - `POST /api/auth/otp/request` conserva `// TODO` sin envío SMTP (Auth principal JWT verificado; marcado como `WARNING` aceptado en Módulo A).
+  - Conservación intacta de `3` depositantes residuales `CLI-TEST-PUTAWAY-*` en BD como deuda previa de limpieza de datos.
+- **Siguiente Fase Planificada:** **BLOQUE 2 — REGRESIÓN OPERATIVA INBOUND POST-RBAC** (Recepción, Etiquetado, Inventario, Ubicaciones y Trazabilidad sobre `REC-2026-0020` / `G0001` con `Super Admin`, `Operador Recepción` y Portal), seguido de **BLOQUE 3 — PICKING + RESERVA + DESPACHO E2E**.
+
+---
+
 ## [1.9.26] — 2026-11-11 (Cierre de Fase 3 — Layout Físico Real, Hardening Integral y Certificación E2E REC-2026-0020)
 
 ### 🏁 Consolidación Final de Fase 3 y Promoción a `dev`

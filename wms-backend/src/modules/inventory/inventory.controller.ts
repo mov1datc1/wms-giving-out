@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Body, Param, Query, HttpCode, HttpStatus, HttpException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, Req, HttpCode, HttpStatus, HttpException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { PrismaService } from '../../prisma.service';
+import { RequireAccess } from '../auth/auth.decorators';
 import { DivertToVirtualDto } from './dto/divert-virtual.dto';
 import { TransferToVirtualDto, ReleaseFromVirtualDto } from './dto/transfer-virtual.dto';
 import { withConcurrencyRetry } from '../../common/concurrency.util';
@@ -17,6 +18,11 @@ export class InventoryController {
   ) {}
 
   @Get('lots')
+  @RequireAccess({
+    modules: ['inventario', 'picking', 'despacho', 'recepcion', 'conteo-ciclico', 'ubicaciones', 'trazabilidad', 'dashboard'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Listar inventario por lote (stock vivo o virtual)' })
   @ApiQuery({ name: 'tipoStock', required: false, enum: ['DISPONIBLE', 'VIRTUAL_NC', 'TODOS'], description: 'Filtrar por stock vendible disponible o retenido en almacén virtual de No Conforme/Merma' })
   async getLots(
@@ -24,6 +30,7 @@ export class InventoryController {
     @Query('skuId') skuId?: string,
     @Query('estado') estado?: string,
     @Query('tipoStock') tipoStock?: string,
+    @Req() req?: any,
   ) {
     const where: any = {};
     if (tipoStock === 'VIRTUAL_NC') {
@@ -34,7 +41,8 @@ export class InventoryController {
       where.cantidadDisponible = { gt: 0 };
     }
 
-    if (clienteId) where.clienteId = clienteId;
+    const effectiveClienteId = req?.user?.clienteId || clienteId;
+    if (effectiveClienteId) where.clienteId = effectiveClienteId;
     if (skuId) where.skuId = skuId;
     if (estado) where.estadoCalidad = estado;
 
@@ -99,15 +107,22 @@ export class InventoryController {
   }
 
   @Get('handling-units')
+  @RequireAccess({
+    modules: ['inventario', 'picking', 'despacho', 'recepcion', 'etiquetado', 'ubicaciones', 'trazabilidad'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Listar Handling Units con soporte de alcance físico vs histórico' })
   async getHandlingUnits(
     @Query('clienteId') clienteId?: string,
     @Query('estado') estado?: string,
     @Query('scope') scope?: string,
     @Query('search') search?: string,
+    @Req() req?: any,
   ) {
     const where: any = {};
-    if (clienteId) where.clienteId = clienteId;
+    const effectiveClienteId = req?.user?.clienteId || clienteId;
+    if (effectiveClienteId) where.clienteId = effectiveClienteId;
 
     // Alcance explícito por categoría operativa:
     // FISICO: Unidades logísticas presentes en el almacén (disponibles o retenidas)
@@ -164,10 +179,16 @@ export class InventoryController {
   }
 
   @Get('summary')
+  @RequireAccess({
+    modules: ['inventario', 'dashboard', 'depositantes'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Resumen de inventario por cliente' })
-  async getSummary(@Query('clienteId') clienteId?: string) {
+  async getSummary(@Query('clienteId') clienteId?: string, @Req() req?: any) {
     const where: any = { cantidadDisponible: { gt: 0 } };
-    if (clienteId) where.clienteId = clienteId;
+    const effectiveClienteId = req?.user?.clienteId || clienteId;
+    if (effectiveClienteId) where.clienteId = effectiveClienteId;
 
     const lots = await this.prisma.lotInventory.findMany({
       where,
@@ -214,6 +235,11 @@ export class InventoryController {
   }
 
   @Get('movements')
+  @RequireAccess({
+    modules: ['inventario', 'trazabilidad', 'dashboard', 'recepcion', 'picking', 'despacho'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Historial de movimientos de inventario' })
   async getMovements(
     @Query('tipo') tipo?: string,
@@ -221,10 +247,12 @@ export class InventoryController {
     @Query('limit') limit?: string,
     @Query('desde') desde?: string,
     @Query('hasta') hasta?: string,
+    @Req() req?: any,
   ) {
     const where: any = {};
     if (tipo) where.tipoMovimiento = tipo;
-    if (clienteId) where.clienteId = clienteId;
+    const effectiveClienteId = req?.user?.clienteId || clienteId;
+    if (effectiveClienteId) where.clienteId = effectiveClienteId;
     if (desde || hasta) {
       where.fechaHora = {};
       if (desde) where.fechaHora.gte = new Date(desde);
@@ -248,6 +276,11 @@ export class InventoryController {
 
   // ============ INVENTARIO CONSOLIDADO / GENERAL ============
   @Get('consolidated')
+  @RequireAccess({
+    modules: ['inventario', 'dashboard', 'trazabilidad'],
+    actions: ['ver'],
+    allowPortal: true,
+  })
   @ApiOperation({ summary: 'Consultar inventario general consolidado (conforme, merma, exceso y cuarentena) en una sola consulta' })
   @ApiQuery({ name: 'clienteId', required: false, description: 'Filtrar por cliente depositante' })
   @ApiQuery({ name: 'skuId', required: false, description: 'Filtrar por SKU' })
@@ -258,6 +291,7 @@ export class InventoryController {
     @Query('skuId') skuId?: string,
     @Query('clasificacion') clasificacion?: string,
     @Query('search') search?: string,
+    @Req() req?: any,
   ) {
     const where: any = {
       OR: [
@@ -265,7 +299,8 @@ export class InventoryController {
         { cantidadBloqueada: { gt: 0 } },
       ],
     };
-    if (clienteId) where.clienteId = clienteId;
+    const effectiveClienteId = req?.user?.clienteId || clienteId;
+    if (effectiveClienteId) where.clienteId = effectiveClienteId;
     if (skuId) where.skuId = skuId;
 
     const allLots = await this.prisma.lotInventory.findMany({
@@ -510,6 +545,11 @@ export class InventoryController {
 
   // ============ SUBFLUJO: DESVIAR A ALMACÉN VIRTUAL NO CONFORME / MERMA ============
   @Post('divert-to-virtual')
+  @RequireAccess({
+    modules: ['inventario', 'recepcion'],
+    actions: ['crear', 'editar', 'ajustar'],
+    allowPortal: false,
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Desviar producto dañado o en exceso a almacén virtual de No Conforme / Merma',
@@ -840,6 +880,11 @@ export class InventoryController {
 
   // ============ CONSULTA: ALMACÉN VIRTUAL NO CONFORME / MERMA ============
   @Get('virtual-warehouse')
+  @RequireAccess({
+    modules: ['inventario', 'recepcion', 'ubicaciones'],
+    actions: ['ver'],
+    allowPortal: false,
+  })
   @ApiOperation({ summary: 'Consultar inventario en Almacén Virtual de No Conforme / Merma' })
   @ApiQuery({ name: 'clienteId', required: false, description: 'Filtrar por cliente depositante' })
   @ApiQuery({ name: 'tipoDesvio', required: false, enum: ['TODOS', 'MERMA', 'EXCESO', 'MERCANCIA_DANADA', 'PRODUCTO_EXCESO'], description: 'Filtrar por tipo de no conformidad' })
@@ -939,6 +984,11 @@ export class InventoryController {
   }
 
   @Post('transfer')
+  @RequireAccess({
+    modules: ['inventario', 'ubicaciones'],
+    actions: ['editar', 'ajustar'],
+    allowPortal: false,
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Transferir / Mover inventario entre ubicaciones (Rack A -> Rack B) bajo protocolo de concurrencia WMS (Etapa 5A.1)',
@@ -949,6 +999,11 @@ export class InventoryController {
   }
 
   @Post('quarantine')
+  @RequireAccess({
+    modules: ['inventario', 'ubicaciones'],
+    actions: ['editar', 'ajustar'],
+    allowPortal: false,
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Enviar inventario a Cuarentena (retención preventiva por calidad/daño/inspección) bajo protocolo de concurrencia WMS',
@@ -960,6 +1015,11 @@ export class InventoryController {
 
   // ============ TRANSFERENCIA MANUAL Y MASIVA A ALMACÉN VIRTUAL / ENTRE RACKS ============
   @Post('transfer-to-virtual')
+  @RequireAccess({
+    modules: ['inventario', 'ubicaciones'],
+    actions: ['editar', 'ajustar'],
+    allowPortal: false,
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Transferir inventario (individual o masivo) de Stock Operativo a Almacén Virtual o entre racks',
@@ -1414,6 +1474,11 @@ export class InventoryController {
 
   // ============ LIBERAR / REINTEGRAR A STOCK OPERATIVO ============
   @Post('quarantine/release')
+  @RequireAccess({
+    modules: ['inventario', 'ubicaciones'],
+    actions: ['editar', 'ajustar'],
+    allowPortal: false,
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Liberar mercancía de cuarentena a Stock Operativo bajo protocolo de concurrencia (Etapa 5A.1)',
@@ -1423,6 +1488,11 @@ export class InventoryController {
   }
 
   @Post('release-from-virtual')
+  @RequireAccess({
+    modules: ['inventario', 'ubicaciones'],
+    actions: ['editar', 'ajustar'],
+    allowPortal: false,
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Liberar / Reintegrar mercancía de Almacén Virtual a Stock Operativo bajo protocolo de concurrencia (Etapa 5A.1)',
@@ -1687,6 +1757,11 @@ export class InventoryController {
 
   // ============ CONCILIACIÓN DE CONTEO FÍSICO (CYCLE COUNT / RECONCILE) ============
   @Post('count/:id/reconcile')
+  @RequireAccess({
+    modules: ['conteo-ciclico', 'inventario'],
+    actions: ['ajustar', 'aprobar', 'editar'],
+    allowPortal: false,
+  })
   @ApiOperation({
     summary: 'Conciliar conteo físico (Deprecado por directriz de seguridad WMS)',
   })

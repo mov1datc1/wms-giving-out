@@ -35,6 +35,7 @@ interface ClientForm {
   email: string;
   contactoPrincipal: string;
   sitioWeb: string;
+  direccionFiscal: string;
   ciudad: string;
   estado: string;
   colorPortal: string;
@@ -62,6 +63,7 @@ const DEFAULT_FORM: ClientForm = {
   email: '',
   contactoPrincipal: '',
   sitioWeb: '',
+  direccionFiscal: '',
   ciudad: '',
   estado: '',
   colorPortal: '#0D9488',
@@ -132,7 +134,7 @@ export function getRulesByGiro(giro: string) {
 
 export function Clients() {
   const navigate = useNavigate();
-  const { token, user } = useAuth();
+  const { token, hasActionPermission } = useAuth();
   const [clients, setClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -153,23 +155,21 @@ export function Clients() {
   const [clientToReactivate, setClientToReactivate] = useState<any | null>(null);
   const [reactivating, setReactivating] = useState(false);
 
-  // Candado de Roles (Subtarea 3 & 5) y Simulador Interactivo para validación
-  const [simulatedRole, setSimulatedRole] = useState<'ADMIN' | 'OPERARIO'>('ADMIN');
-  const effectiveRole = simulatedRole === 'OPERARIO' 
-    ? 'Operario de Almacén' 
-    : (user?.rolNombre || 'Administrador');
-  const isOperator = effectiveRole.toLowerCase().includes('operador') || 
-                     effectiveRole.toLowerCase().includes('operario') || 
-                     effectiveRole.toLowerCase().includes('almacenista');
-  const canEditRules = !isOperator; // En modo admin siempre está activo, bloqueado para operarios
+  // Permisos reales resueltos desde el JWT / perfil verificado del usuario
+  const canCreateClient = hasActionPermission('depositantes', 'crear');
+  const canEditClient = hasActionPermission('depositantes', 'editar');
+  const canDeactivateClient = hasActionPermission('depositantes', 'cancelar') || canEditClient;
+  const canEditRules = isEditing ? canEditClient : canCreateClient;
 
-  const headers: any = { 
-    Authorization: `Bearer ${token}`, 
+  const headers: any = {
+    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
-    'x-user-role': effectiveRole,
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    if (!token) return;
+    loadData();
+  }, [token]);
 
   async function loadData() {
     setLoading(true);
@@ -229,6 +229,7 @@ export function Clients() {
       email: client.email || '',
       contactoPrincipal: client.contactoPrincipal || '',
       sitioWeb: client.sitioWeb || '',
+      direccionFiscal: client.direccionFiscal || '',
       ciudad: client.ciudad || '',
       estado: client.estado || '',
       colorPortal: client.colorPortal || '#0D9488',
@@ -375,18 +376,20 @@ export function Clients() {
         </div>
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <button 
-            type="button"
-            className="btn btn-primary" 
-            onClick={handleOpenCreate}
-            style={{ 
-              display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px', 
-              fontWeight: 700, background: '#0D9488', border: '1px solid #2DD4BF', color: '#FFFFFF',
-              boxShadow: '0 4px 14px rgba(13, 148, 136, 0.35)', borderRadius: 8, cursor: 'pointer'
-            }}
-          >
-            <Plus size={16} /> Nuevo Depositante
-          </button>
+          {canCreateClient && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleOpenCreate}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px',
+                fontWeight: 700, background: '#0D9488', border: '1px solid #2DD4BF', color: '#FFFFFF',
+                boxShadow: '0 4px 14px rgba(13, 148, 136, 0.35)', borderRadius: 8, cursor: 'pointer'
+              }}
+            >
+              <Plus size={16} /> Nuevo Depositante
+            </button>
+          )}
           <button 
             type="button"
             className="btn btn-secondary" 
@@ -828,7 +831,7 @@ export function Clients() {
                         <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600 }}>Previos</div>
                       </div>
 
-                      {/* Botón Editar Parámetros */}
+                      {/* Botón Editar / Ver Parámetros */}
                       <button 
                         type="button"
                         className="btn btn-secondary btn-sm" 
@@ -839,11 +842,11 @@ export function Clients() {
                           color: '#0F172A', borderRadius: 6, cursor: 'pointer' 
                         }}
                       >
-                        <Settings2 size={14} style={{ color: '#0D9488' }} /> {canEditRules ? 'Editar Parámetros' : 'Ver Parámetros'}
+                        <Settings2 size={14} style={{ color: '#0D9488' }} /> {canEditClient ? 'Editar Parámetros' : 'Ver Parámetros'}
                       </button>
 
-                      {/* BOTECITO DE BASURA PROMINENTE Y ACCESIBLE (SUBTAREA 2) */}
-                      {c.activo !== false ? (
+                      {/* Baja lógica / Reactivación controlada por RBAC real */}
+                      {canDeactivateClient && (c.activo !== false ? (
                         <button 
                           type="button"
                           className="btn btn-sm" 
@@ -889,7 +892,7 @@ export function Clients() {
                         >
                           <RotateCcw size={14} /> Reactivar
                         </button>
-                      )}
+                      ))}
 
                       {/* Expandir Accordion */}
                       <button 
@@ -1061,99 +1064,24 @@ export function Clients() {
 
             {/* Formulario */}
             <form onSubmit={handleSubmit} style={{ overflowY: 'auto', padding: '20px 24px', flex: 1 }}>
-              
-              {/* BARRA EJECUTIVA DE CONTROL RBAC & SIMULADOR DE ROLES */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: 12,
-                padding: '12px 16px',
-                background: simulatedRole === 'OPERARIO' ? '#FEF2F2' : '#F0FDFA',
-                borderRadius: 10,
-                border: `1px solid ${simulatedRole === 'OPERARIO' ? '#FECACA' : '#99F6E4'}`,
-                marginBottom: 20,
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{
-                    width: 34, height: 34, borderRadius: 8,
-                    background: simulatedRole === 'OPERARIO' ? '#FEE2E2' : '#CCFBF1',
-                    color: simulatedRole === 'OPERARIO' ? '#DC2626' : '#0D9488',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    flexShrink: 0
-                  }}>
-                    {simulatedRole === 'OPERARIO' ? <Lock size={18} /> : <ShieldCheck size={18} />}
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: simulatedRole === 'OPERARIO' ? '#991B1B' : '#115E59' }}>
-                      {simulatedRole === 'OPERARIO' 
-                        ? 'Candado de Seguridad RBAC Activo — Vista de Operario de Almacén' 
-                        : 'Privilegios de Alta Seguridad — Perfil Super Administrador'}
-                    </div>
-                    <div style={{ fontSize: 12, color: simulatedRole === 'OPERARIO' ? '#B91C1C' : '#0D9488' }}>
-                      {simulatedRole === 'OPERARIO'
-                        ? 'Las reglas operativas 3PL (FEFO/FIFO, Lote, Caducidad) están bloqueadas contra modificaciones en piso.'
-                        : 'Tienes autorización soberana para crear clientes, fijar reglas de negocio y autorizar parámetros.'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Control Segmentado de Rol */}
+              {!canEditRules && (
                 <div style={{
-                  display: 'inline-flex',
-                  background: '#F1F5F9',
-                  padding: 3,
-                  borderRadius: 8,
-                  border: '1px solid #CBD5E1',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '10px 14px',
+                  background: '#FEF2F2',
+                  borderRadius: 10,
+                  border: '1px solid #FECACA',
+                  marginBottom: 18,
+                  color: '#991B1B',
+                  fontSize: 12.5,
+                  fontWeight: 600,
                 }}>
-                  <button
-                    type="button"
-                    onClick={() => setSimulatedRole('ADMIN')}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      padding: '6px 13px',
-                      fontSize: 12,
-                      fontWeight: 700,
-                      borderRadius: 6,
-                      border: 'none',
-                      cursor: 'pointer',
-                      background: simulatedRole === 'ADMIN' ? '#0D9488' : 'transparent',
-                      color: simulatedRole === 'ADMIN' ? '#FFFFFF' : '#475569',
-                      boxShadow: simulatedRole === 'ADMIN' ? '0 1px 3px rgba(13, 148, 136, 0.35)' : 'none',
-                      transition: 'all 0.15s ease',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    <ShieldCheck size={14} /> Administrador (Tú)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSimulatedRole('OPERARIO')}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      padding: '6px 13px',
-                      fontSize: 12,
-                      fontWeight: 700,
-                      borderRadius: 6,
-                      border: 'none',
-                      cursor: 'pointer',
-                      background: simulatedRole === 'OPERARIO' ? '#DC2626' : 'transparent',
-                      color: simulatedRole === 'OPERARIO' ? '#FFFFFF' : '#475569',
-                      boxShadow: simulatedRole === 'OPERARIO' ? '0 1px 3px rgba(220, 38, 38, 0.35)' : 'none',
-                      transition: 'all 0.15s ease',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    <Lock size={14} /> Probar como Operario
-                  </button>
+                  <Lock size={16} />
+                  <span>Modo solo lectura: tu rol actual no cuenta con permiso de edición sobre depositantes y reglas 3PL.</span>
                 </div>
-              </div>
+              )}
 
               {/* SECCIÓN 1: DATOS GENERALES & FISCALES */}
               <div style={{ marginBottom: 20 }}>
@@ -1266,24 +1194,52 @@ export function Clients() {
                 </div>
 
                 <div className="form-row">
-                  <div className="form-group" style={{ flex: 1.5 }}>
+                  <div className="form-group" style={{ flex: 2 }}>
                     <label className="form-label" style={{ color: '#334155', fontWeight: 600 }}>Dirección Fiscal</label>
-                    <input 
-                      className="form-input" 
-                      placeholder="Calle, número, colonia" 
-                      value={form.ciudad} 
-                      onChange={e => setForm(f => ({ ...f, ciudad: e.target.value }))} 
+                    <input
+                      className="form-input"
+                      placeholder="Calle, número, colonia"
+                      value={form.direccionFiscal}
+                      onChange={e => setForm(f => ({ ...f, direccionFiscal: e.target.value }))}
+                      disabled={!canEditRules}
                       style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
                     />
                   </div>
 
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label" style={{ color: '#334155', fontWeight: 600 }}>Código Postal</label>
-                    <input 
-                      className="form-input" 
-                      placeholder="03940" 
-                      value={form.codigoPostal} 
-                      onChange={e => setForm(f => ({ ...f, codigoPostal: e.target.value }))} 
+                    <input
+                      className="form-input"
+                      placeholder="03940"
+                      value={form.codigoPostal}
+                      onChange={e => setForm(f => ({ ...f, codigoPostal: e.target.value }))}
+                      disabled={!canEditRules}
+                      style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label" style={{ color: '#334155', fontWeight: 600 }}>Ciudad</label>
+                    <input
+                      className="form-input"
+                      placeholder="Ciudad de México"
+                      value={form.ciudad}
+                      onChange={e => setForm(f => ({ ...f, ciudad: e.target.value }))}
+                      disabled={!canEditRules}
+                      style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label" style={{ color: '#334155', fontWeight: 600 }}>Estado</label>
+                    <input
+                      className="form-input"
+                      placeholder="CDMX / Jalisco / NL"
+                      value={form.estado}
+                      onChange={e => setForm(f => ({ ...f, estado: e.target.value }))}
+                      disabled={!canEditRules}
                       style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
                     />
                   </div>
@@ -1294,7 +1250,8 @@ export function Clients() {
                       className="form-input" 
                       placeholder="México" 
                       value={form.pais} 
-                      onChange={e => setForm(f => ({ ...f, pais: e.target.value }))} 
+                      onChange={e => setForm(f => ({ ...f, pais: e.target.value }))}
+                      disabled={!canEditRules}
                       style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
                     />
                   </div>
@@ -1305,7 +1262,8 @@ export function Clients() {
                       className="form-input" 
                       placeholder="G03, G01" 
                       value={form.cfdiDefault} 
-                      onChange={e => setForm(f => ({ ...f, cfdiDefault: e.target.value }))} 
+                      onChange={e => setForm(f => ({ ...f, cfdiDefault: e.target.value }))}
+                      disabled={!canEditRules}
                       style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#0F172A' }}
                     />
                   </div>
@@ -1578,20 +1536,22 @@ export function Clients() {
                     background: '#FFFFFF', border: '1px solid #CBD5E1', color: '#475569', cursor: 'pointer'
                   }}
                 >
-                  Cancelar
+                  {canEditRules ? 'Cancelar' : 'Cerrar'}
                 </button>
-                <button 
-                  type="submit" 
-                  disabled={submitting}
-                  style={{
-                    padding: '10px 22px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-                    background: '#0D9488', border: '1px solid #2DD4BF', color: '#FFFFFF',
-                    boxShadow: '0 4px 14px rgba(13, 148, 136, 0.35)', cursor: submitting ? 'not-allowed' : 'pointer',
-                    opacity: submitting ? 0.7 : 1
-                  }}
-                >
-                  {submitting ? 'Guardando en Supabase...' : isEditing ? 'Actualizar Depositante' : 'Guardar y Fijar Reglas 3PL'}
-                </button>
+                {canEditRules && (
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    style={{
+                      padding: '10px 22px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                      background: '#0D9488', border: '1px solid #2DD4BF', color: '#FFFFFF',
+                      boxShadow: '0 4px 14px rgba(13, 148, 136, 0.35)', cursor: submitting ? 'not-allowed' : 'pointer',
+                      opacity: submitting ? 0.7 : 1
+                    }}
+                  >
+                    {submitting ? 'Guardando en Supabase...' : isEditing ? 'Actualizar Depositante' : 'Guardar y Fijar Reglas 3PL'}
+                  </button>
+                )}
               </div>
             </form>
           </div>
