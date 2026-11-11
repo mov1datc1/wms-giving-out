@@ -7,6 +7,83 @@ export interface LocationHuRowPresentation {
   cantidadSublabel: string | null;
   parentCodigo: string | null;
   associatedChildrenCount: number;
+  childSkus?: string[];
+  childDescriptions?: string[];
+  childLots?: string[];
+  childClientName?: string | null;
+}
+
+/**
+ * Obtiene el conjunto de IDs de zonas operativas que tienen al menos una posición física activa
+ * y almacenable en el layout real vigente (ej. INTERIOR / EXTERIOR_TECHADO).
+ * Sirve para ignorar referencias legacy como ALM-A / ALM-B cuyos racks están inactivos (activo = false).
+ */
+export function getActiveOperationalZoneIds(locations: any[] = []): Set<string> {
+  const ids = new Set<string>();
+  for (const loc of locations) {
+    if (!loc || loc.activo === false) continue;
+    if (loc.esAlmacenable === false || loc.categoriaUbicacion !== 'FISICA_ALMACENABLE') continue;
+    if (String(loc.tipoUbicacion || '').toUpperCase() === 'PNC') continue;
+    const zId = loc.zonaId || loc.zona?.id;
+    if (zId) ids.add(String(zId));
+  }
+  return ids;
+}
+
+/**
+ * Determina si `client.zonaAsignadaId` pertenece a un catálogo legacy sin posiciones operativas activas
+ * (por ejemplo ALM-A / ALM-B históricos), evitando restringir o inflar el layout físico real G0001–G0045.
+ */
+export function hasActiveAssignedClientZone(clientObj: any, activeZoneIds: Set<string>): boolean {
+  if (!clientObj?.zonaAsignadaId) return false;
+  return activeZoneIds.has(String(clientObj.zonaAsignadaId));
+}
+
+/**
+ * Evalúa si una ubicación es elegible/compatible para un depositante 3PL en el layout operativo activo.
+ */
+export function isLocationCompatibleWithClient(
+  loc: any,
+  clientObj: any,
+  hasStock: boolean,
+  activeZoneIds?: Set<string>,
+): boolean {
+  if (!clientObj || !loc) return false;
+
+  // Excluir ubicaciones históricas / inactivas (racks Axx/Bxx fuera de servicio)
+  if (loc.activo === false) return false;
+
+  // Debe ser física almacenable comercial (excluye PNC, recibo, devoluciones, cuarentena, staging)
+  if (loc.esAlmacenable === false || loc.categoriaUbicacion !== 'FISICA_ALMACENABLE') {
+    return false;
+  }
+  if (String(loc.tipoUbicacion || '').toUpperCase() === 'PNC') {
+    return false;
+  }
+
+  // No debe estar bloqueada
+  if (loc.estado === 'BLOQUEADO' || loc.estadoCapacidad === 'BLOQUEADO') {
+    return false;
+  }
+  // No debe estar en sobrecapacidad ni llena
+  if (loc.estadoCapacidad === 'SOBRECAPACIDAD' || loc.estadoCapacidad === 'LLENO') {
+    return false;
+  }
+  // Debe tener espacio libre disponible (LIBRE o PARCIAL)
+  if (loc.estadoCapacidad !== 'LIBRE' && loc.estadoCapacidad !== 'PARCIAL') {
+    return false;
+  }
+
+  // Respetar zonaAsignadaId únicamente si pertenece a una zona activa del layout actual
+  if (clientObj.zonaAsignadaId) {
+    const enforceZone = !activeZoneIds || activeZoneIds.has(String(clientObj.zonaAsignadaId));
+    if (enforceZone) {
+      const matchesZone =
+        loc.zonaId === clientObj.zonaAsignadaId || loc.zona?.id === clientObj.zonaAsignadaId;
+      return matchesZone || hasStock;
+    }
+  }
+  return true;
 }
 
 export interface LocationHusSummary {
@@ -113,6 +190,25 @@ export function getLocationHuRowPresentation(
           .filter(Boolean),
       ),
     );
+    const childDescriptions = Array.from(
+      new Set(
+        children
+          .map((c) => c?.lote?.sku?.descripcion || c?.skuDescripcion)
+          .filter(Boolean),
+      ),
+    );
+    const childLots = Array.from(
+      new Set(
+        children
+          .map((c) => c?.lote?.lote || c?.loteTexto)
+          .filter(Boolean),
+      ),
+    );
+    const childClientName =
+      children.find((c) => c?.cliente?.nombreComercial || c?.lote?.cliente?.nombreComercial)
+        ?.cliente?.nombreComercial ||
+      children.find((c) => c?.lote?.cliente?.nombreComercial)?.lote?.cliente?.nombreComercial ||
+      null;
 
     const contenidoLabel =
       associatedChildrenCount > 0
@@ -136,6 +232,10 @@ export function getLocationHuRowPresentation(
           : 'Contenedor padre',
       parentCodigo: null,
       associatedChildrenCount,
+      childSkus,
+      childDescriptions,
+      childLots,
+      childClientName,
     };
   }
 

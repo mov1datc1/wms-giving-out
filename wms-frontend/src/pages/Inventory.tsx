@@ -14,7 +14,9 @@ import { formatCalendarDate } from '../utils/dateUtils';
 const CALIDAD_TOOLTIP = 'Resultado de inspección de calidad. No determina por sí solo la disponibilidad comercial; también aplican caducidad, ubicación y restricciones operativas.';
 
 export function Inventory() {
-  const { token, user } = useAuth();
+  const { token, user, hasActionPermission } = useAuth();
+  const canMutateInventory =
+    hasActionPermission('inventario', 'editar') || hasActionPermission('inventario', 'ajustar');
 
   // Datos de Inventario General Consolidado (Vista Única Canónica)
   const [consolidatedData, setConsolidatedData] = useState<any[]>([]);
@@ -1051,40 +1053,42 @@ export function Inventory() {
                             <span>Detalle</span>
                           </button>
 
-                          {/* Botón Acciones (Dropdown) */}
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOpenActionMenuId(isMenuOpen ? null : rowKey);
-                            }}
-                            title="Operaciones operativas válidas para esta partida"
-                            style={{
-                              padding: '4px 8px',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: isMenuOpen ? '#0F172A' : '#475569',
-                              border: isMenuOpen ? '1px solid #94A3B8' : '1px solid #CBD5E1',
-                              borderRadius: 6,
-                              backgroundColor: isMenuOpen ? '#F1F5F9' : '#FFFFFF',
-                            }}
-                          >
-                            <span>Acciones</span>
-                            <ChevronDown
-                              size={12}
-                              style={{
-                                transform: isMenuOpen ? 'rotate(180deg)' : 'none',
-                                transition: 'transform 0.15s ease',
+                          {/* Botón Acciones (Dropdown) — Solo visible si tiene permiso de operar/ajustar inventario */}
+                          {canMutateInventory && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenActionMenuId(isMenuOpen ? null : rowKey);
                               }}
-                            />
-                          </button>
+                              title="Operaciones operativas válidas para esta partida"
+                              style={{
+                                padding: '4px 8px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                fontSize: 12,
+                                fontWeight: 600,
+                                color: isMenuOpen ? '#0F172A' : '#475569',
+                                border: isMenuOpen ? '1px solid #94A3B8' : '1px solid #CBD5E1',
+                                borderRadius: 6,
+                                backgroundColor: isMenuOpen ? '#F1F5F9' : '#FFFFFF',
+                              }}
+                            >
+                              <span>Acciones</span>
+                              <ChevronDown
+                                size={12}
+                                style={{
+                                  transform: isMenuOpen ? 'rotate(180deg)' : 'none',
+                                  transition: 'transform 0.15s ease',
+                                }}
+                              />
+                            </button>
+                          )}
 
                           {/* Menú Contextual Desplegable */}
-                          {isMenuOpen && (
+                          {canMutateInventory && isMenuOpen && (
                             <div
                               style={{
                                 position: 'absolute',
@@ -1937,11 +1941,11 @@ export function Inventory() {
       )}
 
       {/* Modal Operativo 1: Transferir / Mover entre Ubicaciones */}
-      {selectedTransferItem && (
+      {canMutateInventory && selectedTransferItem && (
         <TransferModal
           item={selectedTransferItem}
           token={token || undefined}
-          currentUser={user?.nombre || 'Supervisor Giving Out'}
+          currentUser={user?.nombre || 'Operador WMS'}
           onClose={() => setSelectedTransferItem(null)}
           onSuccess={() => {
             setSelectedTransferItem(null);
@@ -1951,11 +1955,11 @@ export function Inventory() {
       )}
 
       {/* Modal Operativo 2: Enviar a Cuarentena Preventiva */}
-      {selectedQuarantineItem && (
+      {canMutateInventory && selectedQuarantineItem && (
         <QuarantineModal
           item={selectedQuarantineItem}
           token={token || undefined}
-          currentUser={user?.nombre || 'Supervisor de Calidad'}
+          currentUser={user?.nombre || 'Operador Calidad'}
           onClose={() => setSelectedQuarantineItem(null)}
           onSuccess={() => {
             setSelectedQuarantineItem(null);

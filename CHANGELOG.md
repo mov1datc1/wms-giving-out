@@ -4,6 +4,44 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.28] — 2026-11-11 (Cierre Bloque 2 RC: Regresión e Higiene Operativa Inbound Post-RBAC)
+
+### ✅ Remediación Bloque 2 Pre-Release Candidate (Rama `fix/rc-block2-inbound-cleanup` -> `dev`)
+
+Certificación y limpieza completa de los módulos operativos inbound (**F. Recepción**, **K. Etiquetado**, **G. Inventario**, **H. Ubicaciones**, **L. Trazabilidad/Kárdex** y **P. Integridad Cruzada BD**) tras la activación global de Auth/RBAC (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`).
+
+### Ubicaciones y Compatibilidad Física Real (Módulo H)
+- **Agrupación de `bultosPorCliente` (`master-data.controller.ts`, `Locations.tsx`):**
+  - Corregido el índice por cliente en `GET /api/locations` agrupando por contenedor raíz `(hu.parentHuId || hu.id)` mediante `Set<string>` en `distinctPalletsByLocAndClient`, evitando duplicar padre + cajas hijas (`1` Tarima Master + `2` cajas = `1` tarima/bulto físico para `AlimNorte` en `G0001`, en lugar de `3`).
+  - Alineada la UI de `Locations.tsx` (tarjeta KPI y banner de filtro por cliente mostrando `1 tarima / bulto físico`), manteniendo en el modal de `G0001` el desglose `2 cajas · 1 tarima master`.
+- **Exclusión de Racks Inactivos y Compatibilidad Segura con `zonaAsignadaId` Legacy (`locationHuDisplay.ts`, `Locations.tsx`, `TransferModal.tsx`):**
+  - Nuevos helpers compartidos `getActiveOperationalZoneIds`, `hasActiveAssignedClientZone` e `isLocationCompatibleWithClient`: excluyen sistemáticamente ubicaciones históricas `activo = false` (`48` racks `Axx/Bxx`) y posiciones `PNC` / no almacenables, e ignoran asignaciones legacy sin posiciones activas (`ALM-A` / `ALM-B`), eliminando las falsas `12 celdas Disponibles para depositante` de `ALM-B` y mostrando correctamente las **`41 celdas` comerciales libres** en `G0001–G0045` para `AlimNorte`.
+  - Eliminado fallback `demoLocations` en `Locations.tsx` agregando manejo explícito de error/vacío real.
+
+### Etiquetado y Contenedores Tarima Master (Módulo K)
+- **Eliminación de `fullDemoLabels` y Datos Ficticios (`LabelPreview.tsx`):**
+  - Removidos completamente `fullDemoLabels`, `defaultClients`, la síntesis ficticia `HU-2026-0101` desde `/inventory/lots`, el fallback `'Fashion Forward'` y `'PED-2026-0008'`, implementando estados reales de carga (`loading`), error (`Reintentar`) y vacío.
+- **Tarima Master como Contenedor Logístico (`LabelPreview.tsx`, `locationHuDisplay.ts`):**
+  - `PLT-REC-2026-0020-01` deja de mostrarse como `"SKU-N/A — Sin descripción (2 PZA)"`; mediante `getLocationHuRowPresentation` se presenta como `Tarima Master`, `Contenedor de 2 cajas`, `1 tarima` y deriva `SKU contenido: ACE-OLI-1L` de sus HUs hijas sin sumarla como inventario.
+- **Limpieza de Fallbacks Legacy y Fechas (`ReceiptPrintModal.tsx`, `PutawayModal.tsx`, `DualLabelModal.tsx`):**
+  - Eliminados fallbacks `'A01-R01-N1'`, `'A01-R02-N1'`, preferencia `'ALM-A'`, `'Jonathan Palacios'` y timestamps fijos `'19/10/2026, 02:26:54 p.m.'`, mostrando `'Sin asignar'`, `'Sin registro'` o `'No disponible'`.
+  - Estandarizado el uso de `formatCalendarDate` en `DualLabelModal.tsx` para mostrar `2027-06-30` exactamente como `30/06/2027` sin desfase UTC `-1` día.
+
+### Recepción e Inventario Post-RBAC (Módulos F y G)
+- **Homologación de Acuse de Rampa (`operations.controller.ts`):**
+  - `GET /api/receipts/:id/acuse-rampa` ahora acepta tanto `UUID` como código folio `REC-XXXX` (`findFirst` por `OR: [{ id }, { codigo }]`), manteniendo `401`/`403` vía `WmsAuthGuard` y `404` ante folios inexistentes.
+- **Higiene UI y Consolidado sin Warnings (`Receiving.tsx`, `Inventory.tsx`):**
+  - Eliminado `demoReceipts` y fallbacks nominales/de prueba (`'Jonathan Palacios'`, `'Juan Manuel Prueba'`, `'TEST-001'`, `'Transportes Prueba E2E'`) en `Receiving.tsx`, y corregidos espacios literales dentro de `<tbody>` eliminando la advertencia React `validateDOMNesting`.
+  - `Inventory.tsx` gobierna la visibilidad del botón/menú `"Acciones"` y sus modales operativos con `hasActionPermission('inventario', 'editar' | 'ajustar')` (oculto para `Operador Recepción`, conservando consulta `Detalle`, alineado con `403` backend).
+
+### Pruebas, Deuda de Datos Documentada y Baseline
+- **Pruebas y Builds:** Jest backend **`8/8 suites` — `52/52 tests PASS`** (ampliado `location-hu-display.spec.ts` y agregada `block2-inbound-cleanup.spec.ts`), `npx nest build` PASS, `tsc -b && vite build` (`2026` módulos) PASS, `git diff --check` PASS, Chrome Headless post-fix (`0 pageExceptions`, `0 httpErrors`, `0` warnings `validateDOMNesting`) y `9` smoke tests HTTP PASS.
+- **Deuda de Datos No Bloqueante Registrada (NO mutada en BD):** `AlimNorte.zonaAsignadaId -> ALM-B` histórica y `Fashion Forward.zonaAsignadaId -> ALM-A` histórica permanecen registradas en PostgreSQL; se recomienda evaluar su limpieza a `NULL` antes de Go-Live si esos racks históricos no volverán a utilizarse.
+- **BD Baseline Intacta:** `REC-2026-0020` `CERRADA`, `REC-2026-0019` `PENDIENTE_ARRIBO`, `LotInventory = 1` (`24` disponibles, `0` reservado, `0` bloqueado, `LIBERADO`), `HandlingUnit = 3`, `InventoryMovement = 2`, `G0001 = OCUPADO / 1 de 1`, `PrintLog` sin nuevas entradas.
+- **Siguiente Fase Planificada:** **BLOQUE 3 — PICKING + RESERVA + DESPACHO E2E**.
+
+---
+
 ## [1.9.27] — 2026-11-11 (Hardening Bloque 1 RC: Auth/RBAC Global, Dashboard Real y Catálogos 3PL)
 
 ### 🛡️ Remediación Bloque 1 Pre-Release Candidate (Rama `fix/rc-block1-auth-dashboard-catalogs` -> `dev`)

@@ -484,10 +484,10 @@ export class OperationsController {
     summary: 'Consultar Acta Oficial de Entrada en Rampa y Chofer (Fase 1)',
     description: 'Devuelve la información estructurada del acta de rampa, firmas, transporte, conteo exterior y aviso legal para impresión y auditoría.',
   })
-  @ApiParam({ name: 'id', description: 'ID de la recepción previa' })
+  @ApiParam({ name: 'id', description: 'ID (UUID) o código folio de la recepción previa (ej. REC-2026-0020)' })
   async getAcuseRampa(@Param('id') receiptId: string) {
-    const receipt = await this.prisma.receipt.findUnique({
-      where: { id: receiptId },
+    const receipt = await this.prisma.receipt.findFirst({
+      where: { OR: [{ id: receiptId }, { codigo: receiptId }] },
       include: { cliente: true, proveedor: true, lineas: { include: { sku: true } } },
     });
     if (!receipt) throw new HttpException('Previo de recibo no encontrado', HttpStatus.NOT_FOUND);

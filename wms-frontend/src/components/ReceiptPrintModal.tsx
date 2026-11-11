@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { API } from '../config/api';
+import { formatCalendarDate } from '../utils/dateUtils';
 
 export interface PrintLineItem {
   id: string;
@@ -54,24 +55,33 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
     if (!receipt || !receipt.lineas) return;
 
     const locList = Array.isArray(locations) ? locations : [];
-    const storageLocations = locList.filter(l => l && (l.estado === 'DISPONIBLE' || !l.estado) && l.codigo && !l.codigo.startsWith('DEV'));
+    const storageLocations = locList.filter(
+      l =>
+        l &&
+        l.activo !== false &&
+        l.esAlmacenable !== false &&
+        (l.estado === 'DISPONIBLE' || l.estado === 'LIBRE' || !l.estado) &&
+        l.tipoUbicacion !== 'PNC' &&
+        l.codigo &&
+        !l.codigo.startsWith('DEV')
+    );
 
     const initialLines: PrintLineItem[] = receipt.lineas.map((l: any, idx: number) => {
-      let suggestedLoc = storageLocations[idx % (storageLocations.length || 1)];
-      const textLoc = storageLocations.find(loc => loc.zona?.codigo === 'ALM-A' || loc.codigo.startsWith('A'));
-      if (textLoc) suggestedLoc = textLoc;
+      const floorLoc = storageLocations.find(loc => loc.codigo?.toUpperCase().startsWith('G'));
+      const suggestedLoc = floorLoc || storageLocations[idx % (storageLocations.length || 1)] || null;
+      const rawExpiry = l.fechaVencimiento || l.fechaCaducidadEsperada;
 
       return {
         id: l.id,
         skuId: l.skuId,
         sku: l.sku || { codigo: 'SKU', descripcion: 'Producto', codigoBarras: '' },
         lote: l.loteAsignado || l.loteEsperado || l.lote || '',
-        fechaVencimiento: l.fechaVencimiento ? String(l.fechaVencimiento).slice(0, 10) : (l.fechaCaducidadEsperada ? String(l.fechaCaducidadEsperada).slice(0, 10) : ''),
+        fechaVencimiento: rawExpiry ? formatCalendarDate(rawExpiry, '') : '',
         cantidadEsperada: l.cantidadEsperada || 1,
         printQuantity: l.cantidadEsperada || 1,
         selected: true,
         ubicacionId: suggestedLoc?.id || '',
-        ubicacionCodigo: suggestedLoc?.codigo || 'A01-R01-N1',
+        ubicacionCodigo: suggestedLoc?.codigo || '',
       };
     });
 
@@ -180,7 +190,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
     const talla = item.sku.talla ? `Talla: ${item.sku.talla}` : '';
     const color = item.sku.color ? `Color: ${item.sku.color}` : '';
     const extras = [talla, color].filter(Boolean).join(' | ');
-    const ubicacion = item.ubicacionCodigo || 'A01-R01-N1';
+    const ubicacion = item.ubicacionCodigo || 'Sin asignar';
     const is50x25 = labelFormat === '50x25';
 
     let testLabelHtml = '';
@@ -448,7 +458,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
       const talla = item.sku.talla ? `Talla: ${item.sku.talla}` : '';
       const color = item.sku.color ? `Color: ${item.sku.color}` : '';
       const extras = [talla, color].filter(Boolean).join(' | ');
-      const ubicacion = item.ubicacionCodigo || 'A01-R01-N1';
+      const ubicacion = item.ubicacionCodigo || 'Sin asignar';
 
       for (let i = 0; i < item.printQuantity; i++) {
         if (labelFormat === '50x25') {
@@ -869,7 +879,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                   <div style={{ fontSize: 11, color: '#333', margin: '2px 0', display: 'flex', justifyContent: 'space-between' }}>
                     <span>SKU: <strong>{currentPreviewItem.sku.codigo}</strong></span>
                     <span style={{ background: '#000', color: '#fff', padding: '0 4px', borderRadius: 2, fontWeight: 700 }}>
-                      {currentPreviewItem.ubicacionCodigo || 'A01-R01-N1'}
+                      {currentPreviewItem.ubicacionCodigo || 'Sin asignar'}
                     </span>
                   </div>
                   <div style={{ textAlign: 'center', margin: '4px 0' }}>
@@ -1108,7 +1118,7 @@ export function ReceiptPrintModal({ receipt, locations = [], onClose, token }: R
                     {selectedLines.map(l => (
                       <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
                         <span>{l.sku.codigo}:</span>
-                        <strong style={{ color: 'var(--primary)' }}>{l.ubicacionCodigo || 'A01-R01-N1'} ({l.printQuantity} pzas)</strong>
+                        <strong style={{ color: 'var(--primary)' }}>{l.ubicacionCodigo || 'Sin asignar'} ({l.printQuantity} pzas)</strong>
                       </div>
                     ))}
                   </div>

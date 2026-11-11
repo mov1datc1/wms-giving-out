@@ -257,169 +257,6 @@ export function validateLineAndenTraceability(params: {
   };
 }
 
-const demoReceipts = [
-  {
-    id: 'demo-rec-1',
-    codigo: 'REC-2026-001',
-    folioTransporte: '23120690080',
-    fechaTransporte: '2023-12-06',
-    fechaConfirmacion: '2023-12-07 07:25:53',
-    fechaRecepcion: new Date().toISOString(),
-    clienteId: 'demo-cli-1',
-    cliente: { nombreComercial: 'Fashion Forward S.A.', nombreEmpresa: 'Fashion Forward S.A. de C.V.', requiereLote: false, requiereCaducidad: false },
-    ocReferencia: 'FAC-89421',
-    lineaTransporte: 'TEMPAQ',
-    capacidadCarga: 'CAMION 3.5 TONELADA',
-    placa: '7851ZP',
-    nombreChofer: 'BRYAN CID ANGELES',
-    estado: 'EN_PROCESO',
-    origen: 'IMPORTACION',
-    tipoRecepcion: 'DEVOLUCION',
-    lineas: [
-      {
-        id: 'demo-line-1',
-        folio: '18966',
-        sucursal: 'N1050001',
-        tipo: 'Caja devolucion',
-        cantidadEsperada: 1,
-        cantidadRecibida: 1,
-        cantidadDanada: 0,
-        sku: { codigo: 'CAM-S-BLA', descripcion: 'Camisa Algodón S Blanco', codigoBarras: '7501234567890', talla: 'S', color: 'Blanco', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-2',
-        folio: '19078',
-        sucursal: 'N1050001',
-        tipo: 'Caja devolucion',
-        cantidadEsperada: 0,
-        cantidadRecibida: 0,
-        cantidadDanada: 0,
-        sku: { codigo: 'CAM-M-NEG', descripcion: 'Camisa Algodón M Negro', codigoBarras: '7501234567891', talla: 'M', color: 'Negro', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-3',
-        folio: '3375',
-        sucursal: 'N3040001',
-        tipo: 'Caja devolucion',
-        cantidadEsperada: 1,
-        cantidadRecibida: 1,
-        cantidadDanada: 0,
-        sku: { codigo: 'PAN-M-AZU', descripcion: 'Pantalón Casual M Azul', codigoBarras: '7509876543211', talla: 'M', color: 'Azul', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-4',
-        folio: '3399',
-        sucursal: 'N3040001',
-        tipo: 'Caja devolucion',
-        cantidadEsperada: 1,
-        cantidadRecibida: 1,
-        cantidadDanada: 0,
-        sku: { codigo: 'PAN-G-NEG', descripcion: 'Pantalón Casual G Negro', codigoBarras: '7509876543212', talla: 'G', color: 'Negro', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-5',
-        folio: '11837',
-        sucursal: 'N1210001',
-        tipo: 'Caja devolucion',
-        cantidadEsperada: 1,
-        cantidadRecibida: 1,
-        cantidadDanada: 0,
-        sku: { codigo: 'VES-FLOR-M', descripcion: 'Vestido Estampado Floral M', codigoBarras: '7509876543213', talla: 'M', color: 'Multicolor', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-6',
-        folio: '807134',
-        sucursal: 'N3040001',
-        tipo: 'Bandeja azul',
-        cantidadEsperada: 13,
-        cantidadRecibida: 13,
-        cantidadDanada: 0,
-        sku: { codigo: 'CHA-CUE-L', descripcion: 'Chamarra Sintética L', codigoBarras: '7505497129416', talla: 'L', color: 'Negro', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-7',
-        folio: '807101',
-        sucursal: 'N1050001',
-        tipo: 'Bandeja azul',
-        cantidadEsperada: 34,
-        cantidadRecibida: 34,
-        cantidadDanada: 0,
-        sku: { codigo: 'SUD-DEP-L', descripcion: 'Sudadera Deportiva Unisex Azul L', codigoBarras: '7501112223334', talla: 'L', color: 'Azul', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-8',
-        folio: '807153',
-        sucursal: 'N5640001',
-        tipo: 'Bandeja azul',
-        cantidadEsperada: 22,
-        cantidadRecibida: 22,
-        cantidadDanada: 0,
-        sku: { codigo: 'CAM-BLA-M', descripcion: 'Camiseta Básica Blanca M', codigoBarras: '7508161974411', talla: 'M', color: 'Blanco', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-9',
-        folio: '807159',
-        sucursal: 'N1210001',
-        tipo: 'Bandeja azul',
-        cantidadEsperada: 8,
-        cantidadRecibida: 8,
-        cantidadDanada: 0,
-        sku: { codigo: 'PAN-JEA-32', descripcion: 'Pantalón Jeans Clásico 32', codigoBarras: '7501997052315', talla: '32', color: 'Azul', categoria: 'Ropa' }
-      }
-    ]
-  },
-  {
-    id: 'demo-rec-2',
-    codigo: 'REC-2026-002',
-    folioTransporte: '24041590012',
-    fechaTransporte: '2026-04-15',
-    fechaConfirmacion: '2026-04-15 11:30:00',
-    fechaRecepcion: new Date().toISOString(),
-    clienteId: 'demo-cli-1',
-    cliente: { nombreComercial: 'Fashion Forward S.A.', nombreEmpresa: 'Fashion Forward S.A. de C.V.', requiereLote: false, requiereCaducidad: false },
-    ocReferencia: 'OC-2026-99',
-    lineaTransporte: 'TRANSPORTES MEX',
-    capacidadCarga: 'RABÓN 10 TONELADAS',
-    placa: '4412AK',
-    nombreChofer: 'JUAN PÉREZ LÓPEZ',
-    estado: 'CERRADO',
-    origen: 'NACIONAL',
-    tipoRecepcion: 'RECEPCION',
-    lineas: [
-      {
-        id: 'demo-line-10',
-        folio: '807101',
-        sucursal: 'N1050001',
-        tipo: 'Caja máster',
-        cantidadEsperada: 34,
-        cantidadRecibida: 34,
-        cantidadDanada: 0,
-        sku: { codigo: 'SUD-DEP-L', descripcion: 'Sudadera Deportiva Unisex Azul L', codigoBarras: '7501112223334', talla: 'L', color: 'Azul', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-11',
-        folio: '807102',
-        sucursal: 'N1050001',
-        tipo: 'Caja máster',
-        cantidadEsperada: 40,
-        cantidadRecibida: 40,
-        cantidadDanada: 0,
-        sku: { codigo: 'CAM-BLA-L', descripcion: 'Camiseta Básica Blanca L', codigoBarras: '7509131882811', talla: 'L', color: 'Blanco', categoria: 'Ropa' }
-      },
-      {
-        id: 'demo-line-12',
-        folio: '807134',
-        sucursal: 'N3040001',
-        tipo: 'Tarima / Pallet',
-        cantidadEsperada: 12,
-        cantidadRecibida: 12,
-        cantidadDanada: 0,
-        sku: { codigo: 'PAN-JEA-30', descripcion: 'Pantalón Jeans Clásico 30', codigoBarras: '7508266573915', talla: '30', color: 'Azul', categoria: 'Ropa' }
-      }
-    ]
-  }
-];
-
 export { formatTimelineDateTime } from '../utils/dateUtils';
 
 export interface TimelineEvent {
@@ -518,7 +355,7 @@ export function buildReceiptTimeline(
       fecha: auditArribo?.createdAt || receipt.fechaConfirmacion || receipt.fechaBloqueo || receipt.createdAt,
       titulo: 'Confirmación de arribo y activación de candado de andén',
       subtitulo: `Unidad en rampa · Andén asignado: ${receipt.andenAsignado || 'REC-01 (Rampa)'} · Candado operativo activado contra modificaciones del catálogo`,
-      actor: auditArribo?.usuario || receipt.bloqueadoPor || receipt.recibidoPor || 'Jonathan Palacios',
+      actor: auditArribo?.usuario || receipt.bloqueadoPor || receipt.recibidoPor || 'Sin registro',
       tipo: 'ARRIBO',
       color: '#0284C7',
       borderColor: '#BAE6FD',
@@ -548,7 +385,7 @@ export function buildReceiptTimeline(
       fecha: auditRampa?.createdAt || receipt.fechaLiberacionChofer || receipt.updatedAt,
       titulo: 'Acta de Rampa completada y liberación de chofer',
       subtitulo: `Conteo exterior: ${bRec} bultos recibidos de ${bDec} declarados${bDan > 0 ? ` · ${bDan} bulto con daño exterior visible` : ' · Sin daño exterior'}${dif > 0 ? ` · Diferencia: -${dif} bulto faltante en transporte` : ' · Cuadre sin faltantes'} · Transporte: ${receipt.lineaTransporte || 'N/A'} (Placas: ${receipt.placa || 'N/A'}) · Firmas capturadas y chofer liberado`,
-      actor: auditRampa?.usuario || receipt.nombreChofer || receipt.nombreReceptor || 'Jonathan Palacios',
+      actor: auditRampa?.usuario || receipt.nombreChofer || receipt.nombreReceptor || 'Sin registro',
       tipo: 'RAMPA',
       color: '#4F46E5',
       borderColor: '#C7D2FE',
@@ -771,7 +608,7 @@ export function buildReceiptTimeline(
       subtitulo: palletHu
         ? `Etiquetas colocadas y verificadas físicamente en rampa sobre las ${activasHus.length} cajas conformes y la Tarima Master · Bultos rotulados al 100% listos para traslado a racks`
         : `Etiquetas colocadas y verificadas físicamente en rampa sobre las ${activasHus.length} cajas conformes · Bultos rotulados al 100% listos para traslado a racks`,
-      actor: auditColocacion?.usuario || receipt.etiquetasColocadasPor || 'Jonathan Palacios',
+      actor: auditColocacion?.usuario || receipt.etiquetasColocadasPor || 'Sin registro',
       tipo: 'COLOCACION',
       color: '#0284C7',
       borderColor: '#BAE6FD',
@@ -803,7 +640,7 @@ export function buildReceiptTimeline(
   if (isPutawayDone) {
     const totalPzasActivas = activasHus.reduce((s: number, b: any) => s + Number(b.cantidad || 0), 0);
     const dualCount = uniqueDualScansCount > 0 ? uniqueDualScansCount : activasHus.length;
-    const actorPutaway = auditPutaway?.usuario || (dualScanAudits[0]?.usuario) || 'Jonathan Palacios';
+    const actorPutaway = auditPutaway?.usuario || (dualScanAudits[0]?.usuario) || 'Sin registro';
     const fechaPutaway = auditPutaway?.createdAt || (trasiegosMovements.length > 0 ? trasiegosMovements[trasiegosMovements.length - 1].fechaHora : receipt.updatedAt);
 
     const husPutawayDetail = activasHus.map((box: any) => {
@@ -901,6 +738,7 @@ export function Receiving() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [receipts, setReceipts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filterEstado, setFilterEstado] = useState('');
   const [filterCliente, setFilterCliente] = useState('');
@@ -1310,19 +1148,24 @@ export function Receiving() {
 
   async function loadData(specificReceiptId?: string) {
     setLoading(true);
+    setLoadError(null);
     try {
       const targetId = specificReceiptId || selectedReceiptId;
       const receiptsPromise = fetch(`${API}/receipts`, { headers })
         .then(async (res) => {
           if (res.ok) {
             const data = await res.json();
-            setReceipts(data.length > 0 ? data : (receipts.length > 0 ? receipts : demoReceipts));
+            setReceipts(Array.isArray(data) ? data : []);
           } else {
             console.warn('API receipts returned non-ok status:', res.status);
+            setReceipts([]);
+            setLoadError(`Error al consultar recepciones del servidor (HTTP ${res.status}).`);
           }
         })
         .catch((err) => {
           console.error('Error fetching receipts:', err);
+          setReceipts([]);
+          setLoadError('No se pudo conectar con el servidor al cargar las recepciones.');
         });
 
       const [clientsRes, suppliersRes, skusRes, locationsRes, warehousesRes] = await Promise.all([
@@ -7416,9 +7259,9 @@ export function Receiving() {
                           Datos de la Unidad y Transportista
                         </div>
                         <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-                          <div>Línea de Transporte: <strong>{currentReceipt.lineaTransporte || 'Transportes Prueba E2E'}</strong></div>
-                          <div>Nombre del Chofer: <strong>{currentReceipt.nombreChofer || 'Juan Manuel Prueba'}</strong></div>
-                          <div>Placas: <strong>{currentReceipt.placa || 'TEST-001'}</strong></div>
+                          <div>Línea de Transporte: <strong>{currentReceipt.lineaTransporte || 'No disponible'}</strong></div>
+                          <div>Nombre del Chofer: <strong>{currentReceipt.nombreChofer || 'No disponible'}</strong></div>
+                          <div>Placas: <strong>{currentReceipt.placa || 'No disponible'}</strong></div>
                           <div>Capacidad: <strong>{currentReceipt.capacidadCarga || 'N/A'}</strong></div>
                           <div>Fecha de Liberación: <strong>{currentReceipt.fechaLiberacionChofer ? formatTimelineDateTime(currentReceipt.fechaLiberacionChofer) : 'Pendiente liberación'}</strong></div>
                         </div>
@@ -7432,7 +7275,7 @@ export function Receiving() {
                           <div>Factura Fiscal: <strong>{currentReceipt.facturaRespaldo || 'Sin Factura'}</strong></div>
                           <div>Orden de Compra: <strong>{(currentReceipt.ocReferencia && currentReceipt.ocReferencia !== currentReceipt.facturaRespaldo) ? currentReceipt.ocReferencia : (currentReceipt.ocReferencia && !currentReceipt.facturaRespaldo ? currentReceipt.ocReferencia : 'Sin OC')}</strong></div>
                           <div>Andén Asignado: <strong>{currentReceipt.andenAsignado || 'Pendiente asignación'}</strong></div>
-                          <div>Supervisor de Andén: <strong>{currentReceipt.recibidoPor || currentReceipt.nombreReceptor || 'Jonathan Palacios'}</strong></div>
+                          <div>Supervisor de Andén: <strong>{currentReceipt.recibidoPor || currentReceipt.nombreReceptor || 'Sin registro'}</strong></div>
                           <div>Candado de Andén: <strong>{currentReceipt.bloqueado ? 'BLOQUEADO CONTRA EDICIÓN' : 'Abierto'}</strong></div>
                         </div>
                       </div>
@@ -7889,6 +7732,29 @@ export function Receiving() {
 
         return (
           <div className="compact-list-view">
+            {loadError && (
+              <div style={{
+                padding: '12px 16px',
+                borderRadius: 8,
+                background: '#FEF2F2',
+                border: '1px solid #FCA5A5',
+                color: '#991B1B',
+                fontSize: 13,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                marginBottom: 16
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <AlertTriangle size={16} />
+                  <span>{loadError}</span>
+                </div>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => loadData()}>
+                  Reintentar
+                </button>
+              </div>
+            )}
             {/* BARRA SUPERIOR DE FILTROS LIMPIA (Sin emoji de edificio) */}
             <div style={{
               background: '#FFFFFF',
@@ -8193,7 +8059,8 @@ export function Receiving() {
                           </tr>
                         );
                       })
-                    )}                  </tbody>
+                    )}
+                  </tbody>
                 </table>
               </div>
             </div>
