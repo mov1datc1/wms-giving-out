@@ -4,6 +4,58 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.30] — 2026-11-13 (Cierre Bloque 4 RC: Confirmación de Entrega E2E y Cierre de Ciclo Logístico)
+
+### 📦 Remediación y Certificación Bloque 4 Pre-Release Candidate (Rama `fix/rc-block4-delivery-e2e` -> `dev`)
+
+Certificación E2E integral del cierre de ciclo de entrega (**J. Despacho**, **L. Trazabilidad**, **N. Portal Depositante** y **P. Integridad Cruzada BD**; `0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`), garantizando atomicidad de entrega, separación estricta entre actor autenticado y receptor, verificación obligatoria de `DispatchTracking`, idempotencia absoluta, preservación de invariantes de almacén físico e inalterabilidad del Kárdex.
+
+### Hardening de Confirmación de Entrega (`confirmDelivery` en `OperationsController`)
+- **Blindaje Transaccional Atómico (`$transaction` + Row-Level Locking):**
+  - Implementado `SELECT ... FOR UPDATE` sobre la orden `SalesOrder` para prevenir colisiones concurrentes o transiciones espurias.
+  - Validación obligatoria de existencia de `DispatchTracking` activo (`409 Conflict` si la orden nunca fue despachada).
+  - Rechazo estricto (`409 Conflict`) si la orden no se encuentra en `estado === 'DESPACHADO'` y `estadoEntrega === 'EN_RUTA'`.
+- **Actor Autenticado vs Receptor Oficial:**
+  - El actor operativo responsable del registro se extrae exclusivamente del JWT verificado en `req.user` (`getRequestActor(req, 'Despachador')`), ignorando cualquier valor inyectado en el payload.
+  - Aceptación canónica de `recibidoPor` / `nombreReceptor` para consignar a la persona física que recibe en destino (`Walmart México (CEDIS San Martín)` -> `RESPONSABLE QA CEDIS`).
+- **Idempotencia Estricta y Registro Canónico de Auditoría:**
+  - Ante llamadas repetidas sobre una orden ya entregada, la API responde `{ alreadyDelivered: true, idempotent: true }` (HTTP 200) sin mutar nuevamente la base de datos ni alterar la `fechaEntrega` original.
+  - Generación de exactamente **un registro canónico** en `AuditLog` (`ENTREGA_CONFIRMADA`) por pedido.
+- **Preservación Total de Invariantes de Almacén:**
+  - La confirmación de entrega opera a nivel de distribución y destino, por lo que **no descuenta inventario físico** (ya descontado en despacho), **no modifica reservas ni bloqueos**, **no altera ubicaciones** y **no genera movimientos en `InventoryMovement`** (Kárdex preservado en 6 movimientos exactos).
+
+### Certificación E2E de Entrega y Control Negativo en Base de Datos Real
+- **Entrega Exitosa de `PED-QA-E2E-OUT-001`:**
+  - Transición a `estado = 'ENTREGADO'` y `estadoEntrega = 'ENTREGADO'` con `fechaEntrega = 2026-11-13T17:09:41.316Z`.
+  - `DispatchTracking` actualizado sincronizadamente a `estado = 'ENTREGADO'`.
+  - Manifiesto `MAN-PED-QA-E2E-OUT-001` disponible con acuse oficial de entrega.
+- **Preservación de `PED-QA-E2E-OUT-002` como Control Negativo Permanente:**
+  - Conservado intacto en `DESPACHADO / EN_RUTA` (`fechaEntrega: null`, `recibidoPor: null`, `DispatchTracking: SALIDA_ALMACEN`).
+- **Invariantes Físicos del Almacén Central (WH-001):**
+  - `LotInventory`: `0 PZA` (Disponible: 0, Reservado: 0, Bloqueado: 0).
+  - `HandlingUnit`: 3 unidades registradas (`BOX-0001`, `BOX-0002`, `PLT-01`), todas en `DESPACHADO`.
+  - Ubicaciones `G0001` y `STG-01`: `LIBRE` (ocupación 0/1 tarimas).
+  - Plano 2D: `45/45` posiciones físicas oficiales `Gxxxx` en `LIBRE`.
+  - Kárdex: exactamente `6` movimientos históricos inmutables.
+
+### Seguridad RBAC, Multi-Tenant y Mejoras Cosméticas
+- **RBAC en Vivo y Pruebas Unitarias:**
+  - `Operador Picking`: `403 Forbidden` en `confirmDelivery`.
+  - `Operador Recepción`: `403 Forbidden` en `confirmDelivery`.
+  - `Portal Depositante`: `403 Forbidden` en `confirmDelivery`.
+  - Anti-spoofing: cabeceras falsas `x-user-role: Super Admin` son ignoradas (`403 Forbidden`).
+  - Multi-tenant: Portal AlimNorte visualiza sus pedidos (`PED-001` entregado, `PED-002` en tránsito) mientras que Portal Fashion Forward visualiza 0 pedidos.
+- **Mejoras Cosméticas:**
+  - `traceabilityDisplay.ts`: Garantizada la normalización de textos históricos en UI sustituyendo variantes como `"rack Gxxxx"` o `"al rack Gxxxx"` por `"posición física Gxxxx"`, respetando estanterías multinivel (`Axx/Bxx`).
+  - `Locations.tsx`: Copy aclarado en el panel lateral de inspección física para explicitar `LIBRE (0/1 ocupadas)` y `Capacidad Física: 1 Tarima Estándar (Capacidad: 1)`, erradicando ambigüedad visual.
+- **Resultados de Validación:**
+  - Jest `block4-delivery.spec.ts`: **`18/18 PASS`** (Casos A–R).
+  - Suite completa backend: **`10/10 suites — 79/79 tests PASS`**.
+  - Chrome Headless visual audit: **`22/22 CHECKS PASS`**, `0` console errors, `0` page exceptions, `0` HTTP errors.
+  - Compilaciones: `npx nest build` PASS, `tsc -b && vite build` PASS, `git diff --check` PASS.
+
+---
+
 ## [1.9.29] — 2026-11-11 (Checkpoint Pre-Commit Bloque 3 RC: Picking + Reserva + Despacho E2E y Prevención de Tarima Fantasma)
 
 ### 📦 Remediación y Certificación Bloque 3 Pre-Release Candidate (Rama `fix/rc-block3-picking-dispatch-e2e`, pendiente de commit/promoción)

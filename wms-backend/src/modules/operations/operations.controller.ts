@@ -10467,7 +10467,7 @@ export class OperationsController {
   @ApiOperation({ summary: 'Confirmar entrega al cliente final' })
   async confirmDelivery(
     @Param('id') id: string,
-    @Body() data: { usuario?: string; nombreReceptor: string; notasEntrega?: string; firmaBase64?: string },
+    @Body() data: { usuario?: string; nombreReceptor?: string; notasEntrega?: string; firmaBase64?: string; recibidoPor?: string },
     @Req() req?: any,
   ) {
     const actor = getRequestActor(req, 'Despachador');
@@ -10524,7 +10524,23 @@ export class OperationsController {
           );
         }
 
-        if (!data.nombreReceptor || !data.nombreReceptor.trim()) {
+        const priorTracking = await tx.dispatchTracking.findFirst({
+          where: { orderId: order.id },
+        });
+        if (!priorTracking) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              error: 'ORDEN_SIN_SEGUIMIENTO_DESPACHO',
+              message: `No se puede confirmar la entrega de la orden ${order.codigo} porque no cuenta con registros previos de despacho (DispatchTracking).`,
+              estadoActual: order.estado,
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        const nombreReceptor = (data.nombreReceptor || data.recibidoPor || '').trim();
+        if (!nombreReceptor) {
           throw new HttpException('El nombre de la persona que recibe es obligatorio.', HttpStatus.BAD_REQUEST);
         }
 
@@ -10534,7 +10550,7 @@ export class OperationsController {
             estado: 'ENTREGADO',
             estadoEntrega: 'ENTREGADO',
             fechaEntrega: new Date(),
-            nombreReceptor: data.nombreReceptor.trim(),
+            nombreReceptor,
             notasEntrega: data.notasEntrega?.trim() || null,
             firmaReceptor: data.firmaBase64 || null,
           },
@@ -10546,8 +10562,8 @@ export class OperationsController {
             orderId: order.id,
             estado: 'ENTREGADO',
             usuario: actor,
-            notas: `Recibió: ${data.nombreReceptor.trim()}${data.notasEntrega?.trim() ? ` — ${data.notasEntrega.trim()}` : ''}`,
-            nombreFirmante: data.nombreReceptor.trim(),
+            notas: `Recibió: ${nombreReceptor}${data.notasEntrega?.trim() ? ` — ${data.notasEntrega.trim()}` : ''}`,
+            nombreFirmante: nombreReceptor,
             firmaBase64: data.firmaBase64 || null,
           },
         });
@@ -10557,7 +10573,7 @@ export class OperationsController {
           'ENTREGA_CONFIRMADA',
           'SalesOrder',
           order.id,
-          `${order.codigo} entregado a ${data.nombreReceptor.trim()} en ${(order as any).endCustomer?.nombre || 'destino'}`,
+          `${order.codigo} entregado a ${nombreReceptor} en ${(order as any).endCustomer?.nombre || 'destino'}`,
           tx,
         );
 

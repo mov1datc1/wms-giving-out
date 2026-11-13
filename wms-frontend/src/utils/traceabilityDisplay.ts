@@ -59,7 +59,9 @@ export function formatMovementMotivoDisplay(
   let normalized = raw
     .replace(/\bconfirmado\s+a\s+rack\s+([A-Za-z0-9_-]+)/gi, 'confirmado en posición física $1')
     .replace(/\bPutaway\s+a\s+rack\s+([A-Za-z0-9_-]+)/gi, 'Putaway en posición física $1')
-    .replace(/\bAlojado\s+desde\s+([^\s]+)\s+a\s+rack\s+([A-Za-z0-9_-]+)/gi, 'Alojado desde $1 en posición física $2');
+    .replace(/\bAlojado\s+desde\s+([^\s]+)\s+a\s+rack\s+([A-Za-z0-9_-]+)/gi, 'Alojado desde $1 en posición física $2')
+    .replace(/\b(?:a|al|en)\s+rack\s+(G\d{4})\b/gi, 'en posición física $1')
+    .replace(/\brack\s+(G\d{4})\b/gi, 'posición física $1');
 
   const destCode = String(movement?.toLocation?.codigo || '').trim();
   if (destCode && normalized === raw) {
