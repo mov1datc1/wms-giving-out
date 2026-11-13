@@ -259,7 +259,7 @@ export function OrderPreparationModal({
     setErrorMsg(null);
 
     const payload = {
-      usuario: currentUser || 'Alejandra (Supervisor)',
+      usuario: currentUser || 'Supervisor autenticado',
       modo: allocationMode,
       notas: supervisorNotas,
       asignaciones: lines.map(line => ({
@@ -431,7 +431,7 @@ export function OrderPreparationModal({
                     <span>•</span>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       <Calendar size={13} />
-                      Cita: {new Date(orderData.fechaCompromiso).toLocaleDateString('es-MX')} ({orderData.horaCompromiso || '09:00'})
+                      Cita: {formatCalendarDate(orderData.fechaCompromiso)} ({orderData.horaCompromiso || '09:00'})
                     </span>
                   </>
                 )}
@@ -473,7 +473,7 @@ export function OrderPreparationModal({
                 }}
               />
               <p style={{ margin: 0, fontWeight: 500 }}>
-                Analizando existencias físicas en racks y calculando ruta FEFO/FIFO...
+                Analizando existencias físicas en almacén y calculando ruta FEFO/FIFO...
               </p>
             </div>
           ) : errorMsg ? (
@@ -532,7 +532,7 @@ export function OrderPreparationModal({
                   </div>
                   <div>
                     <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>
-                      Físico Total en Racks
+                      Físico Total en Almacén
                     </div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>
                       {lines.reduce((sum, l) => sum + l.lotes.reduce((s, lot) => s + lot.stockFisico, 0), 0)} pzas
@@ -786,7 +786,7 @@ export function OrderPreparationModal({
                               <tr style={{ borderBottom: '1px solid #E2E8F0', color: '#64748B', textAlign: 'left' }}>
                                 <th style={{ padding: '8px 10px', fontWeight: 600 }}>Lote</th>
                                 <th style={{ padding: '8px 10px', fontWeight: 600 }}>Caducidad</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Ubicación / Rack</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Ubicación Física</th>
                                 <th style={{ padding: '8px 10px', fontWeight: 600 }}>Stock Libre</th>
                                 <th style={{ padding: '8px 10px', fontWeight: 600, width: 220, textAlign: 'right' }}>
                                   Cantidad a Surtir
@@ -970,7 +970,7 @@ export function OrderPreparationModal({
                 <textarea
                   value={supervisorNotas}
                   onChange={e => setSupervisorNotas(e.target.value)}
-                  placeholder="Ej. Palletizar con emplaye reforzado y colocar etiqueta de Walmart en cara frontal..."
+                  placeholder="Ej. Empaque con emplaye reforzado y etiqueta de destino en cara frontal..."
                   rows={2}
                   style={{
                     width: '100%',
@@ -1001,7 +1001,7 @@ export function OrderPreparationModal({
           }}
         >
           <div style={{ fontSize: 13, color: '#64748B' }}>
-            Supervisor activo: <strong style={{ color: '#1E293B' }}>{currentUser || 'Alejandra'}</strong>
+            Supervisor activo: <strong style={{ color: '#1E293B' }}>{currentUser || 'Supervisor autenticado'}</strong>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

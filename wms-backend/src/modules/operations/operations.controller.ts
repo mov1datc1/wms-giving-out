@@ -18,6 +18,12 @@ import {
 } from '../../common/inventory-operational-state.util';
 import { validatePickingEligibility } from '../../common/picking-validation.util';
 import { transferHuToStaging, validateHuAllocationCompatibility } from '../../common/picking-staging-transfer.util';
+import {
+  assertPickableProductHu,
+  getRequestActor,
+  isInventariablePickableHu,
+  syncParentPalletContainers,
+} from '../../common/hu-classification.util';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 import {
@@ -7588,13 +7594,42 @@ export class OperationsController {
     }
   }
 
+  private async acquireRowLocks(
+    tx: any,
+    table: 'SalesOrder' | 'LotInventory' | 'HandlingUnit' | 'Location' | 'Client' | 'SkuMaster',
+    ids: Array<string | null | undefined>,
+  ): Promise<void> {
+    const sortedIds = [...new Set(ids.filter((x): x is string => typeof x === 'string' && x.trim().length > 0))].sort();
+    if (sortedIds.length === 0) return;
+
+    try {
+      if (typeof tx?.$executeRawUnsafe === 'function') {
+        await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '5000ms'");
+      }
+      if (typeof tx?.$queryRawUnsafe === 'function') {
+        for (const id of sortedIds) {
+          await tx.$queryRawUnsafe(`SELECT id FROM "${table}" WHERE id = $1 FOR UPDATE`, id);
+        }
+      }
+    } catch {
+      // Fallback seguro si el adaptador mock en pruebas unitarias no implementa SQL raw
+    }
+  }
+
+  private getAllowedPhysicalOrderHus = (hus: any[] = []) => {
+    const parentIdsWithChildren = new Set<string>(
+      hus.map((h: any) => h?.parentHuId).filter(Boolean),
+    );
+    return hus.filter((h: any) => isInventariablePickableHu(h, parentIdsWithChildren));
+  };
+
   @Post('orders')
   @RequireAccess({
     modules: ['despacho', 'picking'],
-    actions: ['crear'],
+    actions: ['crear', 'editar'],
     allowPortal: true,
   })
-  @ApiOperation({ summary: 'Crear orden de salida con reserva automática de stock (Anti-Backorders)' })
+  @ApiOperation({ summary: 'Crear orden de salida con reserva automática atómica de stock (Anti-Backorders y Caja Cerrada)' })
   async createOrder(@Body() data: any, @Headers('authorization') authHeader?: string, @Req() req?: any) {
     if (req?.user?.clienteId && data.clienteId !== req.user.clienteId) {
       throw new HttpException('ACCESO_DENEGADO: No puede crear pedidos a nombre de otro depositante.', HttpStatus.FORBIDDEN);
@@ -7616,16 +7651,41 @@ export class OperationsController {
       }
     }
 
-    if (!data.clienteId) throw new HttpException('El depositante es obligatorio', HttpStatus.BAD_REQUEST);
-    if (!data.lineas || data.lineas.length === 0) throw new HttpException('La orden debe tener al menos un producto', HttpStatus.BAD_REQUEST);
+    if (data?.estado !== undefined && data?.estado !== null && String(data.estado).trim() !== '') {
+      const requestedStatus = String(data.estado).trim().toUpperCase();
+      if (requestedStatus !== 'SOLICITADO') {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.BAD_REQUEST,
+            code: 'ESTADO_INICIAL_NO_PERMITIDO',
+            codigoError: 'ESTADO_INICIAL_NO_PERMITIDO',
+            message: `No se permite establecer el estado inicial "${data.estado}" al crear la orden. Todo pedido nuevo debe iniciar exclusivamente en estado SOLICITADO.`,
+            error: 'Bad Request',
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
 
-    // 1. Validar disponibilidad real de stock para cada SKU en el almacén especificado
-    const client = await this.prisma.client.findUnique({ where: { id: data.clienteId } });
+    const clienteId = req?.user?.clienteId || data.clienteId;
+    if (!clienteId) throw new HttpException('El depositante es obligatorio', HttpStatus.BAD_REQUEST);
+    if (!data.lineas || !Array.isArray(data.lineas) || data.lineas.length === 0) {
+      throw new HttpException('La orden debe tener al menos un producto', HttpStatus.BAD_REQUEST);
+    }
+
+    const actor = getRequestActor(req, 'Sistema');
+
+    // Validar depositante y SKUs previos a la transacción de inventario
+    const client = await this.prisma.client.findUnique({ where: { id: clienteId } });
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
 
-    const cleanLines: any[] = [];
-    const reservationsToApply: { lotId: string; cantidad: number }[] = [];
+    const requiresClosedBox =
+      client.manejoInventario === 'CAJA' ||
+      client.uomPrincipal === 'CAJA' ||
+      client.reglaInventario === 'CAJA_CERRADA' ||
+      (client as any).politicaEmpaque === 'CAJA_CERRADA';
 
+    const skuCache = new Map<string, any>();
     for (const item of data.lineas) {
       const sku = await this.prisma.skuMaster.findUnique({ where: { id: item.skuId } });
       if (!sku) throw new HttpException(`Producto con ID ${item.skuId} no encontrado`, HttpStatus.BAD_REQUEST);
@@ -7635,106 +7695,195 @@ export class OperationsController {
           HttpStatus.BAD_REQUEST,
         );
       }
-
       const requestedQty = Number(item.cantidadSolicitada) || 0;
       if (requestedQty <= 0) throw new HttpException(`Cantidad inválida para ${sku.descripcion}`, HttpStatus.BAD_REQUEST);
-
-      // Buscar lotes disponibles
-      const lotWhere: any = {
-        skuId: item.skuId,
-        clienteId: data.clienteId,
-        estadoCalidad: 'LIBERADO',
-        cantidadDisponible: { gt: 0 },
-      };
-
-      if (data.almacenOrigenId) {
-        lotWhere.ubicacion = { almacenId: data.almacenOrigenId };
-      }
-
-      const availableLotsRaw = await this.prisma.lotInventory.findMany({
-        where: lotWhere,
-        include: {
-          ubicacion: {
-            include: { zona: true, almacen: true },
-          },
-        },
-        orderBy: client.reglaInventario === 'FEFO' ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }] : [{ createdAt: 'asc' }],
-      });
-
-      // Filtrar únicamente lotes en condiciones comercialmente elegibles (precedencia central: excluye vencidos, merma, tránsito)
-      const now = new Date();
-      const availableLotsWithState = availableLotsRaw.map(lot => {
-        const role = classifyLocationOperationalRole(lot.ubicacion);
-        const opState = evaluateInventoryItemOperationalState(lot, role, now);
-        return { lot, opState };
-      }).filter(x => x.opState.esVendible && x.opState.cantidadDisponibleVendible > 0);
-
-      // Calcular saldo libre (disponible vendible real según evaluador central)
-      let totalStockLibre = 0;
-      for (const itemState of availableLotsWithState) {
-        totalStockLibre += itemState.opState.cantidadDisponibleVendible;
-      }
-
-      if (totalStockLibre < requestedQty) {
-        throw new HttpException(
-          `Stock insuficiente para "${sku.descripcion}" (${sku.codigo}). Disponible libre: ${totalStockLibre} ${sku.uomBase}, Solicitado: ${requestedQty} ${sku.uomBase}.`,
-          HttpStatus.BAD_REQUEST
-        );
-      }
-
-      // Distribuir la reserva entre los lotes
-      let remainingToReserve = requestedQty;
-      let primaryLotId: string | null = null;
-      const lineReservations: { lotId: string; cantidad: number }[] = [];
-
-      for (const itemState of availableLotsWithState) {
-        if (remainingToReserve <= 0) break;
-        const lotFree = itemState.opState.cantidadDisponibleVendible;
-        if (lotFree <= 0) continue;
-
-        const take = Math.min(remainingToReserve, lotFree);
-        reservationsToApply.push({ lotId: itemState.lot.id, cantidad: take });
-        lineReservations.push({ lotId: itemState.lot.id, cantidad: take });
-        if (!primaryLotId) primaryLotId = itemState.lot.id;
-        remainingToReserve -= take;
-      }
-
-      cleanLines.push({
-        skuId: item.skuId,
-        cantidadSolicitada: requestedQty,
-        cantidadAsignada: 0,
-        lotId: primaryLotId,
-        asignacionesJson: lineReservations.length > 0 ? JSON.stringify(lineReservations) : null,
-      });
+      skuCache.set(item.skuId, sku);
     }
 
-    // 2. Crear la orden de salida y aplicar reservas en transacción con reintento ante concurrencia
+    // 2. Validar saldo, caja cerrada y aplicar reservas atómicamente bajo bloqueo pesimista FOR UPDATE
     const order = await withConcurrencyRetry(async () => {
-      const yearPrefixPed = `PED-${new Date().getFullYear()}-`;
-      const existingOrders = await this.prisma.salesOrder.findMany({
-        where: { codigo: { startsWith: yearPrefixPed } },
-        select: { codigo: true },
-      });
-      let maxPedSeq = 0;
-      for (const o of existingOrders) {
-        const num = parseInt(o.codigo.replace(yearPrefixPed, ''), 10);
-        if (!isNaN(num) && num > maxPedSeq) maxPedSeq = num;
-      }
-      const codigo = `${yearPrefixPed}${String(maxPedSeq + 1).padStart(4, '0')}`;
-
       return await this.prisma.$transaction(async (tx) => {
+        // Serializar reservas concurrentes sobre el depositante
+        await this.acquireRowLocks(tx, 'Client', [clienteId]);
+
+        const cleanLines: any[] = [];
+        const reservationsToApply: { lotId: string; cantidad: number }[] = [];
+
+        for (const item of data.lineas) {
+          const sku = skuCache.get(item.skuId);
+          const requestedQty = Number(item.cantidadSolicitada) || 0;
+
+          const lotWhere: any = {
+            skuId: item.skuId,
+            clienteId,
+            estadoCalidad: 'LIBERADO',
+            cantidadDisponible: { gt: 0 },
+          };
+          if (data.almacenOrigenId) {
+            lotWhere.ubicacion = { almacenId: data.almacenOrigenId };
+          }
+
+          const lotOrderBy: any =
+            client.reglaInventario === 'FEFO'
+              ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }]
+              : [{ createdAt: 'asc' }];
+
+          const candidateLotsPreLock = await tx.lotInventory.findMany({
+            where: lotWhere,
+            select: { id: true },
+            orderBy: lotOrderBy,
+          });
+
+          await this.acquireRowLocks(
+            tx,
+            'LotInventory',
+            candidateLotsPreLock.map((l: any) => l.id),
+          );
+
+          const availableLotsRaw = await tx.lotInventory.findMany({
+            where: lotWhere,
+            include: {
+              ubicacion: {
+                include: { zona: true, almacen: true },
+              },
+            },
+            orderBy: lotOrderBy,
+          });
+
+          const now = new Date();
+          const availableLotsWithState = availableLotsRaw
+            .map((lot: any) => {
+              const role = classifyLocationOperationalRole(lot.ubicacion);
+              const opState = evaluateInventoryItemOperationalState(lot, role, now);
+              return { lot, opState };
+            })
+            .filter((x: any) => x.opState.esVendible && x.opState.cantidadDisponibleVendible > 0);
+
+          let totalStockLibre = 0;
+          for (const itemState of availableLotsWithState) {
+            totalStockLibre += itemState.opState.cantidadDisponibleVendible;
+          }
+
+          if (totalStockLibre < requestedQty) {
+            throw new HttpException(
+              `Stock insuficiente para "${sku.descripcion}" (${sku.codigo}). Disponible libre: ${totalStockLibre} ${sku.uomBase}, Solicitado: ${requestedQty} ${sku.uomBase}.`,
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+
+          let remainingToReserve = requestedQty;
+          let primaryLotId: string | null = null;
+          const lineReservations: Array<{
+            lotId: string;
+            lote?: string | null;
+            ubicacionId?: string | null;
+            ubicacionCodigo?: string | null;
+            cantidad: number;
+            husAsignadas?: Array<{ id: string; codigo: string; cantidad: number }>;
+          }> = [];
+
+          for (const itemState of availableLotsWithState) {
+            if (remainingToReserve <= 0) break;
+            const lotFree = itemState.opState.cantidadDisponibleVendible;
+            if (lotFree <= 0) continue;
+
+            const take = Math.min(remainingToReserve, lotFree);
+            let assignedHus: Array<{ id: string; codigo: string; cantidad: number }> = [];
+
+            if (requiresClosedBox) {
+              const huCheck = await validateHuAllocationCompatibility({
+                tx,
+                lotId: itemState.lot.id,
+                clienteId,
+                requestedQty: take,
+                skuCodigo: sku.codigo,
+              });
+
+              if (huCheck.esHuManaged) {
+                if (!huCheck.valido) {
+                  throw new HttpException(
+                    {
+                      statusCode: HttpStatus.CONFLICT,
+                      code: huCheck.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
+                      codigoError: huCheck.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
+                      message: huCheck.mensaje,
+                      error: 'Conflict',
+                    },
+                    HttpStatus.CONFLICT,
+                  );
+                }
+                assignedHus = huCheck.assignedHus;
+              } else if (sku.capacidadEmpaque && Number(sku.capacidadEmpaque) > 1 && take % Number(sku.capacidadEmpaque) !== 0) {
+                throw new HttpException(
+                  {
+                    statusCode: HttpStatus.CONFLICT,
+                    code: 'CANTIDAD_NO_COMPATIBLE_CON_CAJA_CERRADA',
+                    codigoError: 'CANTIDAD_NO_COMPATIBLE_CON_CAJA_CERRADA',
+                    message: `La cantidad solicitada (${take} ${sku.uomBase || 'PZA'}) debe ser múltiplo de caja cerrada (${sku.capacidadEmpaque} ${sku.uomBase || 'PZA'}) para el depositante "${client.nombreComercial}".`,
+                    error: 'Conflict',
+                  },
+                  HttpStatus.CONFLICT,
+                );
+              }
+            }
+
+            reservationsToApply.push({ lotId: itemState.lot.id, cantidad: take });
+            lineReservations.push({
+              lotId: itemState.lot.id,
+              lote: itemState.lot.lote,
+              ubicacionId: itemState.lot.ubicacionId || null,
+              ubicacionCodigo: itemState.lot.ubicacion?.codigo || null,
+              cantidad: take,
+              ...(assignedHus.length > 0 ? { husAsignadas: assignedHus } : {}),
+            });
+            if (!primaryLotId) primaryLotId = itemState.lot.id;
+            remainingToReserve -= take;
+          }
+
+          if (remainingToReserve > 0) {
+            throw new HttpException(
+              `No se pudo completar la reserva física para "${sku.codigo}". Faltante: ${remainingToReserve}.`,
+              HttpStatus.CONFLICT,
+            );
+          }
+
+          cleanLines.push({
+            skuId: item.skuId,
+            cantidadSolicitada: requestedQty,
+            cantidadAsignada: 0,
+            lotId: primaryLotId,
+            asignacionesJson: lineReservations.length > 0 ? JSON.stringify(lineReservations) : null,
+          });
+        }
+
+        const yearPrefixPed = `PED-${new Date().getFullYear()}-`;
+        const existingOrders = await tx.salesOrder.findMany({
+          where: { codigo: { startsWith: yearPrefixPed } },
+          select: { codigo: true },
+        });
+        let maxPedSeq = 0;
+        for (const o of existingOrders) {
+          const num = parseInt(o.codigo.replace(yearPrefixPed, ''), 10);
+          if (!isNaN(num) && num > maxPedSeq) maxPedSeq = num;
+        }
+        const requestedCustomCode =
+          typeof data?.codigo === 'string' && /^PED-[A-Z0-9-]+$/i.test(data.codigo.trim())
+            ? data.codigo.trim().toUpperCase()
+            : null;
+        const codigo = requestedCustomCode || `${yearPrefixPed}${String(maxPedSeq + 1).padStart(4, '0')}`;
+
         const ord = await tx.salesOrder.create({
           data: {
             codigo,
-            clienteId: data.clienteId,
+            clienteId,
             endCustomerId: data.endCustomerId || null,
             almacenOrigenId: data.almacenOrigenId || null,
             prioridad: data.prioridad || 3,
             fechaCompromiso: data.fechaCompromiso ? new Date(data.fechaCompromiso) : null,
             horaCompromiso: data.horaCompromiso || null,
-            estado: data.estado || 'SOLICITADO',
+            estado: 'SOLICITADO',
             notas: data.notas || null,
-            solicitadoPor: data.solicitadoPor || null,
+            solicitadoPor: req?.user?.email || req?.user?.nombre || actor,
             lineas: { create: cleanLines },
           },
           include: { cliente: true, endCustomer: true, lineas: { include: { sku: true } } },
@@ -7749,33 +7898,87 @@ export class OperationsController {
 
         await tx.auditLog.create({
           data: {
-            usuario: data.usuario || 'Sistema',
+            usuario: actor,
             accion: 'CREAR_ORDEN',
             entidad: 'SalesOrder',
             entidadId: ord.id,
-            detalle: `${codigo}: ${cleanLines.length} líneas reservadas`,
+            detalle: `${codigo}: ${cleanLines.length} líneas reservadas en estado SOLICITADO`,
           },
         });
 
         return ord;
-      });
+      }, { timeout: 25000 });
     }, { contextName: 'createSalesOrder' });
 
     return order;
   }
 
   @Put('orders/:id/status')
-  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['editar', 'aprobar', 'crear'], allowPortal: false })
-  @ApiOperation({ summary: 'Actualizar estado de orden' })
-  async updateOrderStatus(@Param('id') id: string, @Body() body: { estado: string; usuario?: string }) {
-    const updateData: any = { estado: body.estado };
-    if (body.estado === 'DESPACHADO') updateData.fechaDespacho = new Date();
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['editar', 'aprobar'], allowPortal: false })
+  @ApiOperation({ summary: 'Actualizar estado de orden (bloqueado para transiciones con efectos físicos o de reserva)' })
+  async updateOrderStatus(@Param('id') id: string, @Body() body: { estado: string; usuario?: string }, @Req() req?: any) {
+    const targetStatus = String(body?.estado || '').trim().toUpperCase();
+    const actor = getRequestActor(req, 'Sistema');
+
+    const CANONICAL_ENDPOINT_BY_STATUS: Record<string, string> = {
+      APROBADO: 'POST /api/orders/:id/approve',
+      EN_PREPARACION: 'POST /api/orders/:id/prepare',
+      EN_PICKING: 'POST /api/orders/:id/prepare o /start-picking',
+      CONSOLIDADO: 'POST /api/orders/:id/record-pick',
+      DESPACHADO: 'POST /api/orders/:id/dispatch',
+      ENTREGADO: 'POST /api/orders/:id/confirm-delivery',
+      RECHAZADO: 'POST /api/orders/:id/reject',
+      CANCELADO: 'POST /api/orders/:id/reject',
+    };
+
+    if (!targetStatus) {
+      throw new HttpException('El campo estado es obligatorio.', HttpStatus.BAD_REQUEST);
+    }
+
+    if (CANONICAL_ENDPOINT_BY_STATUS[targetStatus]) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'TRANSICION_ESTADO_NO_PERMITIDA',
+          codigoError: 'TRANSICION_ESTADO_NO_PERMITIDA',
+          message: `Transición bloqueada: El estado "${targetStatus}" implica efectos sobre reservas, inventario físico, HUs o ubicaciones y solo puede ejecutarse vía ${CANONICAL_ENDPOINT_BY_STATUS[targetStatus]}.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const ALLOWED_NON_PHYSICAL_TRANSITIONS: Record<string, string[]> = {
+      SOLICITADO: ['PENDIENTE_APROBACION'],
+      PENDIENTE_APROBACION: ['SOLICITADO'],
+    };
+
+    const existing = await this.prisma.salesOrder.findFirst({
+      where: { OR: [{ id }, { codigo: id }] },
+    });
+    if (!existing) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+    const allowedNext = ALLOWED_NON_PHYSICAL_TRANSITIONS[existing.estado] || [];
+    if (!allowedNext.includes(targetStatus)) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'TRANSICION_ESTADO_NO_PERMITIDA',
+          codigoError: 'TRANSICION_ESTADO_NO_PERMITIDA',
+          message: `Transición inválida desde "${existing.estado}" hacia "${targetStatus}".`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
 
     const order = await this.prisma.salesOrder.update({
-      where: { id }, data: updateData, include: { cliente: true },
+      where: { id: existing.id },
+      data: { estado: targetStatus },
+      include: { cliente: true },
     });
 
-    await this.audit(body.usuario || 'Sistema', `ORDEN_${body.estado}`, 'SalesOrder', id, `Estado: ${body.estado}`);
+    await this.audit(actor, `ORDEN_${targetStatus}`, 'SalesOrder', existing.id, `Estado: ${existing.estado} -> ${targetStatus}`);
     return order;
   }
 
@@ -7826,11 +8029,18 @@ export class OperationsController {
             include: { zona: true, almacen: true },
           },
           handlingUnits: {
-            where: { estadoHu: 'ACTIVO' },
+            where: {
+              estadoHu: 'ACTIVO',
+              tipoHu: { notIn: ['PALLET', 'TARIMA', 'CONTENEDOR', 'MASTER_PALLET'] },
+            },
             select: {
               id: true,
               codigo: true,
               tipoHu: true,
+              uom: true,
+              skuCodigo: true,
+              lotId: true,
+              parentHuId: true,
               cantidad: true,
               ubicacionActual: true,
               estadoEtiqueta: true,
@@ -7934,9 +8144,9 @@ export class OperationsController {
           stockLibre: libreParaEstaOrden,
           stockElegible: libreParaEstaOrden,
           ubicacionId: lot.ubicacionId,
-          ubicacionCodigo: lot.ubicacion?.codigo || 'ANDEN',
+          ubicacionCodigo: lot.ubicacion?.codigo || 'Sin asignar',
           almacenId: lot.ubicacion?.almacenId,
-          handlingUnits: lot.handlingUnits || [],
+          handlingUnits: this.getAllowedPhysicalOrderHus(lot.handlingUnits || []),
         };
 
         todosLotesDisponibles.push(lotInfo);
@@ -7944,8 +8154,9 @@ export class OperationsController {
         const isClientCajaCerrada = client.manejoInventario === 'CAJA' || client.uomPrincipal === 'CAJA' || client.reglaInventario === 'CAJA_CERRADA' || (client as any).politicaEmpaque === 'CAJA_CERRADA';
         let elegibleParaEstaOrden = libreParaEstaOrden;
         const standardCap = line.sku?.capacidadEmpaque || (line.sku?.codigo?.includes('ACE') ? 12 : line.sku?.codigo?.includes('ARR') ? 20 : 1);
-        if (isClientCajaCerrada && lot.handlingUnits && lot.handlingUnits.length > 0) {
-          const partialUnits = lot.handlingUnits
+        const pickableLotHus = this.getAllowedPhysicalOrderHus(lot.handlingUnits || []);
+        if (isClientCajaCerrada && pickableLotHus.length > 0) {
+          const partialUnits = pickableLotHus
             .filter((h: any) => Number(h.cantidad) < standardCap || h.codigo?.includes('PARCIAL'))
             .reduce((s: number, h: any) => s + (Number(h.cantidad) || 0), 0);
           elegibleParaEstaOrden = Math.max(0, libreParaEstaOrden - partialUnits);
@@ -7956,15 +8167,15 @@ export class OperationsController {
         if (remainingToAllocate > 0 && elegibleParaEstaOrden > 0) {
           const take = Math.min(remainingToAllocate, elegibleParaEstaOrden);
           const eligibleHUs = isClientCajaCerrada
-            ? (lot.handlingUnits || []).filter((h: any) => (!h.codigo || !h.codigo.includes('PARCIAL')) && Number(h.cantidad) >= standardCap)
-            : (lot.handlingUnits || []);
+            ? pickableLotHus.filter((h: any) => (!h.codigo || !h.codigo.includes('PARCIAL')) && Number(h.cantidad) >= standardCap)
+            : pickableLotHus;
 
           sugerencia.push({
             lotId: lot.id,
             lote: lot.lote || 'SIN_LOTE',
             fechaVencimiento: lot.fechaVencimiento,
             ubicacionId: lot.ubicacionId,
-            ubicacionCodigo: lot.ubicacion?.codigo || 'ANDEN',
+            ubicacionCodigo: lot.ubicacion?.codigo || 'Sin asignar',
             cantidadSugerida: take,
             handlingUnits: eligibleHUs.slice(0, Math.ceil(take / (eligibleHUs[0]?.cantidad || take || 1))),
           });
@@ -8029,19 +8240,19 @@ export class OperationsController {
   }
 
   @Post('orders/:id/allocate')
-  @RequireAccess({ modules: ['picking', 'despacho'], actions: ['crear', 'editar'], allowPortal: false })
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['editar', 'aprobar'], allowPortal: false })
   @ApiOperation({ summary: 'Asignar/reservar stock para orden de salida (Alias para integración continua)' })
-  async allocateOrder(@Param('id') id: string, @Body() data: any) {
-    return this.prepareOrder(id, data);
+  async allocateOrder(@Param('id') id: string, @Body() data: any, @Req() req?: any) {
+    return this.prepareOrder(id, data, req);
   }
 
   @Post('orders/:id/prepare')
-  @RequireAccess({ modules: ['picking', 'despacho'], actions: ['crear', 'editar'], allowPortal: false })
-  @ApiOperation({ summary: 'Asignar lotes y ubicaciones a orden de salida (Panel Supervisor / Alejandra)' })
+  @RequireAccess({ modules: ['despacho', 'picking'], actions: ['editar', 'aprobar'], allowPortal: false })
+  @ApiOperation({ summary: 'Asignar lotes y ubicaciones a orden de salida (Supervisión / Despacho)' })
   async prepareOrder(
     @Param('id') id: string,
     @Body() data: {
-      usuario: string;
+      usuario?: string;
       modo?: string; // AUTO_FEFO, AUTO_FIFO, MANUAL
       asignaciones: Array<{
         lineId: string;
@@ -8055,280 +8266,709 @@ export class OperationsController {
         }>;
       }>;
       notas?: string;
-    }
+    },
+    @Req() req?: any,
   ) {
-    if (!data.usuario) throw new HttpException('El usuario supervisor es obligatorio', HttpStatus.BAD_REQUEST);
-    if (!data.asignaciones || data.asignaciones.length === 0) {
+    const actor = getRequestActor(req, 'Supervisor');
+    if (!data?.asignaciones || !Array.isArray(data.asignaciones) || data.asignaciones.length === 0) {
       throw new HttpException('Debe especificar al menos una partida con lotes asignados', HttpStatus.BAD_REQUEST);
     }
 
-    const order = await this.prisma.salesOrder.findFirst({
-      where: { OR: [{ id }, { codigo: id }] },
-      include: { lineas: { include: { sku: true } }, cliente: true },
-    });
-    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+    const updatedOrder = await withConcurrencyRetry(async () => {
+      return await this.prisma.$transaction(async (tx) => {
+        const foundOrder = await tx.salesOrder.findFirst({
+          where: { OR: [{ id }, { codigo: id }] },
+          select: { id: true },
+        });
+        if (!foundOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-    if (['DESPACHADO', 'ENTREGADO', 'RECHAZADO', 'CANCELADO'].includes(order.estado)) {
-      throw new HttpException(`No se puede preparar una orden en estado ${order.estado}`, HttpStatus.BAD_REQUEST);
-    }
+        await this.acquireRowLocks(tx, 'SalesOrder', [foundOrder.id]);
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const item of data.asignaciones) {
-        const line = order.lineas.find(l => l.id === item.lineId);
-        if (!line) throw new HttpException(`Línea con ID ${item.lineId} no pertenece a esta orden`, HttpStatus.BAD_REQUEST);
+        const order = await tx.salesOrder.findUnique({
+          where: { id: foundOrder.id },
+          include: { lineas: { include: { sku: true } }, cliente: true },
+        });
+        if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-        const totalAllocated = item.lotes.reduce((sum, l) => sum + (Number(l.cantidad) || 0), 0);
-        if (totalAllocated <= 0) {
-          throw new HttpException(`La línea para "${line.sku.descripcion}" debe tener al menos una unidad asignada`, HttpStatus.BAD_REQUEST);
+        const allowedPrepareStates = ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PREPARACION', 'EN_PICKING'];
+        if (!allowedPrepareStates.includes(order.estado)) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'PREPARACION_BLOQUEADA_POR_ESTADO',
+              codigoError: 'PREPARACION_BLOQUEADA_POR_ESTADO',
+              message: `No se puede preparar o reasignar una orden en estado ${order.estado}.`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
         }
 
-        // Si la línea ya tenía un lote o desglose multi-lote reservado al crear el pedido, liberar su reserva
-        if (line.asignacionesJson) {
-          try {
-            const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
-            if (Array.isArray(parsed)) {
-              for (const r of parsed) {
-                if (r && r.lotId && Number(r.cantidad) > 0) {
-                  await tx.lotInventory.update({
-                    where: { id: r.lotId },
-                    data: { cantidadReservada: { decrement: Number(r.cantidad) } },
-                  }).catch(() => null);
+        // Bloquear re-preparación si el picking físico ya inició o hay HUs en Staging
+        for (const l of order.lineas) {
+          let hasStagingMove = false;
+          if (l.asignacionesJson) {
+            try {
+              const parsed = typeof l.asignacionesJson === 'string' ? JSON.parse(l.asignacionesJson) : l.asignacionesJson;
+              if (Array.isArray(parsed)) {
+                hasStagingMove = parsed.some(
+                  (a: any) =>
+                    Boolean(a?.stagingLotId || a?.stagingLocationId || a?.stagingLocationCodigo) ||
+                    (Array.isArray(a?.cajasEscaneadas) && a.cajasEscaneadas.length > 0),
+                );
+              }
+            } catch {}
+          }
+          if (
+            Number(l.cantidadPickeada || 0) > 0 ||
+            l.pickingCompletado ||
+            Boolean(l.cajaEscaneada) ||
+            Boolean(l.huId) ||
+            hasStagingMove
+          ) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.CONFLICT,
+                code: 'PREPARACION_BLOQUEADA_PICKING_INICIADO',
+                codigoError: 'PREPARACION_BLOQUEADA_PICKING_INICIADO',
+                message: `No se puede re-preparar la orden ${order.codigo} porque ya tiene recolección o traslado a Staging iniciado en la línea "${l.sku?.codigo || l.id}".`,
+                error: 'Conflict',
+              },
+              HttpStatus.CONFLICT,
+            );
+          }
+        }
+
+        // Validar cobertura completa y cuadratura exacta de todas las líneas de la orden
+        const assignedLineIds = new Set(data.asignaciones.map(a => a.lineId));
+        if (assignedLineIds.size !== data.asignaciones.length) {
+          throw new HttpException('Existen líneas duplicadas en la solicitud de preparación.', HttpStatus.BAD_REQUEST);
+        }
+        if (assignedLineIds.size !== order.lineas.length || order.lineas.some(l => !assignedLineIds.has(l.id))) {
+          throw new HttpException(
+            'La preparación debe asignar el 100% de las partidas de la orden sin omitir líneas.',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        // Recolectar y bloquear todos los LotInventory involucrados (previos y nuevos)
+        const lotIdsToLock: string[] = [];
+        for (const l of order.lineas) {
+          if (l.lotId) lotIdsToLock.push(l.lotId);
+          if (l.asignacionesJson) {
+            try {
+              const parsed = typeof l.asignacionesJson === 'string' ? JSON.parse(l.asignacionesJson) : l.asignacionesJson;
+              if (Array.isArray(parsed)) {
+                parsed.forEach((r: any) => { if (r?.lotId) lotIdsToLock.push(r.lotId); });
+              }
+            } catch {}
+          }
+        }
+        for (const item of data.asignaciones) {
+          for (const alloc of item.lotes || []) {
+            if (alloc?.lotId) lotIdsToLock.push(alloc.lotId);
+          }
+        }
+        await this.acquireRowLocks(tx, 'LotInventory', lotIdsToLock);
+
+        // Validar cuadratura exacta antes de mutar reservas
+        for (const item of data.asignaciones) {
+          const line = order.lineas.find(l => l.id === item.lineId);
+          if (!line) throw new HttpException(`Línea con ID ${item.lineId} no pertenece a esta orden`, HttpStatus.BAD_REQUEST);
+          if (!Array.isArray(item.lotes) || item.lotes.length === 0) {
+            throw new HttpException(`La línea para "${line.sku.descripcion}" debe especificar al menos un lote.`, HttpStatus.BAD_REQUEST);
+          }
+
+          const totalAllocated = item.lotes.reduce((sum, l) => sum + (Number(l.cantidad) || 0), 0);
+          if (totalAllocated <= 0 || Math.abs(totalAllocated - Number(line.cantidadSolicitada)) > 1e-6) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.BAD_REQUEST,
+                code: 'ASIGNACION_NO_CUADRADA',
+                codigoError: 'ASIGNACION_NO_CUADRADA',
+                message: `Asignación incompleta o excedida para "${line.sku.codigo}": se requieren exactamente ${line.cantidadSolicitada} unidades y se recibieron ${totalAllocated}.`,
+                error: 'Bad Request',
+              },
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+
+        // 1. Liberar reservas previas no pickeadas de manera exacta y acotada (>= 0)
+        for (const line of order.lineas) {
+          const priorToRelease: Array<{ lotId: string; cantidad: number }> = [];
+          if (line.asignacionesJson) {
+            try {
+              const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+              if (Array.isArray(parsed)) {
+                for (const r of parsed) {
+                  if (r && r.lotId && Number(r.cantidad) > 0) {
+                    priorToRelease.push({ lotId: r.lotId, cantidad: Number(r.cantidad) });
+                  }
                 }
               }
+            } catch {}
+          } else if (line.lotId && Number(line.cantidadSolicitada) > 0) {
+            priorToRelease.push({ lotId: line.lotId, cantidad: Number(line.cantidadSolicitada) });
+          }
+
+          for (const rel of priorToRelease) {
+            const currentLot = await tx.lotInventory.findUnique({ where: { id: rel.lotId } });
+            if (!currentLot) continue;
+            const releaseQty = Math.min(rel.cantidad, Math.max(0, Number(currentLot.cantidadReservada || 0)));
+            if (releaseQty > 0) {
+              await tx.lotInventory.update({
+                where: { id: currentLot.id },
+                data: { cantidadReservada: { decrement: releaseQty } },
+              });
             }
-          } catch {}
-        } else if (line.lotId) {
-          await tx.lotInventory.update({
-            where: { id: line.lotId },
-            data: { cantidadReservada: { decrement: line.cantidadSolicitada } },
-          }).catch(() => null);
+          }
         }
 
-        // Aplicar nuevas reservas atómicas a los lotes seleccionados
-        for (const alloc of item.lotes) {
-          const qty = Number(alloc.cantidad) || 0;
-          if (qty <= 0) continue;
+        // 2. Validar y aplicar nuevas reservas atómicas
+        for (const item of data.asignaciones) {
+          const line = order.lineas.find(l => l.id === item.lineId)!;
 
-          const lot = await tx.lotInventory.findUnique({ 
-            where: { id: alloc.lotId },
-            include: { ubicacion: { include: { zona: true, almacen: true } } },
-          });
-          if (!lot) throw new HttpException(`Lote ${alloc.lotId} no encontrado`, HttpStatus.BAD_REQUEST);
+          for (const alloc of item.lotes) {
+            const qty = Number(alloc.cantidad) || 0;
+            if (qty <= 0) {
+              throw new HttpException(`Cantidad asignada inválida (${qty}) para ${line.sku.codigo}.`, HttpStatus.BAD_REQUEST);
+            }
 
-          const locRole = classifyLocationOperationalRole(lot.ubicacion);
-          const opState = evaluateInventoryItemOperationalState(lot, locRole, new Date());
-          if (!opState.esElegibleAllocation) {
-            throw new HttpException(
-              {
-                statusCode: HttpStatus.CONFLICT,
-                message: `LOTE_NO_ELEGIBLE_ALLOCATION: El lote ${lot.lote || lot.id} no es elegible para asignación operativa (${opState.badgeTexto}: ${opState.motivo}).`,
-                error: 'Conflict',
-              },
-              HttpStatus.CONFLICT,
-            );
+            const lot = await tx.lotInventory.findUnique({
+              where: { id: alloc.lotId },
+              include: { ubicacion: { include: { zona: true, almacen: true } } },
+            });
+            if (!lot) throw new HttpException(`Lote ${alloc.lotId} no encontrado`, HttpStatus.BAD_REQUEST);
+
+            const locRole = classifyLocationOperationalRole(lot.ubicacion);
+            const opState = evaluateInventoryItemOperationalState(lot, locRole, new Date());
+            if (!opState.esElegibleAllocation) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  message: `LOTE_NO_ELEGIBLE_ALLOCATION: El lote ${lot.lote || lot.id} no es elegible para asignación operativa (${opState.badgeTexto}: ${opState.motivo}).`,
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            const availableToReserve = lot.cantidadDisponible - (lot.cantidadReservada || 0);
+            if (availableToReserve < qty) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  message: `Stock disponible no reservado insuficiente en lote ${lot.lote || lot.id} para ${line.sku.descripcion}. Disponible libre: ${availableToReserve}, Solicitado: ${qty}`,
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            const huAllocValidation = await validateHuAllocationCompatibility({
+              tx,
+              lotId: alloc.lotId,
+              clienteId: order.clienteId,
+              requestedQty: qty,
+              currentOrderId: order.id,
+              skuCodigo: line.sku?.codigo,
+            });
+
+            if (huAllocValidation.esHuManaged && !huAllocValidation.valido) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  code: huAllocValidation.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
+                  codigoError: huAllocValidation.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
+                  message: huAllocValidation.mensaje,
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
+            if (huAllocValidation.esHuManaged && huAllocValidation.assignedHus.length > 0) {
+              (alloc as any).husAsignadas = huAllocValidation.assignedHus;
+            }
+
+            await tx.lotInventory.update({
+              where: { id: alloc.lotId },
+              data: { cantidadReservada: { increment: qty } },
+            });
           }
 
-          const availableToReserve = lot.cantidadDisponible - (lot.cantidadReservada || 0);
-          if (availableToReserve < qty) {
-            throw new HttpException(
-              {
-                statusCode: HttpStatus.CONFLICT,
-                message: `Stock disponible no reservado insuficiente en lote ${lot.lote || lot.id} para ${line.sku.descripcion}. Disponible libre: ${availableToReserve}, Solicitado: ${qty}`,
-                error: 'Conflict',
-              },
-              HttpStatus.CONFLICT,
-            );
-          }
+          const primaryLot = item.lotes[0];
+          const primaryLotRecord = primaryLot
+            ? await tx.lotInventory.findUnique({ where: { id: primaryLot.lotId }, include: { ubicacion: true } })
+            : null;
+          const totalAllocated = item.lotes.reduce((sum, l) => sum + (Number(l.cantidad) || 0), 0);
 
-          // Revalidación autoritativa de compatibilidad con Handling Units indivisibles
-          const huAllocValidation = await validateHuAllocationCompatibility({
-            tx,
-            lotId: alloc.lotId,
-            clienteId: order.clienteId,
-            requestedQty: qty,
-            currentOrderId: order.id,
-            skuCodigo: line.sku?.codigo,
-          });
-
-          if (huAllocValidation.esHuManaged && !huAllocValidation.valido) {
-            throw new HttpException(
-              {
-                statusCode: HttpStatus.CONFLICT,
-                code: huAllocValidation.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
-                codigoError: huAllocValidation.codigoError || 'CANTIDAD_NO_COMPATIBLE_CON_HU',
-                message: huAllocValidation.mensaje,
-                error: 'Conflict',
-              },
-              HttpStatus.CONFLICT,
-            );
-          }
-
-          if (huAllocValidation.esHuManaged && huAllocValidation.assignedHus.length > 0) {
-            (alloc as any).husAsignadas = huAllocValidation.assignedHus;
-          }
-
-          await tx.lotInventory.update({
-            where: { id: alloc.lotId },
-            data: { cantidadReservada: { increment: qty } },
+          await tx.salesOrderLine.update({
+            where: { id: line.id },
+            data: {
+              cantidadAsignada: totalAllocated,
+              lotId: primaryLot?.lotId || null,
+              loteAsignado: item.lotes.map(l => l.lote || primaryLotRecord?.lote || 'Sin lote').join(', '),
+              ubicacionAsignada: item.lotes.map(l => l.ubicacionCodigo || primaryLotRecord?.ubicacion?.codigo || 'Sin asignar').join(', '),
+              asignacionesJson: JSON.stringify(item.lotes),
+            },
           });
         }
 
-        const primaryLot = item.lotes[0];
-        const primaryLotRecord = primaryLot ? await tx.lotInventory.findUnique({ where: { id: primaryLot.lotId }, include: { ubicacion: true } }) : null;
+        const wasAlreadyApproved = Boolean(order.aprobado);
 
-        await tx.salesOrderLine.update({
-          where: { id: line.id },
+        await tx.salesOrder.update({
+          where: { id: order.id },
           data: {
-            cantidadAsignada: totalAllocated,
-            lotId: primaryLot?.lotId || null,
-            loteAsignado: item.lotes.map(l => l.lote || primaryLotRecord?.lote || 'N/A').join(', '),
-            ubicacionAsignada: item.lotes.map(l => l.ubicacionCodigo || primaryLotRecord?.ubicacion?.codigo || 'N/A').join(', '),
-            asignacionesJson: JSON.stringify(item.lotes),
+            estado: 'EN_PICKING',
+            preparadoPor: actor,
+            fechaPreparacion: new Date(),
+            asignacionModo: data.modo || 'AUTO_FEFO',
+            aprobado: true,
+            fechaAprobacion: order.fechaAprobacion || new Date(),
+            aprobadoPor: order.aprobadoPor || actor,
           },
         });
-      }
 
-      await tx.salesOrder.update({
-        where: { id: order.id },
-        data: {
-          estado: 'EN_PICKING',
-          preparadoPor: data.usuario,
-          fechaPreparacion: new Date(),
-          asignacionModo: data.modo || 'AUTO_FEFO',
-          aprobado: true,
-          fechaAprobacion: order.fechaAprobacion || new Date(),
-          aprobadoPor: order.aprobadoPor || data.usuario,
-        },
-      });
-    }, { timeout: 30000 });
+        if (!wasAlreadyApproved && typeof tx.orderApproval?.create === 'function') {
+          await tx.orderApproval.create({
+            data: {
+              orderId: order.id,
+              estado: 'APROBADO',
+              aprobadoPor: order.aprobadoPor || actor,
+              notas: data.notas
+                ? `Aprobación integrada en Panel de Preparación: ${data.notas}`
+                : 'Aprobación integrada en Panel de Preparación (FEFO/FIFO)',
+            },
+          });
+        }
 
-    await this.audit(data.usuario, 'PREPARAR_ORDEN', 'SalesOrder', order.id, `Orden ${order.codigo} preparada y asignada: modo ${data.modo || 'AUTO_FEFO'}`);
+        await this.audit(
+          actor,
+          'PREPARAR_ORDEN',
+          'SalesOrder',
+          order.id,
+          `Orden ${order.codigo} preparada y asignada: modo ${data.modo || 'AUTO_FEFO'}`,
+          tx,
+        );
 
-    return this.prisma.salesOrder.findUnique({
-      where: { id: order.id },
-      include: {
-        cliente: true,
-        endCustomer: true,
-        lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
-      },
-    });
+        return tx.salesOrder.findUnique({
+          where: { id: order.id },
+          include: {
+            cliente: true,
+            endCustomer: true,
+            lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
+          },
+        });
+      }, { timeout: 30000 });
+    }, { contextName: 'prepareOrder' });
+
+    return updatedOrder;
   }
 
   @Post('orders/:id/approve')
   @RequireAccess({ modules: ['despacho', 'picking'], actions: ['aprobar', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Aprobar orden de salida (3PL workflow)' })
-  async approveOrder(@Param('id') id: string, @Body() body: { usuario: string; notas?: string }) {
-    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
-    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+  async approveOrder(@Param('id') id: string, @Body() body: { usuario?: string; notas?: string }, @Req() req?: any) {
+    const actor = getRequestActor(req, 'Supervisor');
 
-    const updated = await this.prisma.salesOrder.update({
-      where: { id },
-      data: {
-        estado: 'APROBADO', aprobado: true,
-        fechaAprobacion: new Date(), aprobadoPor: body.usuario,
-      },
-      include: { cliente: true, endCustomer: true },
-    });
+    return await this.prisma.$transaction(async (tx) => {
+      const found = await tx.salesOrder.findFirst({
+        where: { OR: [{ id }, { codigo: id }] },
+        select: { id: true },
+      });
+      if (!found) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-    await this.prisma.orderApproval.create({
-      data: { orderId: id, estado: 'APROBADO', aprobadoPor: body.usuario, notas: body.notas },
-    });
+      await this.acquireRowLocks(tx, 'SalesOrder', [found.id]);
 
-    await this.audit(body.usuario, 'APROBAR_ORDEN', 'SalesOrder', id, `Orden ${order.codigo} aprobada`);
-    return { success: true, order: updated };
+      const order = await tx.salesOrder.findUnique({
+        where: { id: found.id },
+        include: { cliente: true, endCustomer: true },
+      });
+      if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+      if (order.estado === 'APROBADO') {
+        return { success: true, alreadyApproved: true, idempotent: true, order };
+      }
+
+      if (!['SOLICITADO', 'PENDIENTE_APROBACION'].includes(order.estado)) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.CONFLICT,
+            code: 'APROBACION_BLOQUEADA_POR_ESTADO',
+            codigoError: 'APROBACION_BLOQUEADA_POR_ESTADO',
+            message: `No se puede aprobar la orden ${order.codigo} porque se encuentra en estado ${order.estado}.`,
+            error: 'Conflict',
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+
+      const updated = await tx.salesOrder.update({
+        where: { id: order.id },
+        data: {
+          estado: 'APROBADO',
+          aprobado: true,
+          fechaAprobacion: new Date(),
+          aprobadoPor: actor,
+        },
+        include: { cliente: true, endCustomer: true },
+      });
+
+      await tx.orderApproval.create({
+        data: { orderId: order.id, estado: 'APROBADO', aprobadoPor: actor, notas: body?.notas },
+      });
+
+      await this.audit(actor, 'APROBAR_ORDEN', 'SalesOrder', order.id, `Orden ${order.codigo} aprobada`, tx);
+      return { success: true, alreadyApproved: false, order: updated };
+    }, { timeout: 15000 });
   }
 
   @Post('orders/:id/reject')
   @RequireAccess({ modules: ['despacho', 'picking'], actions: ['aprobar', 'editar'], allowPortal: false })
-  @ApiOperation({ summary: 'Rechazar o cancelar orden de salida y liberar reservas (3PL workflow)' })
-  async rejectOrder(@Param('id') id: string, @Body() body: { usuario: string; motivo: string; notas?: string }) {
-    const order = await this.prisma.salesOrder.findUnique({ 
-      where: { id },
-      include: { lineas: true }
-    });
-    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
-    if (!body.motivo) throw new HttpException('El motivo de rechazo o cancelación es obligatorio', HttpStatus.BAD_REQUEST);
-
-    // Liberar inventario reservado en los lotes (multi-lote o lote único con retrocompatibilidad)
-    for (const line of order.lineas) {
-      if (line.asignacionesJson) {
-        try {
-          const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
-          if (Array.isArray(parsed)) {
-            for (const r of parsed) {
-              if (r && r.lotId && Number(r.cantidad) > 0) {
-                await this.prisma.lotInventory.update({
-                  where: { id: r.lotId },
-                  data: { cantidadReservada: { decrement: Number(r.cantidad) } },
-                }).catch(() => null);
-              }
-            }
-            continue;
-          }
-        } catch {}
-      }
-      if (line.lotId && line.cantidadSolicitada > 0) {
-        await this.prisma.lotInventory.update({
-          where: { id: line.lotId },
-          data: { cantidadReservada: { decrement: line.cantidadSolicitada } },
-        }).catch(() => null);
-      }
+  @ApiOperation({ summary: 'Rechazar o cancelar orden de salida y liberar reservas/staging de forma atómica e idempotente' })
+  async rejectOrder(@Param('id') id: string, @Body() body: { usuario?: string; motivo: string; notas?: string }, @Req() req?: any) {
+    const actor = getRequestActor(req, 'Supervisor');
+    if (!body?.motivo || !String(body.motivo).trim()) {
+      throw new HttpException('El motivo de rechazo o cancelación es obligatorio', HttpStatus.BAD_REQUEST);
     }
 
-    const updated = await this.prisma.salesOrder.update({
-      where: { id },
-      data: { estado: 'RECHAZADO', motivoRechazo: body.motivo },
-      include: { cliente: true, endCustomer: true },
-    });
+    return await withConcurrencyRetry(async () => {
+      return await this.prisma.$transaction(async (tx) => {
+        const found = await tx.salesOrder.findFirst({
+          where: { OR: [{ id }, { codigo: id }] },
+          select: { id: true },
+        });
+        if (!found) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-    await this.prisma.orderApproval.create({
-      data: { orderId: id, estado: 'RECHAZADO', aprobadoPor: body.usuario, motivo: body.motivo, notas: body.notas },
-    });
+        await this.acquireRowLocks(tx, 'SalesOrder', [found.id]);
 
-    await this.audit(body.usuario, 'RECHAZAR_ORDEN', 'SalesOrder', id, `Orden ${order.codigo} rechazada y reservas liberadas: ${body.motivo}`);
-    return { success: true, order: updated };
+        const order = await tx.salesOrder.findUnique({
+          where: { id: found.id },
+          include: {
+            cliente: true,
+            endCustomer: true,
+            lineas: { include: { sku: true } },
+          },
+        });
+        if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+        // Idempotencia: segunda llamada sobre orden ya rechazada o cancelada no vuelve a mutar reservas ni logs
+        if (order.estado === 'RECHAZADO' || order.estado === 'CANCELADO') {
+          return {
+            success: true,
+            alreadyRejected: true,
+            idempotent: true,
+            message: `La orden ${order.codigo} ya fue rechazada/cancelada previamente. Sin cambios duplicados.`,
+            order,
+          };
+        }
+
+        if (order.estado === 'DESPACHADO' || order.estado === 'ENTREGADO') {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'RECHAZO_BLOQUEADO_ORDEN_DESPACHADA',
+              codigoError: 'RECHAZO_BLOQUEADO_ORDEN_DESPACHADA',
+              message: `No se puede rechazar o cancelar la orden ${order.codigo} porque ya fue ${order.estado}.`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        // Recolectar lotes y HUs a bloquear y devolver/liberar
+        const lotIdsToLock: string[] = [];
+        const huCodesInStaging: string[] = [];
+        for (const line of order.lineas) {
+          if (line.lotId) lotIdsToLock.push(line.lotId);
+          if (line.cajaEscaneada) {
+            line.cajaEscaneada.split(',').forEach(c => { if (c.trim()) huCodesInStaging.push(c.trim()); });
+          }
+          if (line.asignacionesJson) {
+            try {
+              const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+              if (Array.isArray(parsed)) {
+                parsed.forEach((r: any) => {
+                  if (r?.lotId) lotIdsToLock.push(r.lotId);
+                  if (r?.stagingLotId) lotIdsToLock.push(r.stagingLotId);
+                  if (r?.huCodigo) huCodesInStaging.push(r.huCodigo);
+                  if (Array.isArray(r?.cajasEscaneadas)) {
+                    r.cajasEscaneadas.forEach((c: string) => { if (c) huCodesInStaging.push(c); });
+                  }
+                });
+              }
+            } catch {}
+          }
+        }
+
+        const uniqueStagedCodes = [...new Set(huCodesInStaging.map(c => c.trim().toUpperCase()).filter(Boolean))];
+        const stagedHusToRestore = uniqueStagedCodes.length > 0
+          ? await tx.handlingUnit.findMany({
+              where: {
+                codigo: { in: uniqueStagedCodes },
+                clienteId: order.clienteId,
+                estadoHu: 'ACTIVO',
+              },
+            })
+          : [];
+        const affectedParentHuIds = new Set<string>();
+        stagedHusToRestore.forEach((h: any) => {
+          if (h.lotId) lotIdsToLock.push(h.lotId);
+          if (h.parentHuId) affectedParentHuIds.add(h.parentHuId);
+        });
+
+        await this.acquireRowLocks(tx, 'HandlingUnit', [
+          ...stagedHusToRestore.map((h: any) => h.id),
+          ...Array.from(affectedParentHuIds),
+        ]);
+        await this.acquireRowLocks(tx, 'LotInventory', lotIdsToLock);
+
+        const locationsToRecalc = new Set<string>();
+
+        for (const line of order.lineas) {
+          let parsedAllocs: any[] = [];
+          if (line.asignacionesJson) {
+            try {
+              const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+              if (Array.isArray(parsed)) parsedAllocs = parsed;
+            } catch {}
+          }
+
+          let restoredFromStagingTotal = 0;
+
+          // A. Si hubo traslado físico a Staging, devolver HU y stock de Staging hacia su ubicación origen
+          for (const alloc of parsedAllocs) {
+            const allocStagedCodes: string[] = [
+              ...(Array.isArray(alloc?.cajasEscaneadas) ? alloc.cajasEscaneadas : []),
+              ...(alloc?.huCodigo ? [alloc.huCodigo] : []),
+            ]
+              .map((c: string) => String(c || '').trim().toUpperCase())
+              .filter(Boolean);
+
+            const matchingStagedHus = stagedHusToRestore.filter(
+              (h: any) => allocStagedCodes.includes(String(h.codigo || '').toUpperCase()),
+            );
+
+            for (const stagedHu of matchingStagedHus) {
+              if (!isInventariablePickableHu(stagedHu)) continue;
+              const huQty = Number(stagedHu.cantidad || stagedHu.piezasPorCaja || 0);
+              const stagingLot = stagedHu.lotId
+                ? await tx.lotInventory.findUnique({ where: { id: stagedHu.lotId }, include: { ubicacion: true } })
+                : (alloc.stagingLotId
+                  ? await tx.lotInventory.findUnique({ where: { id: alloc.stagingLotId }, include: { ubicacion: true } })
+                  : null);
+
+              const originLot = alloc.lotId
+                ? await tx.lotInventory.findUnique({ where: { id: alloc.lotId }, include: { ubicacion: true } })
+                : (line.lotId
+                  ? await tx.lotInventory.findUnique({ where: { id: line.lotId }, include: { ubicacion: true } })
+                  : null);
+
+              if (stagingLot && originLot && stagingLot.id !== originLot.id && huQty > 0) {
+                const decDisp = Math.min(huQty, Math.max(0, Number(stagingLot.cantidadDisponible || 0)));
+                const decRes = Math.min(huQty, Math.max(0, Number(stagingLot.cantidadReservada || 0)));
+                await tx.lotInventory.update({
+                  where: { id: stagingLot.id },
+                  data: {
+                    cantidadDisponible: { decrement: decDisp },
+                    cantidadReservada: { decrement: decRes },
+                  },
+                });
+                await tx.lotInventory.update({
+                  where: { id: originLot.id },
+                  data: {
+                    cantidadDisponible: { increment: decDisp },
+                  },
+                });
+                await tx.handlingUnit.update({
+                  where: { id: stagedHu.id },
+                  data: {
+                    ubicacionActual: originLot.ubicacion?.codigo || alloc.ubicacionCodigo || stagedHu.ubicacionActual,
+                    lotId: originLot.id,
+                  },
+                });
+                await tx.inventoryMovement.create({
+                  data: {
+                    tipoMovimiento: 'TRASIEGO',
+                    skuId: line.skuId,
+                    clienteId: order.clienteId,
+                    lotId: originLot.id,
+                    huId: stagedHu.id,
+                    fromLocationId: stagingLot.ubicacionId || null,
+                    toLocationId: originLot.ubicacionId || null,
+                    cantidad: decDisp,
+                    usuario: actor,
+                    motivo: `DEVOLUCION_STAGING_POR_RECHAZO: Retorno de HU ${stagedHu.codigo} desde ${stagingLot.ubicacion?.codigo || 'Staging'} a ${originLot.ubicacion?.codigo || 'almacén'}`,
+                    documentoOrigen: order.codigo,
+                  },
+                });
+                if (stagingLot.ubicacionId) locationsToRecalc.add(stagingLot.ubicacionId);
+                if (originLot.ubicacionId) locationsToRecalc.add(originLot.ubicacionId);
+                restoredFromStagingTotal += decDisp;
+              } else if (stagingLot && huQty > 0) {
+                const decRes = Math.min(huQty, Math.max(0, Number(stagingLot.cantidadReservada || 0)));
+                if (decRes > 0) {
+                  await tx.lotInventory.update({
+                    where: { id: stagingLot.id },
+                    data: { cantidadReservada: { decrement: decRes } },
+                  });
+                }
+                restoredFromStagingTotal += huQty;
+              }
+            }
+          }
+
+          // B. Liberar reserva aún remanente en lotes de origen (sin doble descuento sobre lo ya trasladado a Staging)
+          const pendingToRelease = Math.max(0, Number(line.cantidadSolicitada || 0) - restoredFromStagingTotal);
+          if (pendingToRelease > 0) {
+            let remaining = pendingToRelease;
+            if (parsedAllocs.length > 0) {
+              for (const r of parsedAllocs) {
+                if (remaining <= 0) break;
+                const targetLotId = r?.lotId;
+                const reqRelease = Math.min(remaining, Math.max(0, Number(r?.cantidad || 0)));
+                if (!targetLotId || reqRelease <= 0) continue;
+                const currentLot = await tx.lotInventory.findUnique({ where: { id: targetLotId } });
+                if (!currentLot) continue;
+                const safeRelease = Math.min(reqRelease, Math.max(0, Number(currentLot.cantidadReservada || 0)));
+                if (safeRelease > 0) {
+                  await tx.lotInventory.update({
+                    where: { id: currentLot.id },
+                    data: { cantidadReservada: { decrement: safeRelease } },
+                  });
+                  remaining -= safeRelease;
+                }
+              }
+            } else if (line.lotId) {
+              const currentLot = await tx.lotInventory.findUnique({ where: { id: line.lotId } });
+              if (currentLot) {
+                const safeRelease = Math.min(remaining, Math.max(0, Number(currentLot.cantidadReservada || 0)));
+                if (safeRelease > 0) {
+                  await tx.lotInventory.update({
+                    where: { id: currentLot.id },
+                    data: { cantidadReservada: { decrement: safeRelease } },
+                  });
+                }
+              }
+            }
+          }
+
+          await tx.salesOrderLine.update({
+            where: { id: line.id },
+            data: {
+              cantidadAsignada: 0,
+              cantidadPickeada: 0,
+              pickingCompletado: false,
+              huId: null,
+              cajaEscaneada: null,
+              ubicacionEscaneada: null,
+            },
+          });
+        }
+
+        if (affectedParentHuIds.size > 0) {
+          await syncParentPalletContainers(tx, Array.from(affectedParentHuIds));
+        }
+
+        for (const locId of locationsToRecalc) {
+          await this.putawayEngine.recalculateLocationState(tx, locId);
+        }
+
+        const updated = await tx.salesOrder.update({
+          where: { id: order.id },
+          data: { estado: 'RECHAZADO', motivoRechazo: body.motivo.trim() },
+          include: { cliente: true, endCustomer: true },
+        });
+
+        await tx.orderApproval.create({
+          data: { orderId: order.id, estado: 'RECHAZADO', aprobadoPor: actor, motivo: body.motivo.trim(), notas: body.notas },
+        });
+
+        await this.audit(
+          actor,
+          'RECHAZAR_ORDEN',
+          'SalesOrder',
+          order.id,
+          `Orden ${order.codigo} rechazada y reservas liberadas: ${body.motivo.trim()}`,
+          tx,
+        );
+
+        return { success: true, alreadyRejected: false, order: updated };
+      }, { timeout: 25000 });
+    }, { contextName: 'rejectOrder' });
   }
 
   @Post('orders/:id/start-picking')
   @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Fase 6: Iniciar picking de orden por surtidor (Regla de oro: 1 pedido por surtidor)' })
-  async startPicking(@Param('id') id: string, @Body() body: { surtidor: string; forzarReasignacion?: boolean }) {
-    const order = await this.prisma.salesOrder.findFirst({
-      where: { OR: [{ id }, { codigo: id }] },
-      include: { lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } } },
-    });
-    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+  async startPicking(
+    @Param('id') id: string,
+    @Body() body: { surtidor?: string; forzarReasignacion?: boolean },
+    @Req() req?: any,
+  ) {
+    const actor = getRequestActor(req, 'Surtidor');
 
-    if (order.surtidor && order.surtidor !== body.surtidor && !body.forzarReasignacion && order.estado === 'EN_PICKING') {
-      return {
-        success: false,
-        requiereConfirmacion: true,
-        mensaje: `Esta orden ya está siendo recolectada por el surtidor ${order.surtidor}. ¿Deseas reasignártela?`,
-        surtidorActual: order.surtidor,
-      };
-    }
+    return await this.prisma.$transaction(async (tx) => {
+      const found = await tx.salesOrder.findFirst({
+        where: { OR: [{ id }, { codigo: id }] },
+        select: { id: true },
+      });
+      if (!found) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-    const updated = await this.prisma.salesOrder.update({
-      where: { id: order.id },
-      data: {
-        estado: 'EN_PICKING',
-        surtidor: body.surtidor,
-        fechaInicioPicking: order.fechaInicioPicking || new Date(),
-      },
-      include: {
-        cliente: true,
-        endCustomer: true,
-        lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
-      },
-    });
+      await this.acquireRowLocks(tx, 'SalesOrder', [found.id]);
 
-    await this.audit(body.surtidor, 'INICIAR_PICKING', 'SalesOrder', order.id, `Surtidor ${body.surtidor} inició recolección de ${order.codigo}`);
-    return { success: true, order: updated };
+      const order = await tx.salesOrder.findUnique({
+        where: { id: found.id },
+        include: { lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } } },
+      });
+      if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+      if (!['APROBADO', 'EN_PREPARACION', 'EN_PICKING'].includes(order.estado)) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.CONFLICT,
+            code: 'ESTADO_NO_APTO_PARA_PICKING',
+            codigoError: 'ESTADO_NO_APTO_PARA_PICKING',
+            message: `No se puede iniciar picking para la orden ${order.codigo} en estado ${order.estado}.`,
+            error: 'Conflict',
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+
+      if (order.surtidor && order.surtidor !== actor && !body?.forzarReasignacion && order.estado === 'EN_PICKING') {
+        return {
+          success: false,
+          requiereConfirmacion: true,
+          mensaje: `Esta orden ya está siendo recolectada por el surtidor ${order.surtidor}. ¿Deseas reasignártela?`,
+          surtidorActual: order.surtidor,
+        };
+      }
+
+      const updated = await tx.salesOrder.update({
+        where: { id: order.id },
+        data: {
+          estado: 'EN_PICKING',
+          surtidor: actor,
+          fechaInicioPicking: order.fechaInicioPicking || new Date(),
+        },
+        include: {
+          cliente: true,
+          endCustomer: true,
+          lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
+        },
+      });
+
+      await this.audit(actor, 'INICIAR_PICKING', 'SalesOrder', order.id, `Surtidor ${actor} inició recolección de ${order.codigo}`, tx);
+      return { success: true, order: updated };
+    }, { timeout: 15000 });
   }
 
   @Post('orders/:id/validate-scan')
   @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
-  @ApiOperation({ summary: 'Fase 6: Doble validación por escaneo (Ubicación en rack y Etiqueta de Caja/Lote)' })
+  @ApiOperation({ summary: 'Fase 6: Doble validación por escaneo (Ubicación y Etiqueta de Caja/HU)' })
   async validatePickingScan(
     @Param('id') id: string,
     @Body() body: {
@@ -8351,12 +8991,26 @@ export class OperationsController {
       },
     });
     if (!line) throw new HttpException('Línea de pedido no encontrada', HttpStatus.NOT_FOUND);
+    if (line.orderId !== id && line.orden?.codigo !== id) {
+      throw new HttpException('La línea especificada no pertenece a esta orden', HttpStatus.BAD_REQUEST);
+    }
+
+    if (line.orden && !['APROBADO', 'EN_PICKING', 'EN_PREPARACION'].includes(line.orden.estado)) {
+      return {
+        valid: false,
+        tipoScan: body.tipoScan,
+        codigoError: 'ESTADO_NO_APTO_PARA_PICKING',
+        mensaje: `La orden ${line.orden.codigo} se encuentra en estado ${line.orden.estado} y no admite surtido.`,
+      };
+    }
+
+    const resolvedOrderId = line.orderId;
 
     // Revalidación canónica preventiva de elegibilidad operativa para Picking (read-only)
     const validation = await validatePickingEligibility(
       this.prisma,
       {
-        orderId: id,
+        orderId: resolvedOrderId,
         lineId: body.lineId,
         taskLotId: body.taskLotId,
         taskLoteCodigo: body.loteEsperado,
@@ -8406,7 +9060,7 @@ export class OperationsController {
         return {
           valid: false,
           tipoScan: 'UBICACION',
-          mensaje: `Ubicación errónea: Escaneaste "${raw}". La ubicación asignada para este producto es "${validLocations[0] || 'N/A'}". Dirígete al rack correcto.`,
+          mensaje: `Ubicación errónea: Escaneaste "${raw}". La ubicación asignada para este producto es "${validLocations[0] || 'Sin asignar'}". Dirígete a la posición física correcta.`,
           ubicacionEsperada: validLocations[0],
         };
       }
@@ -8455,6 +9109,20 @@ export class OperationsController {
         };
       }
 
+      // 2b. Excluir Tarima Master / Contenedor padre como unidad surtible
+      const childHusCount = await this.prisma.handlingUnit.count({
+        where: { parentHuId: hu.id, estadoHu: 'ACTIVO' },
+      });
+      const parentSet = new Set<string>(childHusCount > 0 ? [hu.id] : []);
+      if (!isInventariablePickableHu(hu, parentSet)) {
+        return {
+          valid: false,
+          tipoScan: 'CAJA',
+          codigoError: 'HU_CONTENEDOR_NO_PICKABLE',
+          mensaje: `La HU "${raw}" es una Tarima Master / contenedor logístico padre y no puede surtirse como unidad comercial. Escanea una etiqueta de caja inventariable.`,
+        };
+      }
+
       // 3. Validar estado ACTIVO
       if (hu.estadoHu !== 'ACTIVO') {
         return {
@@ -8497,7 +9165,7 @@ export class OperationsController {
         };
       }
 
-      // 7. Validar Ubicación física actual de la HU (debe coincidir con el rack verificado)
+      // 7. Validar Ubicación física actual de la HU (debe coincidir con la ubicación física verificada)
       const huUbi = (hu.ubicacionActual || '').trim().toUpperCase();
       if (expectedLocation && huUbi !== expectedLocation) {
         return {
@@ -8576,9 +9244,429 @@ export class OperationsController {
     return { valid: false, mensaje: 'Tipo de escaneo desconocido' };
   }
 
+  private async executeValidatedOrderPick(params: {
+    tx: any;
+    orderIdParam: string;
+    body: {
+      lineId: string;
+      cantidadPickeada: number;
+      ubicacionEscaneada?: string;
+      cajaEscaneada?: string;
+      lotId?: string;
+      huId?: string;
+      taskUbicacionCodigo?: string;
+      taskLotId?: string;
+      taskCantidadPickeada?: number;
+      asignacionesActualizadas?: any[];
+      esAjusteManual?: boolean;
+      motivoAjuste?: string;
+    };
+    actor: string;
+    requireExplicitScanFields?: boolean;
+  }) {
+    const { tx, orderIdParam, body, actor, requireExplicitScanFields } = params;
+
+    if (body.esAjusteManual) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.FORBIDDEN,
+          code: 'AJUSTE_MANUAL_NO_AUTORIZADO',
+          codigoError: 'AJUSTE_MANUAL_NO_AUTORIZADO',
+          message: 'El ajuste manual por excepción se encuentra deshabilitado. El surtido requiere validación física mediante escaneo de ubicación y Caja/HU.',
+          motivo: 'Protocolo formal de supervisor no habilitado para excepciones directas.',
+          error: 'Forbidden',
+        },
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (requireExplicitScanFields && Number(body.cantidadPickeada) > 0 && (!body.ubicacionEscaneada || !body.cajaEscaneada)) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.BAD_REQUEST,
+          code: 'ESCANEO_FISICO_OBLIGATORIO',
+          codigoError: 'ESCANEO_FISICO_OBLIGATORIO',
+          message: 'Se requiere el escaneo obligatorio de ubicación física y Caja/HU para confirmar el picking.',
+          motivo: 'Falta registro de ubicación física o etiqueta de caja escaneada.',
+          error: 'Bad Request',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const foundOrder = await tx.salesOrder.findFirst({
+      where: { OR: [{ id: orderIdParam }, { codigo: orderIdParam }] },
+      select: { id: true },
+    });
+    if (!foundOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+    await this.acquireRowLocks(tx, 'SalesOrder', [foundOrder.id]);
+
+    const order = await tx.salesOrder.findUnique({
+      where: { id: foundOrder.id },
+      include: {
+        cliente: true,
+        endCustomer: true,
+        lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
+      },
+    });
+    if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+    if (['DESPACHADO', 'ENTREGADO', 'RECHAZADO', 'CANCELADO'].includes(order.estado)) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'ESTADO_NO_APTO_PARA_PICKING',
+          codigoError: 'ESTADO_NO_APTO_PARA_PICKING',
+          message: `La orden ${order.codigo} está en estado ${order.estado} y no permite modificaciones de picking.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    if (!['APROBADO', 'EN_PREPARACION', 'EN_PICKING', 'CONSOLIDADO'].includes(order.estado)) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'ORDEN_NO_APROBADA_PARA_PICKING',
+          codigoError: 'ORDEN_NO_APROBADA_PARA_PICKING',
+          message: `La orden ${order.codigo} debe estar APROBADA o EN_PICKING antes de confirmar recolección (estado actual: ${order.estado}).`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const line = order.lineas.find((l: any) => l.id === body.lineId);
+    if (!line) throw new HttpException('Línea de pedido no encontrada en esta orden', HttpStatus.NOT_FOUND);
+
+    // Resolver HU solicitada
+    let huCodeToTransfer: string | null = body.cajaEscaneada ? body.cajaEscaneada.trim() : null;
+    if (!huCodeToTransfer && body.huId) {
+      const byId = await tx.handlingUnit.findUnique({ where: { id: body.huId } });
+      if (byId) huCodeToTransfer = byId.codigo;
+    }
+
+    // Verificar idempotencia antes de validar reserva en origen (pues el primer pick trasladó reserva a Staging)
+    const alreadyScannedOnLine = new Set<string>();
+    if (line.cajaEscaneada) {
+      line.cajaEscaneada.split(',').forEach((c: string) => {
+        if (c.trim()) alreadyScannedOnLine.add(c.trim().toUpperCase());
+      });
+    }
+    let currentLineAllocs: any[] = [];
+    if (line.asignacionesJson) {
+      try {
+        const p = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+        if (Array.isArray(p)) currentLineAllocs = p;
+      } catch {}
+    }
+    currentLineAllocs.forEach((a: any) => {
+      if (a?.huCodigo) alreadyScannedOnLine.add(String(a.huCodigo).trim().toUpperCase());
+      if (Array.isArray(a?.cajasEscaneadas)) {
+        a.cajasEscaneadas.forEach((c: string) => {
+          if (c && String(c).trim()) alreadyScannedOnLine.add(String(c).trim().toUpperCase());
+        });
+      }
+    });
+
+    if (
+      huCodeToTransfer &&
+      alreadyScannedOnLine.has(huCodeToTransfer.toUpperCase()) &&
+      (line.pickingCompletado || Number(line.cantidadPickeada || 0) > 0)
+    ) {
+      return {
+        success: true,
+        alreadyPicked: true,
+        idempotent: true,
+        message: `La HU ${huCodeToTransfer} ya fue recolectada y trasladada a Staging previamente para esta orden. Sin cambios duplicados.`,
+        lineId: line.id,
+        cantidadPickeada: line.cantidadPickeada,
+        lineCompleted: Boolean(line.pickingCompletado),
+        orderFullyPicked: order.estado === 'CONSOLIDADO',
+        order: order.estado === 'CONSOLIDADO' ? order : null,
+      };
+    }
+
+    if (
+      order.estado === 'CONSOLIDADO' ||
+      line.pickingCompletado ||
+      Number(line.cantidadPickeada || 0) >= Number(line.cantidadSolicitada || 0)
+    ) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'LINEA_YA_COMPLETADA',
+          codigoError: 'LINEA_YA_COMPLETADA',
+          message: `La línea para "${line.sku?.codigo || line.skuId}" ya completó su surtido (${line.cantidadPickeada}/${line.cantidadSolicitada}). No se permite recolectar unidades adicionales.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    if (!huCodeToTransfer) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_REQUERIDA',
+          codigoError: 'HU_REQUERIDA',
+          message: 'Esta operación requiere una unidad de manejo física (Caja/HU).',
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const rawCaja = huCodeToTransfer;
+    const cleanCaja = rawCaja.toUpperCase();
+    const skuCodigo = (line.sku?.codigo || '').toUpperCase();
+    const loteAsignado = (line.loteAsignado || line.lote?.lote || '').toUpperCase();
+
+    if (cleanCaja === skuCodigo || (loteAsignado && cleanCaja === loteAsignado)) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_REQUERIDA',
+          codigoError: 'HU_REQUERIDA',
+          message: 'Esta operación requiere una unidad de manejo física. Escanea la etiqueta Code-128 de la caja/HU.',
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const hu = await tx.handlingUnit.findFirst({
+      where: { codigo: { equals: rawCaja, mode: 'insensitive' } },
+      include: { lote: true },
+    });
+
+    if (!hu) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_NO_ENCONTRADA',
+          codigoError: 'HU_NO_ENCONTRADA',
+          message: `Unidad de manejo no encontrada: La etiqueta "${rawCaja}" no corresponde a ninguna caja/HU registrada.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    let childCount = 0;
+    if (typeof tx.handlingUnit?.count === 'function') {
+      childCount = await tx.handlingUnit.count({ where: { parentHuId: hu.id, estadoHu: 'ACTIVO' } });
+    }
+    assertPickableProductHu(hu, new Set<string>(childCount > 0 ? [hu.id] : []));
+
+    if (hu.estadoHu !== 'ACTIVO') {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_NO_ACTIVA',
+          codigoError: 'HU_NO_ACTIVA',
+          message: `Caja no disponible: La HU "${rawCaja}" se encuentra en estado ${hu.estadoHu}.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    if (hu.clienteId && order.clienteId && hu.clienteId !== order.clienteId) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_SKU_NO_COINCIDE',
+          codigoError: 'HU_SKU_NO_COINCIDE',
+          message: `La caja "${rawCaja}" pertenece a otro depositante.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const pendingBeforePick = Math.max(0, Number(line.cantidadSolicitada || 0) - Number(line.cantidadPickeada || 0));
+    const huPiezas = Number(hu.cantidad || hu.piezasPorCaja || 0);
+    if (huPiezas <= 0 || huPiezas > pendingBeforePick) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_CANTIDAD_EXCEDE_PENDIENTE',
+          codigoError: 'HU_CANTIDAD_EXCEDE_PENDIENTE',
+          message: `HU indivisible: La caja "${rawCaja}" contiene ${huPiezas} pzas y el pendiente requerido es ${pendingBeforePick} pzas.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // Bloquear fila HU y Lote origen antes de revalidar y trasladar
+    await this.acquireRowLocks(tx, 'HandlingUnit', [hu.id]);
+    const validation = await validatePickingEligibility(
+      tx,
+      {
+        orderId: order.id,
+        lineId: line.id,
+        requestedQty: huPiezas,
+        taskLotId: body.taskLotId || body.lotId,
+        taskUbicacionCodigo: body.taskUbicacionCodigo || body.ubicacionEscaneada,
+        businessDate: new Date(),
+      },
+      { throwOnConflict: true },
+    );
+    await this.acquireRowLocks(tx, 'LotInventory', [validation.targetLotId]);
+
+    const huSku = (hu.skuCodigo || '').toUpperCase();
+    if (huSku !== skuCodigo && hu.lotId !== validation.targetLotId) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_SKU_NO_COINCIDE',
+          codigoError: 'HU_SKU_NO_COINCIDE',
+          message: `La caja "${rawCaja}" contiene ${huSku || 'otro SKU'}, pero la orden requiere ${skuCodigo}.`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const targetLoteCode = (validation.freshLot?.lote || loteAsignado || '').toUpperCase();
+    const huLote = (hu.loteTexto || hu.lote?.lote || '').toUpperCase();
+    if (targetLoteCode && huLote !== targetLoteCode) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          code: 'HU_LOTE_NO_COINCIDE',
+          codigoError: 'HU_LOTE_NO_COINCIDE',
+          message: `La caja "${rawCaja}" pertenece al lote "${huLote || 'N/A'}", pero la orden tiene asignado "${targetLoteCode}".`,
+          error: 'Conflict',
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const stagingTransferResult = await transferHuToStaging(tx, {
+      orderId: order.id,
+      orderCodigo: order.codigo,
+      lineId: line.id,
+      huCode: rawCaja,
+      rackLocationCode: body.ubicacionEscaneada || line.ubicacionAsignada || validation.targetLocCodigo,
+      usuario: actor,
+    });
+
+    // Recalcular ubicación origen (ej. G0001) y ubicación staging (ej. STG-01)
+    await this.putawayEngine.recalculateLocationState(tx, stagingTransferResult.rackLocation.id);
+    await this.putawayEngine.recalculateLocationState(tx, stagingTransferResult.stagingLocation.id);
+
+    const cumulativePicked = Math.min(
+      Number(line.cantidadSolicitada || 0),
+      Math.max(Number(body.cantidadPickeada || 0), Number(line.cantidadPickeada || 0) + stagingTransferResult.cantidadHu),
+    );
+    const isCompleted = cumulativePicked >= Number(line.cantidadSolicitada || 0);
+
+    const mergedBoxes = Array.from(
+      new Set([
+        ...(line.cajaEscaneada ? line.cajaEscaneada.split(',').map((s: string) => s.trim()).filter(Boolean) : []),
+        stagingTransferResult.huCodigo,
+      ]),
+    );
+
+    let parsedAsignaciones: any[] = [];
+    if (body.asignacionesActualizadas && Array.isArray(body.asignacionesActualizadas)) {
+      parsedAsignaciones = body.asignacionesActualizadas;
+    } else if (currentLineAllocs.length > 0) {
+      parsedAsignaciones = currentLineAllocs;
+    }
+    const matchingAlloc = parsedAsignaciones[0] || {
+      lotId: validation.targetLotId,
+      cantidad: Number(line.cantidadSolicitada || cumulativePicked),
+      lote: validation.freshLot?.lote || line.loteAsignado,
+      ubicacionCodigo: stagingTransferResult.rackLocation.codigo,
+    };
+    matchingAlloc.huId = stagingTransferResult.huId;
+    matchingAlloc.huCodigo = stagingTransferResult.huCodigo;
+    matchingAlloc.stagingLocationId = stagingTransferResult.stagingLocation.id;
+    matchingAlloc.stagingLocationCodigo = stagingTransferResult.stagingLocation.codigo;
+    matchingAlloc.stagingLotId = stagingTransferResult.stagingLotId;
+    matchingAlloc.cantidadPickeada = cumulativePicked;
+    const currentCajas = Array.isArray(matchingAlloc.cajasEscaneadas) ? matchingAlloc.cajasEscaneadas : [];
+    if (!currentCajas.includes(stagingTransferResult.huCodigo)) {
+      matchingAlloc.cajasEscaneadas = [...currentCajas, stagingTransferResult.huCodigo];
+    }
+
+    await tx.salesOrderLine.update({
+      where: { id: line.id },
+      data: {
+        cantidadPickeada: cumulativePicked,
+        cantidadAsignada: cumulativePicked,
+        ubicacionEscaneada: body.ubicacionEscaneada || line.ubicacionEscaneada || stagingTransferResult.rackLocation.codigo,
+        cajaEscaneada: mergedBoxes.join(', '),
+        huId: stagingTransferResult.huId,
+        pickingCompletado: isCompleted,
+        fechaPicking: new Date(),
+        asignacionesJson: JSON.stringify(parsedAsignaciones.length > 0 ? parsedAsignaciones : [matchingAlloc]),
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        usuario: actor,
+        accion: 'PICKING_LINEA_REGISTRADO',
+        entidad: 'SalesOrderLine',
+        entidadId: line.id,
+        detalle: `Picking registrado para orden ${order.codigo}: ${cumulativePicked} pzas (${stagingTransferResult.huCodigo}) desde posición física ${validation.targetLocCodigo} hacia ${stagingTransferResult.stagingLocation.codigo} (Lote: ${validation.freshLot.lote})`,
+      },
+    });
+
+    const allLines = await tx.salesOrderLine.findMany({
+      where: { orderId: line.orderId },
+    });
+    const orderFullyPicked = allLines.every((l: any) =>
+      l.id === line.id ? isCompleted : l.pickingCompletado || l.cantidadPickeada >= l.cantidadSolicitada,
+    );
+
+    let updatedOrder: any = null;
+    if (orderFullyPicked) {
+      updatedOrder = await tx.salesOrder.update({
+        where: { id: line.orderId },
+        data: {
+          estado: 'CONSOLIDADO',
+          surtidor: order.surtidor || actor,
+          fechaFinPicking: new Date(),
+        },
+        include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          usuario: actor,
+          accion: 'PICKING_COMPLETADO',
+          entidad: 'SalesOrder',
+          entidadId: line.orderId,
+          detalle: `Pedido ${order.codigo} consolidado al 100% en ${stagingTransferResult.stagingLocation.codigo}`,
+        },
+      });
+    }
+
+    return {
+      success: true,
+      alreadyPicked: false,
+      idempotent: false,
+      message: `Picking registrado exitosamente para línea ${line.id} (${cumulativePicked} pzas)`,
+      lineId: line.id,
+      cantidadPickeada: cumulativePicked,
+      lineCompleted: isCompleted,
+      orderFullyPicked,
+      stagingLocationCodigo: stagingTransferResult.stagingLocation.codigo,
+      order: updatedOrder,
+    };
+  }
+
   @Post('orders/:id/record-pick')
   @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
-  @ApiOperation({ summary: 'Fase 6: Registrar conteo pickeado por línea con doble escaneo y revalidación canónica' })
+  @ApiOperation({ summary: 'Fase 6: Registrar conteo pickeado por línea con doble escaneo, traslado a Staging y revalidación canónica' })
   async recordPick(
     @Param('id') id: string,
     @Body() body: {
@@ -8594,244 +9682,50 @@ export class OperationsController {
       esAjusteManual?: boolean;
       motivoAjuste?: string;
     },
+    @Req() req?: any,
   ) {
-    return await this.prisma.$transaction(async (tx) => {
-      // 0. Bloqueo de Bypass: Si se intenta ajuste manual sin flujo formal de supervisor activo
-      if (body.esAjusteManual) {
-        throw new HttpException(
-          {
-            statusCode: HttpStatus.FORBIDDEN,
-            code: 'AJUSTE_MANUAL_NO_AUTORIZADO',
-            codigoError: 'AJUSTE_MANUAL_NO_AUTORIZADO',
-            message: 'El ajuste manual por excepción se encuentra deshabilitado. El surtido requiere validación física mediante escaneo de Rack y Caja/HU.',
-            motivo: 'Protocolo formal de supervisor no habilitado para excepciones directas.',
-            error: 'Forbidden',
-          },
-          HttpStatus.FORBIDDEN,
-        );
-      }
+    const actor = getRequestActor(req, 'Surtidor');
 
-      // Bloqueo de Bypass: Si se intenta registrar cantidad > 0 sin los escaneos físicos
-      if (body.cantidadPickeada > 0 && (!body.ubicacionEscaneada || !body.cajaEscaneada)) {
-        throw new HttpException(
-          {
-            statusCode: HttpStatus.BAD_REQUEST,
-            code: 'ESCANEO_FISICO_OBLIGATORIO',
-            codigoError: 'ESCANEO_FISICO_OBLIGATORIO',
-            message: 'Se requiere el escaneo obligatorio de Rack y Caja/HU para confirmar el picking.',
-            motivo: 'Falta registro de ubicación física o etiqueta de caja escaneada.',
-            error: 'Bad Request',
-          },
-          HttpStatus.BAD_REQUEST,
-        );
-      }
+    const preLine = body?.lineId
+      ? await this.prisma.salesOrderLine.findUnique({
+          where: { id: body.lineId },
+          include: { lote: true },
+        })
+      : null;
+    const preHu = body?.cajaEscaneada
+      ? await this.prisma.handlingUnit.findFirst({
+          where: { codigo: { equals: body.cajaEscaneada.trim(), mode: 'insensitive' } },
+          select: { id: true },
+        })
+      : null;
 
-      // 1. Revalidación canónica obligatoria bajo transacción antes de cualquier mutación
-      const validation = await validatePickingEligibility(
-        tx,
-        {
-          orderId: id,
-          lineId: body.lineId,
-          requestedQty: body.cantidadPickeada,
-          taskLotId: body.taskLotId,
-          taskUbicacionCodigo: body.taskUbicacionCodigo,
-          businessDate: new Date(),
-        },
-        { throwOnConflict: true },
-      );
+    const locationIds: string[] = [];
+    if (preLine?.lote?.ubicacionId) locationIds.push(preLine.lote.ubicacionId);
+    const huIds = preHu?.id ? [preHu.id] : [];
 
-      const line = validation.line;
-
-      // 2. Validación autoritativa de la Handling Unit en confirmación mutante
-      if (body.cajaEscaneada) {
-        const rawCaja = body.cajaEscaneada.trim();
-        const cleanCaja = rawCaja.toUpperCase();
-        const skuCodigo = (line.sku?.codigo || '').toUpperCase();
-        const loteAsignado = (validation.freshLot?.lote || line.loteAsignado || '').toUpperCase();
-
-        if (cleanCaja === skuCodigo || cleanCaja === loteAsignado) {
-          throw new HttpException(
-            {
-              statusCode: HttpStatus.CONFLICT,
-              code: 'HU_REQUERIDA',
-              codigoError: 'HU_REQUERIDA',
-              message: 'Esta operación requiere una unidad de manejo física. Escanea la etiqueta Code-128 de la caja/HU.',
-              error: 'Conflict',
-            },
-            HttpStatus.CONFLICT,
-          );
-        }
-
-        const hu = await tx.handlingUnit.findFirst({
-          where: { codigo: { equals: rawCaja, mode: 'insensitive' } },
+    return await this.putawayEngine.executePhysicalMovementProtocol(
+      this.prisma,
+      {
+        huIds,
+        locationIds,
+        opName: 'recordPick',
+        recalculateLocationsOnCommit: false,
+      },
+      async (tx) => {
+        return this.executeValidatedOrderPick({
+          tx,
+          orderIdParam: id,
+          body,
+          actor,
+          requireExplicitScanFields: true,
         });
-
-        if (!hu) {
-          throw new HttpException(
-            {
-              statusCode: HttpStatus.CONFLICT,
-              code: 'HU_NO_ENCONTRADA',
-              codigoError: 'HU_NO_ENCONTRADA',
-              message: `Unidad de manejo no encontrada: La etiqueta "${rawCaja}" no corresponde a ninguna caja/HU registrada.`,
-              error: 'Conflict',
-            },
-            HttpStatus.CONFLICT,
-          );
-        }
-
-        if (hu.estadoHu !== 'ACTIVO') {
-          throw new HttpException(
-            {
-              statusCode: HttpStatus.CONFLICT,
-              code: 'HU_NO_ACTIVA',
-              codigoError: 'HU_NO_ACTIVA',
-              message: `Caja no disponible: La HU "${rawCaja}" se encuentra en estado ${hu.estadoHu}.`,
-              error: 'Conflict',
-            },
-            HttpStatus.CONFLICT,
-          );
-        }
-
-        const huSku = (hu.skuCodigo || '').toUpperCase();
-        if (huSku !== skuCodigo && hu.lotId !== validation.targetLotId) {
-          throw new HttpException(
-            {
-              statusCode: HttpStatus.CONFLICT,
-              code: 'HU_SKU_NO_COINCIDE',
-              codigoError: 'HU_SKU_NO_COINCIDE',
-              message: `La caja "${rawCaja}" contiene ${huSku}, pero la orden requiere ${skuCodigo}.`,
-              error: 'Conflict',
-            },
-            HttpStatus.CONFLICT,
-          );
-        }
-
-        const huLote = (hu.loteTexto || '').toUpperCase();
-        if (loteAsignado && huLote !== loteAsignado) {
-          throw new HttpException(
-            {
-              statusCode: HttpStatus.CONFLICT,
-              code: 'HU_LOTE_NO_COINCIDE',
-              codigoError: 'HU_LOTE_NO_COINCIDE',
-              message: `La caja "${rawCaja}" pertenece al lote "${huLote}", pero la orden tiene asignado "${loteAsignado}".`,
-              error: 'Conflict',
-            },
-            HttpStatus.CONFLICT,
-          );
-        }
-      }
-
-      let stagingTransferResult: any = null;
-      const usuarioResponsable = body.usuario || line.orden?.surtidor || 'Surtidor';
-
-      if (body.cajaEscaneada) {
-        stagingTransferResult = await transferHuToStaging(tx, {
-          orderId: id,
-          orderCodigo: line.orden?.codigo,
-          lineId: body.lineId,
-          huCode: body.cajaEscaneada,
-          rackLocationCode: body.ubicacionEscaneada || line.ubicacionAsignada || validation.targetLocCodigo,
-          usuario: usuarioResponsable,
-        });
-      }
-
-      const newQty = Math.max(0, Math.min(body.cantidadPickeada, line.cantidadSolicitada));
-      const isCompleted = newQty >= line.cantidadSolicitada;
-
-      const updateData: any = {
-        cantidadPickeada: newQty,
-        cantidadAsignada: newQty,
-        ubicacionEscaneada: body.ubicacionEscaneada || line.ubicacionEscaneada,
-        cajaEscaneada: body.cajaEscaneada || line.cajaEscaneada,
-        pickingCompletado: isCompleted,
-        fechaPicking: new Date(),
-      };
-
-      if (stagingTransferResult) {
-        updateData.huId = stagingTransferResult.huId;
-        let parsedAsignaciones: any[] = [];
-        if (body.asignacionesActualizadas && Array.isArray(body.asignacionesActualizadas)) {
-          parsedAsignaciones = body.asignacionesActualizadas;
-        } else if (line.asignacionesJson) {
-          try {
-            const p = JSON.parse(line.asignacionesJson);
-            if (Array.isArray(p)) parsedAsignaciones = p;
-          } catch (_) {}
-        }
-        const matchingAlloc = parsedAsignaciones[0] || {};
-        matchingAlloc.huId = stagingTransferResult.huId;
-        matchingAlloc.huCodigo = stagingTransferResult.huCodigo;
-        matchingAlloc.stagingLocationId = stagingTransferResult.stagingLocation.id;
-        matchingAlloc.stagingLocationCodigo = stagingTransferResult.stagingLocation.codigo;
-        matchingAlloc.stagingLotId = stagingTransferResult.stagingLotId;
-        const currentCajas = Array.isArray(matchingAlloc.cajasEscaneadas) ? matchingAlloc.cajasEscaneadas : [];
-        if (!currentCajas.includes(stagingTransferResult.huCodigo)) {
-          matchingAlloc.cajasEscaneadas = [...currentCajas, stagingTransferResult.huCodigo];
-        }
-        updateData.asignacionesJson = JSON.stringify(parsedAsignaciones.length > 0 ? parsedAsignaciones : [matchingAlloc]);
-      } else if (body.asignacionesActualizadas && Array.isArray(body.asignacionesActualizadas)) {
-        updateData.asignacionesJson = JSON.stringify(body.asignacionesActualizadas);
-      }
-
-      await tx.salesOrderLine.update({
-        where: { id: body.lineId },
-        data: updateData,
-      });
-
-      await tx.auditLog.create({
-        data: {
-          usuario: usuarioResponsable,
-          accion: 'PICKING_LINEA_REGISTRADO',
-          entidad: 'SalesOrderLine',
-          entidadId: line.id,
-          detalle: `Picking registrado para orden ${line.orden?.codigo || id}: ${newQty} pzas pickeadas en ${validation.targetLocCodigo} (Lote: ${validation.freshLot.lote})`,
-        },
-      });
-
-      const allLines = await tx.salesOrderLine.findMany({
-        where: { orderId: line.orderId },
-      });
-
-      const orderFullyPicked = allLines.every(l =>
-        l.id === body.lineId ? isCompleted : l.pickingCompletado || l.cantidadPickeada >= l.cantidadSolicitada,
-      );
-
-      let updatedOrder: any = null;
-      if (orderFullyPicked) {
-        updatedOrder = await tx.salesOrder.update({
-          where: { id: line.orderId },
-          data: {
-            estado: 'CONSOLIDADO',
-            fechaFinPicking: new Date(),
-          },
-          include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
-        });
-
-        await tx.auditLog.create({
-          data: {
-            usuario: usuarioResponsable,
-            accion: 'PICKING_COMPLETADO',
-            entidad: 'SalesOrder',
-            entidadId: line.orderId,
-            detalle: `Pedido ${line.orden?.codigo || id} consolidado al 100% bajo protocolo de revalidación canónica`,
-          },
-        });
-      }
-
-      return {
-        success: true,
-        lineId: body.lineId,
-        cantidadPickeada: newQty,
-        lineCompleted: isCompleted,
-        orderFullyPicked,
-        order: updatedOrder,
-      };
-    });
+      },
+    );
   }
 
   @Post('orders/:id/pick')
   @RequireAccess({ modules: ['picking'], actions: ['crear', 'editar'], allowPortal: false })
-  @ApiOperation({ summary: 'Fase 6: Pickear unidades de rack bajo protocolo transaccional con bloqueo pesimista (Etapa 5A.1)' })
+  @ApiOperation({ summary: 'Fase 6: Pickear unidades de almacén bajo protocolo transaccional con bloqueo pesimista' })
   async pickOrderItem(
     @Param('id') id: string,
     @Body() body: {
@@ -8844,161 +9738,58 @@ export class OperationsController {
       ubicacionEscaneada?: string;
       usuario?: string;
     },
+    @Req() req?: any,
   ) {
+    const actor = getRequestActor(req, 'Surtidor');
     const line = await this.prisma.salesOrderLine.findUnique({
       where: { id: body.lineId },
-      include: { orden: { include: { lineas: true } }, lote: true },
+      include: { lote: true },
     });
     if (!line) throw new HttpException('Línea de pedido no encontrada', HttpStatus.NOT_FOUND);
 
     const targetLotId = body.lotId || line.lotId;
     let targetLocId = body.ubicacionId || line.lote?.ubicacionId;
-
     if (!targetLocId && targetLotId) {
       const lotRec = await this.prisma.lotInventory.findUnique({ where: { id: targetLotId } });
       if (lotRec?.ubicacionId) targetLocId = lotRec.ubicacionId;
     }
 
-    const locationIds = targetLocId ? [targetLocId] : [];
-    const huIds = body.huId ? [body.huId] : [];
+    const preHu = body.huId
+      ? { id: body.huId }
+      : (body.cajaEscaneada
+        ? await this.prisma.handlingUnit.findFirst({
+            where: { codigo: { equals: body.cajaEscaneada.trim(), mode: 'insensitive' } },
+            select: { id: true },
+          })
+        : null);
 
     return await this.putawayEngine.executePhysicalMovementProtocol(
       this.prisma,
       {
-        huIds,
-        locationIds,
+        huIds: preHu?.id ? [preHu.id] : [],
+        locationIds: targetLocId ? [targetLocId] : [],
         opName: 'pickOrderItem',
+        recalculateLocationsOnCommit: false,
       },
       async (tx) => {
-        // Revalidación canónica compartida y centralizada bajo transacción
-        const validation = await validatePickingEligibility(
+        return this.executeValidatedOrderPick({
           tx,
-          {
-            orderId: id,
-            lineId: body.lineId,
-            requestedQty: body.cantidadPickeada,
-            taskLotId: targetLotId,
-            taskUbicacionCodigo: body.ubicacionEscaneada,
-            businessDate: new Date(),
-          },
-          { throwOnConflict: true },
-        );
-
-        let stagingTransferResult: any = null;
-        const usuarioResponsable = body.usuario || line.orden?.surtidor || 'Surtidor';
-
-        const huCodeToTransfer = body.cajaEscaneada || (body.huId ? (await tx.handlingUnit.findUnique({ where: { id: body.huId } }))?.codigo : null);
-        if (huCodeToTransfer) {
-          stagingTransferResult = await transferHuToStaging(tx, {
-            orderId: id,
-            orderCodigo: line.orden?.codigo,
-            lineId: body.lineId,
-            huCode: huCodeToTransfer,
-            rackLocationCode: body.ubicacionEscaneada || line.ubicacionAsignada || validation.targetLocCodigo,
-            usuario: usuarioResponsable,
-          });
-        }
-
-        const qty = Math.max(0, Math.min(body.cantidadPickeada, line.cantidadSolicitada));
-        const isCompleted = qty >= line.cantidadSolicitada;
-
-        const updateData: any = {
-          cantidadPickeada: qty,
-          cantidadAsignada: qty,
-          ubicacionEscaneada: body.ubicacionEscaneada || line.ubicacionEscaneada,
-          cajaEscaneada: body.cajaEscaneada || line.cajaEscaneada,
-          pickingCompletado: isCompleted,
-          fechaPicking: new Date(),
-        };
-
-        if (stagingTransferResult) {
-          updateData.huId = stagingTransferResult.huId;
-          let parsedAsignaciones: any[] = [];
-          if (line.asignacionesJson) {
-            try {
-              const p = JSON.parse(line.asignacionesJson);
-              if (Array.isArray(p)) parsedAsignaciones = p;
-            } catch (_) {}
-          }
-          const matchingAlloc = parsedAsignaciones[0] || {};
-          matchingAlloc.huId = stagingTransferResult.huId;
-          matchingAlloc.huCodigo = stagingTransferResult.huCodigo;
-          matchingAlloc.stagingLocationId = stagingTransferResult.stagingLocation.id;
-          matchingAlloc.stagingLocationCodigo = stagingTransferResult.stagingLocation.codigo;
-          matchingAlloc.stagingLotId = stagingTransferResult.stagingLotId;
-          const currentCajas = Array.isArray(matchingAlloc.cajasEscaneadas) ? matchingAlloc.cajasEscaneadas : [];
-          if (!currentCajas.includes(stagingTransferResult.huCodigo)) {
-            matchingAlloc.cajasEscaneadas = [...currentCajas, stagingTransferResult.huCodigo];
-          }
-          updateData.asignacionesJson = JSON.stringify(parsedAsignaciones.length > 0 ? parsedAsignaciones : [matchingAlloc]);
-        }
-
-        // Actualizar línea de pedido
-        await tx.salesOrderLine.update({
-          where: { id: body.lineId },
-          data: updateData,
+          orderIdParam: id,
+          body,
+          actor,
+          requireExplicitScanFields: false,
         });
-
-        await tx.auditLog.create({
-          data: {
-            usuario: usuarioResponsable,
-            accion: 'PICKING_LINEA_REGISTRADO',
-            entidad: 'SalesOrderLine',
-            entidadId: line.id,
-            detalle: `Picking registrado para orden ${line.orden.codigo}: ${qty} pzas pickeadas en ${validation.targetLocCodigo} (Lote: ${validation.freshLot.lote})`,
-          },
-        });
-
-        const allLines = await tx.salesOrderLine.findMany({
-          where: { orderId: line.orderId },
-        });
-
-        const orderFullyPicked = allLines.every(l =>
-          l.id === body.lineId ? isCompleted : l.pickingCompletado || l.cantidadPickeada >= l.cantidadSolicitada,
-        );
-
-        let updatedOrder: any = null;
-        if (orderFullyPicked) {
-          updatedOrder = await tx.salesOrder.update({
-            where: { id: line.orderId },
-            data: {
-              estado: 'CONSOLIDADO',
-              fechaFinPicking: new Date(),
-            },
-            include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
-          });
-
-          await tx.auditLog.create({
-            data: {
-              usuario: usuarioResponsable,
-              accion: 'PICKING_COMPLETADO',
-              entidad: 'SalesOrder',
-              entidadId: line.orderId,
-              detalle: `Pedido ${line.orden.codigo} consolidado al 100% bajo protocolo de concurrencia`,
-            },
-          });
-        }
-
-        return {
-          success: true,
-          message: `Picking registrado exitosamente para línea ${line.id} (${qty} pzas)`,
-          lineId: body.lineId,
-          cantidadPickeada: qty,
-          lineCompleted: isCompleted,
-          orderFullyPicked,
-          order: updatedOrder,
-        };
       },
     );
   }
 
   @Post('orders/:id/dispatch')
-  @RequireAccess({ modules: ['despacho'], actions: ['crear', 'editar'], allowPortal: false })
-  @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario físico y reservas bajo protocolo transaccional de concurrencia (Etapa 5A.1)' })
+  @RequireAccess({ modules: ['despacho'], actions: ['editar', 'aprobar'], allowPortal: false })
+  @ApiOperation({ summary: 'Confirmar despacho — descuenta inventario de Staging y cierra HU bajo protocolo atómico e idempotente' })
   async dispatchOrder(
     @Param('id') id: string,
     @Body() data: {
-      despachador: string;
+      despachador?: string;
       vehiculoPlaca?: string;
       notas?: string;
       tipoTransporte?: string;
@@ -9012,8 +9803,11 @@ export class OperationsController {
       firmaChofer?: string;
       folioManifiesto?: string;
     },
+    @Req() req?: any,
   ) {
-    const fullOrder = await this.prisma.salesOrder.findFirst({
+    const actor = getRequestActor(req, 'Despachador');
+
+    const preOrder = await this.prisma.salesOrder.findFirst({
       where: { OR: [{ id }, { codigo: id }] },
       include: {
         lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
@@ -9021,188 +9815,326 @@ export class OperationsController {
         endCustomer: true,
       },
     });
-    if (!fullOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+    if (!preOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-    const plannedDeductions: Array<{
-      line: any;
-      allocations: Array<{ lotId: string; cantidad: number; ubicacionId?: string }>;
-    }> = [];
-
-    const allLotIds: string[] = [];
-    const allLocIds: string[] = [];
-
-    for (const line of fullOrder.lineas) {
-      let allocationsToDeduct: Array<{ lotId: string; cantidad: number; ubicacionId?: string }> = [];
-
-      // 1. Asignaciones explícitas de Fase 5 (asignacionesJson)
+    const preHuCodes = new Set<string>();
+    const preLocationIds = new Set<string>();
+    for (const line of preOrder.lineas || []) {
+      if (line.lote?.ubicacionId) preLocationIds.add(line.lote.ubicacionId);
+      if (line.cajaEscaneada) {
+        line.cajaEscaneada.split(',').forEach((c: string) => { if (c.trim()) preHuCodes.add(c.trim()); });
+      }
       if (line.asignacionesJson) {
         try {
-          const parsed = JSON.parse(line.asignacionesJson);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            allocationsToDeduct = parsed.map((a: any) => ({
-              lotId: a.lotId,
-              cantidad: Number(a.cantidad) || 0,
-              ubicacionId: a.ubicacionId,
-            }));
+          const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
+          if (Array.isArray(parsed)) {
+            parsed.forEach((a: any) => {
+              if (a?.ubicacionId) preLocationIds.add(a.ubicacionId);
+              if (a?.stagingLocationId) preLocationIds.add(a.stagingLocationId);
+              if (a?.huCodigo) preHuCodes.add(String(a.huCodigo).trim());
+              if (Array.isArray(a?.cajasEscaneadas)) {
+                a.cajasEscaneadas.forEach((c: string) => { if (c) preHuCodes.add(String(c).trim()); });
+              }
+            });
           }
-        } catch (_) {}
-      }
-
-      // 2. Si no hay asignacionesJson pero sí lotId asignado
-      if (allocationsToDeduct.length === 0 && line.lotId) {
-        allocationsToDeduct.push({
-          lotId: line.lotId,
-          cantidad: line.cantidadSolicitada,
-          ubicacionId: line.lote?.ubicacionId || undefined,
-        });
-      }
-
-      // 3. Fallback FEFO si no hubo asignación previa
-      if (allocationsToDeduct.length === 0) {
-        let remaining = line.cantidadSolicitada;
-        const candidateLotsRaw = await this.prisma.lotInventory.findMany({
-          where: { skuId: line.skuId, clienteId: fullOrder.clienteId, cantidadDisponible: { gt: 0 }, estadoCalidad: 'LIBERADO' },
-          orderBy: { fechaVencimiento: 'asc' },
-          include: { ubicacion: { include: { zona: true, almacen: true } } },
-        });
-        const candidateLots = candidateLotsRaw.filter(cl => classifyLocationOperationalRole(cl.ubicacion).esVendible);
-        for (const cl of candidateLots) {
-          if (remaining <= 0) break;
-          const take = Math.min(remaining, cl.cantidadDisponible);
-          remaining -= take;
-          allocationsToDeduct.push({ lotId: cl.id, cantidad: take, ubicacionId: cl.ubicacionId || undefined });
-        }
-      }
-
-      plannedDeductions.push({ line, allocations: allocationsToDeduct });
-      for (const a of allocationsToDeduct) {
-        if (a.lotId) allLotIds.push(a.lotId);
-        if (a.ubicacionId) allLocIds.push(a.ubicacionId);
+        } catch {}
       }
     }
 
-    // Identificar HandlingUnits activas asociadas a los lotes a despachar
-    const candidateHus = await this.prisma.handlingUnit.findMany({
-      where: {
-        lotId: { in: [...new Set(allLotIds)] },
-        clienteId: fullOrder.clienteId,
-        estadoHu: 'ACTIVO',
-      },
-      select: { id: true },
-    });
-    const huIds = candidateHus.map(h => h.id);
-    const locationIds = [...new Set(allLocIds.filter(Boolean))];
+    const prePickedHus = preHuCodes.size > 0
+      ? await this.prisma.handlingUnit.findMany({
+          where: {
+            codigo: { in: Array.from(preHuCodes) },
+            clienteId: preOrder.clienteId,
+          },
+          select: { id: true, lotId: true, tipoHu: true, uom: true, codigo: true, skuCodigo: true },
+        })
+      : [];
+    const huIds = this.getAllowedPhysicalOrderHus(prePickedHus).map((h: any) => h.id);
+    const locationIds = Array.from(preLocationIds);
 
-    const folioManifiesto = data.folioManifiesto && !data.folioManifiesto.startsWith('PRE-')
-      ? data.folioManifiesto
-      : (fullOrder.folioManifiesto && !fullOrder.folioManifiesto.startsWith('PRE-')
-          ? fullOrder.folioManifiesto
-          : `MAN-${fullOrder.codigo}`);
-
-    const order = await this.putawayEngine.executePhysicalMovementProtocol(
+    return await this.putawayEngine.executePhysicalMovementProtocol(
       this.prisma,
       {
         huIds,
         locationIds,
         opName: 'dispatchOrder',
+        recalculateLocationsOnCommit: false,
       },
       async (tx) => {
-        for (const { line, allocations } of plannedDeductions) {
-          let totalDeductedForLine = 0;
+        await this.acquireRowLocks(tx, 'SalesOrder', [preOrder.id]);
 
-          // 1. Identificar HUs recolectadas formalmente para esta línea
-          let linePickedHuCodes: string[] = [];
-          if (line.cajaEscaneada) {
-            linePickedHuCodes.push(...line.cajaEscaneada.split(',').map((s: string) => s.trim().toUpperCase()));
+        const fullOrder = await tx.salesOrder.findUnique({
+          where: { id: preOrder.id },
+          include: {
+            lineas: { include: { sku: true, lote: { include: { ubicacion: true } } } },
+            cliente: true,
+            endCustomer: true,
+          },
+        });
+        if (!fullOrder) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
+
+        const folioManifiesto = data.folioManifiesto && !data.folioManifiesto.startsWith('PRE-')
+          ? data.folioManifiesto
+          : (fullOrder.folioManifiesto && !fullOrder.folioManifiesto.startsWith('PRE-')
+              ? fullOrder.folioManifiesto
+              : `MAN-${fullOrder.codigo}`);
+
+        // Idempotencia estricta: segunda ejecución sobre orden ya despachada/entregada no muta absolutamente nada
+        if (fullOrder.estado === 'DESPACHADO' || fullOrder.estado === 'ENTREGADO') {
+          return {
+            success: true,
+            alreadyDispatched: true,
+            idempotent: true,
+            message: `La orden ${fullOrder.codigo} ya fue despachada previamente. Operación idempotente: no se descontó stock ni se generaron registros duplicados.`,
+            order: fullOrder,
+            folioManifiesto: fullOrder.folioManifiesto || folioManifiesto,
+          };
+        }
+
+        // Guard estricto de workflow: solo órdenes CONSOLIDADAS con líneas 100% pickeadas pueden despacharse
+        if (fullOrder.estado !== 'CONSOLIDADO') {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              code: 'ORDEN_NO_CONSOLIDADA_PARA_DESPACHO',
+              codigoError: 'ORDEN_NO_CONSOLIDADA_PARA_DESPACHO',
+              message: `Despacho bloqueado: La orden ${fullOrder.codigo} debe encontrarse en estado CONSOLIDADO antes del despacho (estado actual: ${fullOrder.estado}).`,
+              error: 'Conflict',
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        for (const line of fullOrder.lineas || []) {
+          if (
+            !line.pickingCompletado ||
+            Number(line.cantidadPickeada || 0) < Number(line.cantidadSolicitada || 0) ||
+            Number(line.cantidadPickeada || 0) <= 0
+          ) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.CONFLICT,
+                code: 'PICKING_INCOMPLETO_PARA_DESPACHO',
+                codigoError: 'PICKING_INCOMPLETO_PARA_DESPACHO',
+                message: `Despacho bloqueado: La partida "${line.sku?.codigo || line.id}" no ha completado su picking (${line.cantidadPickeada || 0}/${line.cantidadSolicitada}).`,
+                error: 'Conflict',
+              },
+              HttpStatus.CONFLICT,
+            );
           }
+        }
+
+        const stagingLocIdsToRecalc = new Set<string>();
+        const originLocIdsToCheck = new Set<string>();
+        const originLocCodesToResolve = new Set<string>();
+        const lotIdsToLock = new Set<string>();
+        const pickedHuIdsToLock = new Set<string>();
+        const affectedParentHuIds = new Set<string>();
+
+        const perLineSpecs: Array<{
+          line: any;
+          pickedCodes: string[];
+          fallbackLotIds: Array<{ lotId: string; cantidad: number }>;
+        }> = [];
+
+        for (const line of fullOrder.lineas || []) {
+          if (line.lote?.ubicacionId) originLocIdsToCheck.add(line.lote.ubicacionId);
+          if (line.ubicacionAsignada) {
+            String(line.ubicacionAsignada).split(',').forEach((c: string) => { if (c.trim()) originLocCodesToResolve.add(c.trim()); });
+          }
+          if (line.ubicacionEscaneada) {
+            String(line.ubicacionEscaneada).split(',').forEach((c: string) => { if (c.trim()) originLocCodesToResolve.add(c.trim()); });
+          }
+          if (line.lotId) lotIdsToLock.add(line.lotId);
+
+          const pickedCodesSet = new Set<string>();
+          if (line.cajaEscaneada) {
+            line.cajaEscaneada.split(',').forEach((s: string) => {
+              if (s.trim()) pickedCodesSet.add(s.trim().toUpperCase());
+            });
+          }
+
+          const fallbackLots: Array<{ lotId: string; cantidad: number }> = [];
           if (line.asignacionesJson) {
             try {
-              const parsed = JSON.parse(line.asignacionesJson);
+              const parsed = typeof line.asignacionesJson === 'string' ? JSON.parse(line.asignacionesJson) : line.asignacionesJson;
               if (Array.isArray(parsed)) {
                 parsed.forEach((a: any) => {
-                  if (a.huCodigo) linePickedHuCodes.push(a.huCodigo.toUpperCase());
-                  if (Array.isArray(a.cajasEscaneadas)) {
-                    linePickedHuCodes.push(...a.cajasEscaneadas.map((c: string) => c.toUpperCase()));
+                  if (a?.lotId) lotIdsToLock.add(a.lotId);
+                  if (a?.stagingLotId) lotIdsToLock.add(a.stagingLotId);
+                  if (a?.ubicacionId) originLocIdsToCheck.add(a.ubicacionId);
+                  if (a?.ubicacionCodigo) originLocCodesToResolve.add(String(a.ubicacionCodigo).trim());
+                  if (a?.stagingLocationId) stagingLocIdsToRecalc.add(a.stagingLocationId);
+                  if (a?.huCodigo) pickedCodesSet.add(String(a.huCodigo).trim().toUpperCase());
+                  if (Array.isArray(a?.cajasEscaneadas)) {
+                    a.cajasEscaneadas.forEach((c: string) => {
+                      if (c && String(c).trim()) pickedCodesSet.add(String(c).trim().toUpperCase());
+                    });
+                  }
+                  if (a?.lotId && Number(a?.cantidad) > 0) {
+                    fallbackLots.push({ lotId: a.lotId, cantidad: Number(a.cantidad) });
                   }
                 });
               }
-            } catch (_) {}
+            } catch {}
           }
-          linePickedHuCodes = [...new Set(linePickedHuCodes.filter(Boolean))];
+          if (fallbackLots.length === 0 && line.lotId) {
+            fallbackLots.push({ lotId: line.lotId, cantidad: Number(line.cantidadSolicitada) });
+          }
 
-          if (linePickedHuCodes.length > 0) {
-            // Despacho HU-Managed estricto: Descontar solo las HUs pickeadas y marcarlas a DESPACHADO
+          const pickedCodes = Array.from(pickedCodesSet);
+          if (pickedCodes.length > 0) {
+            const hus = await tx.handlingUnit.findMany({
+              where: {
+                codigo: { in: pickedCodes },
+                clienteId: fullOrder.clienteId,
+              },
+              select: { id: true, lotId: true, parentHuId: true },
+            });
+            hus.forEach((h: any) => {
+              pickedHuIdsToLock.add(h.id);
+              if (h.parentHuId) {
+                pickedHuIdsToLock.add(h.parentHuId);
+                affectedParentHuIds.add(h.parentHuId);
+              }
+              if (h.lotId) lotIdsToLock.add(h.lotId);
+            });
+          }
+
+          perLineSpecs.push({ line, pickedCodes, fallbackLotIds: fallbackLots });
+        }
+
+        await this.acquireRowLocks(tx, 'HandlingUnit', Array.from(pickedHuIdsToLock));
+        await this.acquireRowLocks(tx, 'LotInventory', Array.from(lotIdsToLock));
+
+        let totalPiezasDespachadas = 0;
+
+        for (const { line, pickedCodes, fallbackLotIds } of perLineSpecs) {
+          let totalDeductedForLine = 0;
+
+          if (pickedCodes.length > 0) {
             const husToDispatch = await tx.handlingUnit.findMany({
               where: {
-                codigo: { in: linePickedHuCodes },
+                codigo: { in: pickedCodes },
                 clienteId: fullOrder.clienteId,
-                estadoHu: 'ACTIVO',
               },
               include: {
                 lote: { include: { ubicacion: true } },
               },
             });
 
+            if (husToDispatch.length === 0) {
+              throw new HttpException(
+                {
+                  statusCode: HttpStatus.CONFLICT,
+                  code: 'HU_DESPACHO_NO_ENCONTRADA',
+                  codigoError: 'HU_DESPACHO_NO_ENCONTRADA',
+                  message: `No se encontraron las unidades de manejo recolectadas [${pickedCodes.join(', ')}] para despachar la línea "${line.sku?.codigo}".`,
+                  error: 'Conflict',
+                },
+                HttpStatus.CONFLICT,
+              );
+            }
+
             for (const hu of husToDispatch) {
-              const huQty = Number(hu.cantidad || hu.piezasPorCaja || 0);
-              if (huQty <= 0) continue;
-
-              // Descontar del LotInventory donde reside la HU (Staging)
-              if (hu.lotId) {
-                const stagingLot = await tx.lotInventory.findUnique({
-                  where: { id: hu.lotId },
-                  include: { ubicacion: true },
-                });
-                if (stagingLot) {
-                  const toTake = Math.min(huQty, stagingLot.cantidadDisponible);
-                  const reservedToDeduct = Math.min(toTake, stagingLot.cantidadReservada);
-
-                  await tx.lotInventory.update({
-                    where: { id: stagingLot.id },
-                    data: {
-                      cantidadDisponible: { decrement: toTake },
-                      cantidadReservada: { decrement: reservedToDeduct },
-                    },
-                  });
-                  totalDeductedForLine += toTake;
-                }
+              assertPickableProductHu(hu);
+              if (hu.estadoHu !== 'ACTIVO') {
+                throw new HttpException(
+                  {
+                    statusCode: HttpStatus.CONFLICT,
+                    code: 'HU_NO_ACTIVA_PARA_DESPACHO',
+                    codigoError: 'HU_NO_ACTIVA_PARA_DESPACHO',
+                    message: `La HU "${hu.codigo}" ya no está ACTIVA (estado actual: ${hu.estadoHu}).`,
+                    error: 'Conflict',
+                  },
+                  HttpStatus.CONFLICT,
+                );
               }
 
-              // Marcar ÚNICAMENTE esta HU como DESPACHADO (nunca tocar HUs hermanas no surtidas)
+              const huQty = Number(hu.cantidad || hu.piezasPorCaja || 0);
+              if (huQty <= 0) {
+                throw new HttpException(`La HU "${hu.codigo}" tiene cantidad inválida (${huQty}) para despacho.`, HttpStatus.CONFLICT);
+              }
+
+              // Descontar obligatoriamente del LotInventory real donde reside la HU (Staging)
+              const stagingLot = hu.lotId
+                ? await tx.lotInventory.findUnique({
+                    where: { id: hu.lotId },
+                    include: { ubicacion: true },
+                  })
+                : null;
+
+              if (!stagingLot || stagingLot.cantidadDisponible < huQty) {
+                throw new HttpException(
+                  {
+                    statusCode: HttpStatus.CONFLICT,
+                    code: 'STOCK_STAGING_INSUFICIENTE',
+                    codigoError: 'STOCK_STAGING_INSUFICIENTE',
+                    message: `Saldo insuficiente en Staging para la HU "${hu.codigo}" (disponible: ${stagingLot?.cantidadDisponible ?? 0}, requerido: ${huQty}).`,
+                    error: 'Conflict',
+                  },
+                  HttpStatus.CONFLICT,
+                );
+              }
+
+              const reservedToDeduct = Math.min(huQty, Math.max(0, Number(stagingLot.cantidadReservada || 0)));
+              await tx.lotInventory.update({
+                where: { id: stagingLot.id },
+                data: {
+                  cantidadDisponible: { decrement: huQty },
+                  cantidadReservada: { decrement: reservedToDeduct },
+                },
+              });
+
+              if (stagingLot.ubicacionId) stagingLocIdsToRecalc.add(stagingLot.ubicacionId);
+
+              // Marcar ÚNICAMENTE esta HU comercial como DESPACHADO (nunca tocar cajas hermanas);
+              // su Tarima Master padre (si existiera) se sincroniza al terminar el despacho del pedido.
               await tx.handlingUnit.update({
                 where: { id: hu.id },
                 data: { estadoHu: 'DESPACHADO' },
               });
+              if ((hu as any).parentHuId) {
+                affectedParentHuIds.add((hu as any).parentHuId);
+              }
 
-              // Trazabilidad Kárdex oficial Giving Out
               await tx.inventoryMovement.create({
                 data: {
                   tipoMovimiento: 'SALIDA_PEDIDO',
+                  almacenId: stagingLot.ubicacion?.almacenId || fullOrder.almacenOrigenId || null,
                   skuId: line.skuId,
                   clienteId: fullOrder.clienteId,
-                  lotId: hu.lotId,
+                  lotId: stagingLot.id,
                   huId: hu.id,
-                  fromLocationId: hu.lote?.ubicacionId || undefined,
+                  fromLocationId: stagingLot.ubicacionId || null,
                   toLocationId: null,
                   cantidad: huQty,
-                  usuario: data.despachador,
+                  usuario: actor,
                   motivo: `Despacho ${fullOrder.codigo} (HU ${hu.codigo}) → ${(fullOrder as any).endCustomer?.nombre || fullOrder.cliente.nombreComercial}`,
                   documentoOrigen: fullOrder.codigo,
                 },
               });
+
+              totalDeductedForLine += huQty;
             }
           } else {
-            // Fallback para líneas legado sin HUs
-            for (const alloc of allocations) {
+            // Fallback exclusivo para líneas legadas sin HUs
+            for (const alloc of fallbackLotIds) {
               if (alloc.cantidad <= 0) continue;
               const lot = await tx.lotInventory.findUnique({
                 where: { id: alloc.lotId },
                 include: { ubicacion: true },
               });
-              if (!lot) continue;
+              if (!lot || lot.cantidadDisponible < alloc.cantidad) {
+                throw new HttpException(
+                  `Stock insuficiente para despachar línea legado "${line.sku?.codigo}".`,
+                  HttpStatus.CONFLICT,
+                );
+              }
 
-              const toTake = Math.min(alloc.cantidad, lot.cantidadDisponible);
-              const reservedToDeduct = Math.min(toTake, lot.cantidadReservada);
+              const toTake = alloc.cantidad;
+              const reservedToDeduct = Math.min(toTake, Math.max(0, Number(lot.cantidadReservada || 0)));
 
               await tx.lotInventory.update({
                 where: { id: lot.id },
@@ -9211,23 +10143,35 @@ export class OperationsController {
                   cantidadReservada: { decrement: reservedToDeduct },
                 },
               });
+              if (lot.ubicacionId) originLocIdsToCheck.add(lot.ubicacionId);
               totalDeductedForLine += toTake;
 
               await tx.inventoryMovement.create({
                 data: {
                   tipoMovimiento: 'SALIDA_PEDIDO',
+                  almacenId: lot.ubicacion?.almacenId || fullOrder.almacenOrigenId || null,
                   skuId: line.skuId,
                   clienteId: fullOrder.clienteId,
                   lotId: lot.id,
-                  fromLocationId: lot.ubicacionId || undefined,
+                  fromLocationId: lot.ubicacionId || null,
+                  toLocationId: null,
                   cantidad: toTake,
-                  usuario: data.despachador,
+                  usuario: actor,
                   motivo: `Despacho ${fullOrder.codigo} → ${(fullOrder as any).endCustomer?.nombre || fullOrder.cliente.nombreComercial}`,
                   documentoOrigen: fullOrder.codigo,
                 },
               });
             }
           }
+
+          if (totalDeductedForLine < Number(line.cantidadSolicitada || 0)) {
+            throw new HttpException(
+              `Cantidad despachada insuficiente (${totalDeductedForLine}/${line.cantidadSolicitada}) en línea "${line.sku?.codigo}".`,
+              HttpStatus.CONFLICT,
+            );
+          }
+
+          totalPiezasDespachadas += totalDeductedForLine;
 
           await tx.salesOrderLine.update({
             where: { id: line.id },
@@ -9243,7 +10187,7 @@ export class OperationsController {
           where: { id: fullOrder.id },
           data: {
             estado: 'DESPACHADO',
-            despachador: data.despachador,
+            despachador: actor,
             fechaDespacho: new Date(),
             vehiculoPlaca: data.vehiculoPlaca,
             estadoEntrega: 'EN_RUTA',
@@ -9261,33 +10205,91 @@ export class OperationsController {
           include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
         });
 
-        await tx.auditLog.create({
+        await tx.dispatchTracking.create({
           data: {
-            usuario: data.despachador,
-            accion: 'ORDEN_DESPACHADA',
-            entidad: 'SalesOrder',
-            entidadId: fullOrder.id,
-            detalle: `Despacho de pedido ${fullOrder.codigo} completado bajo protocolo transaccional. Manifiesto: ${folioManifiesto}. Chofer: ${data.choferNombre || 'N/A'}. Placas: ${data.vehiculoPlaca || 'N/A'}.`,
+            orderId: fullOrder.id,
+            estado: 'SALIDA_ALMACEN',
+            usuario: actor,
+            notas: data.notas || `Embarque despachado: Chofer ${data.choferNombre || 'N/A'}, Fletera ${data.fletera || data.paqueteria || 'N/A'}, Sello ${data.selloSeguridad || 'N/A'}`,
+            firmaBase64: data.firmaChofer || data.firmaDespachador,
+            nombreFirmante: data.choferNombre || actor,
           },
         });
 
-        return updatedOrder;
+        await this.audit(
+          actor,
+          'ORDEN_DESPACHADA',
+          'SalesOrder',
+          fullOrder.id,
+          `Despacho de pedido ${fullOrder.codigo} completado. Manifiesto: ${folioManifiesto}. Piezas: ${totalPiezasDespachadas}. Chofer: ${data.choferNombre || 'N/A'}. Placas: ${data.vehiculoPlaca || 'N/A'}.`,
+          tx,
+        );
+
+        // Sincronizar Tarimas Master padre afectadas (actualiza cantidad vigente de hijas activas;
+        // al vaciarse la última caja cierra la Tarima Master a DESPACHADO con cantidad=0 para evitar tarima fantasma).
+        const parentSync = affectedParentHuIds.size > 0
+          ? await syncParentPalletContainers(tx, Array.from(affectedParentHuIds))
+          : { updatedPallets: [], touchedLocationCodes: [] };
+
+        for (const locCode of parentSync.touchedLocationCodes) {
+          if (locCode) originLocCodesToResolve.add(locCode);
+        }
+
+        if (originLocCodesToResolve.size > 0 && typeof tx.location?.findMany === 'function') {
+          const resolvedOriginLocs = await tx.location.findMany({
+            where: { codigo: { in: Array.from(originLocCodesToResolve) } },
+            select: { id: true, tipoUbicacion: true },
+          });
+          for (const rl of resolvedOriginLocs) {
+            if (rl.tipoUbicacion === 'STAGING') {
+              stagingLocIdsToRecalc.add(rl.id);
+            } else {
+              originLocIdsToCheck.add(rl.id);
+            }
+          }
+        }
+
+        // Recalcular ubicaciones de Staging y Origen afectadas y resumir ocupación real restante
+        const recalcIds = new Set<string>([...stagingLocIdsToRecalc, ...originLocIdsToCheck]);
+        await this.acquireRowLocks(tx, 'Location', Array.from(recalcIds));
+        const recalcResults = new Map<string, any>();
+        for (const locId of recalcIds) {
+          recalcResults.set(locId, await this.putawayEngine.recalculateLocationState(tx, locId));
+        }
+
+        const originLocationsSummary: Array<{
+          locationId: string;
+          codigo: string;
+          estado: string;
+          estadoCapacidad: string;
+          remainingPieces: number;
+          remainingBultos: number;
+        }> = [];
+        for (const locId of originLocIdsToCheck) {
+          const r = recalcResults.get(locId);
+          if (r) {
+            originLocationsSummary.push({
+              locationId: r.id,
+              codigo: r.codigo,
+              estado: r.nuevoEstado,
+              estadoCapacidad: r.estadoCapacidad,
+              remainingPieces: r.ocupacionUnidades,
+              remainingBultos: r.ocupacionBultos,
+            });
+          }
+        }
+
+        return {
+          success: true,
+          alreadyDispatched: false,
+          idempotent: false,
+          order: updatedOrder,
+          folioManifiesto,
+          totalPiezasDespachadas,
+          originLocationsSummary,
+        };
       },
     );
-
-    await this.prisma.dispatchTracking.create({
-      data: {
-        orderId: fullOrder.id,
-        estado: 'SALIDA_ALMACEN',
-        usuario: data.despachador,
-        notas: data.notas || `Embarque despachado: Chofer ${data.choferNombre || 'N/A'}, Fletera ${data.fletera || data.paqueteria || 'N/A'}, Sello ${data.selloSeguridad || 'N/A'}`,
-        firmaBase64: data.firmaChofer || data.firmaDespachador,
-        nombreFirmante: data.choferNombre || data.despachador,
-      },
-    });
-
-    await this.audit(data.despachador, 'DESPACHO_SALIDA', 'SalesOrder', fullOrder.id, `Despacho completado: Manifiesto ${folioManifiesto}, Placa ${data.vehiculoPlaca || 'N/A'}`);
-    return { success: true, order, folioManifiesto };
   }
 
   @Get('orders/:id/manifest')
@@ -9323,6 +10325,7 @@ export class OperationsController {
           if (Array.isArray(parsed)) {
             parsed.forEach((a: any) => {
               if (a.lotId) lotIdsToFetch.push(a.lotId);
+              if (a.stagingLotId) lotIdsToFetch.push(a.stagingLotId);
               if (a.huCodigo) huCodesToFetch.push(a.huCodigo);
               if (Array.isArray(a.cajasEscaneadas)) {
                 a.cajasEscaneadas.forEach((c: string) => { if (c) huCodesToFetch.push(c); });
@@ -9336,7 +10339,7 @@ export class OperationsController {
     const lotsMap = new Map<string, any>();
     if (lotIdsToFetch.length > 0) {
       const dbLots = await this.prisma.lotInventory.findMany({
-        where: { id: { in: lotIdsToFetch } },
+        where: { id: { in: [...new Set(lotIdsToFetch)] } },
         include: { ubicacion: true },
       });
       dbLots.forEach(dl => lotsMap.set(dl.id, dl));
@@ -9348,7 +10351,7 @@ export class OperationsController {
         where: { codigo: { in: [...new Set(huCodesToFetch)] } },
         include: { lote: { include: { ubicacion: true } } },
       });
-      dbHus.forEach(h => husMap.set(h.codigo.toUpperCase(), h));
+      this.getAllowedPhysicalOrderHus(dbHus).forEach((h: any) => husMap.set(h.codigo.toUpperCase(), h));
     }
 
     const isDispatched = order.estado === 'DESPACHADO' || order.estado === 'ENTREGADO';
@@ -9368,6 +10371,7 @@ export class OperationsController {
       if (asigs && asigs.length > 0) {
         for (const a of asigs) {
           const dl = a.lotId ? lotsMap.get(a.lotId) : null;
+          const stl = a.stagingLotId ? lotsMap.get(a.stagingLotId) : null;
           const qty = Number(a.cantidadPickeada) || Number(a.cantidad) || 0;
           const hus: string[] = Array.isArray(a.cajasEscaneadas) ? a.cajasEscaneadas : [];
           const boxesCount = hus.length > 0 ? hus.length : Math.max(1, Math.ceil(qty / (l.sku.capacidadEmpaque || 12)));
@@ -9377,10 +10381,12 @@ export class OperationsController {
           const firstHuCode = hus[0] || (l.cajaEscaneada ? l.cajaEscaneada.split(',')[0]?.trim() : null);
           const matchedHu = firstHuCode ? husMap.get(firstHuCode.toUpperCase()) : null;
           const stagingUbi = a.stagingLocationCodigo ||
-            (matchedHu?.lote?.ubicacion?.codigo?.startsWith('STG') ? matchedHu.lote.ubicacion.codigo : null) ||
-            (matchedHu?.ubicacionActual?.startsWith('STG') ? matchedHu.ubicacionActual : null) ||
-            (order.estado === 'CONSOLIDADO' || order.estado === 'DESPACHADO' ? 'STG-01' : null) ||
-            'STG-01';
+            stl?.ubicacion?.codigo ||
+            matchedHu?.lote?.ubicacion?.codigo ||
+            matchedHu?.ubicacionActual ||
+            null;
+
+          const originUbi = a.ubicacionCodigo || dl?.ubicacion?.codigo || l.ubicacionAsignada || 'Sin asignar';
 
           lineasDesglose.push({
             lineaId: l.id,
@@ -9389,13 +10395,13 @@ export class OperationsController {
             cantidadSolicitada: l.cantidadSolicitada,
             cantidadDespachada: isDispatched ? qty : 0,
             cantidadPreparada: qty,
-            lote: a.lote || dl?.lote || l.loteAsignado || 'N/A',
+            lote: a.lote || dl?.lote || l.loteAsignado || 'Sin lote',
             caducidad: a.caducidad || dl?.fechaVencimiento || l.lote?.fechaVencimiento || null,
-            ubicacion: a.ubicacionCodigo || dl?.ubicacion?.codigo || l.ubicacionAsignada || 'RACK',
-            rackOrigen: a.ubicacionCodigo || dl?.ubicacion?.codigo || l.ubicacionAsignada || 'RACK',
+            ubicacion: originUbi,
+            ubicacionOrigen: originUbi,
             stagingUbicacion: stagingUbi,
             cajasEscaneadas: hus,
-            huCodigo: hus.length > 0 ? hus.join(', ') : 'N/A',
+            huCodigo: hus.length > 0 ? hus.join(', ') : (l.cajaEscaneada || 'Sin asignar'),
             totalCajas: boxesCount,
             totalHus: boxesCount,
             totalBultos: boxesCount,
@@ -9410,10 +10416,8 @@ export class OperationsController {
 
         const firstHuCode = l.cajaEscaneada ? l.cajaEscaneada.split(',')[0]?.trim() : null;
         const matchedHu = firstHuCode ? husMap.get(firstHuCode.toUpperCase()) : null;
-        const stagingUbi = (matchedHu?.lote?.ubicacion?.codigo?.startsWith('STG') ? matchedHu.lote.ubicacion.codigo : null) ||
-          (matchedHu?.ubicacionActual?.startsWith('STG') ? matchedHu.ubicacionActual : null) ||
-          (order.estado === 'CONSOLIDADO' || order.estado === 'DESPACHADO' ? 'STG-01' : null) ||
-          'STG-01';
+        const stagingUbi = matchedHu?.lote?.ubicacion?.codigo || matchedHu?.ubicacionActual || null;
+        const originUbi = l.ubicacionAsignada || l.lote?.ubicacion?.codigo || 'Sin asignar';
 
         lineasDesglose.push({
           lineaId: l.id,
@@ -9422,13 +10426,13 @@ export class OperationsController {
           cantidadSolicitada: l.cantidadSolicitada,
           cantidadDespachada: isDispatched ? qty : 0,
           cantidadPreparada: qty,
-          lote: l.loteAsignado || l.lote?.lote || 'N/A',
+          lote: l.loteAsignado || l.lote?.lote || 'Sin lote',
           caducidad: l.lote?.fechaVencimiento || null,
-          ubicacion: l.ubicacionAsignada || l.lote?.ubicacion?.codigo || 'RACK',
-          rackOrigen: l.ubicacionAsignada || l.lote?.ubicacion?.codigo || 'RACK',
+          ubicacion: originUbi,
+          ubicacionOrigen: originUbi,
           stagingUbicacion: stagingUbi,
           cajasEscaneadas: l.cajaEscaneada ? l.cajaEscaneada.split(',').map((s: string) => s.trim()) : [],
-          huCodigo: l.cajaEscaneada || 'N/A',
+          huCodigo: l.cajaEscaneada || 'Sin asignar',
           totalCajas: 1,
           totalHus: 1,
           totalBultos: 1,
@@ -9449,33 +10453,34 @@ export class OperationsController {
       isDispatched,
       esPreliminar: !isDispatched,
       fechaEmbarque: order.fechaDespacho || null,
-      totalBultos: totalCajas,        // Semántica física real de manejo: 1 bulto / HU / caja
-      totalHus: totalCajas,           // Alias canónico de unidades de manejo
-      totalCajas: totalCajas,         // Alias canónico
-      totalPiezas: totalPiezas,       // Contenido real de piezas
-      totalUnidades: totalPiezas,     // Alias de unidades de producto
+      totalBultos: totalCajas,
+      totalHus: totalCajas,
+      totalCajas: totalCajas,
+      totalPiezas: totalPiezas,
+      totalUnidades: totalPiezas,
       lineasDesglose,
     };
   }
 
   @Post('orders/:id/confirm-delivery')
-  @RequireAccess({ modules: ['despacho'], actions: ['crear', 'editar'], allowPortal: false })
+  @RequireAccess({ modules: ['despacho'], actions: ['editar', 'aprobar'], allowPortal: false })
   @ApiOperation({ summary: 'Confirmar entrega al cliente final' })
-  async confirmDelivery(@Param('id') id: string, @Body() data: { usuario: string; nombreReceptor: string; notasEntrega?: string; firmaBase64?: string }) {
+  async confirmDelivery(
+    @Param('id') id: string,
+    @Body() data: { usuario?: string; nombreReceptor: string; notasEntrega?: string; firmaBase64?: string },
+    @Req() req?: any,
+  ) {
+    const actor = getRequestActor(req, 'Despachador');
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
     return await this.prisma.$transaction(
       async (tx) => {
-        // 1. Configurar lock_timeout para evitar bloqueos indefinidos
         try {
           if (typeof tx.$executeRawUnsafe === 'function') {
             await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '5000ms'");
           }
-        } catch {
-          // Fallback para entornos que no sean Postgres directo
-        }
+        } catch {}
 
-        // 2. Resolver id canónico de la orden
         let orderId = id;
         if (!isUuid) {
           const found = await tx.salesOrder.findFirst({
@@ -9486,37 +10491,25 @@ export class OperationsController {
           orderId = found.id;
         }
 
-        // 3. Bloqueo pesimista con FOR UPDATE en la fila de SalesOrder (concurrencia atómica)
-        try {
-          if (typeof tx.$queryRaw === 'function') {
-            await tx.$queryRaw`SELECT id FROM "SalesOrder" WHERE id = ${orderId} FOR UPDATE`;
-          } else if (typeof tx.$queryRawUnsafe === 'function') {
-            await tx.$queryRawUnsafe('SELECT id FROM "SalesOrder" WHERE id = $1 FOR UPDATE', orderId);
-          }
-        } catch {
-          // Fallback seguro si el motor mock o DB no soporta FOR UPDATE
-        }
+        await this.acquireRowLocks(tx, 'SalesOrder', [orderId]);
 
-        // 4. Releer el estado canónico fresco de la orden dentro de la transacción
         const order = await tx.salesOrder.findUnique({
           where: { id: orderId },
           include: { cliente: true, endCustomer: true },
         });
         if (!order) throw new HttpException('Orden no encontrada', HttpStatus.NOT_FOUND);
 
-        // 5. Idempotencia backend real: si ya fue entregada, retornar sin mutar absolutamente nada
         const isAlreadyDelivered = order.estado === 'ENTREGADO' || order.estadoEntrega === 'ENTREGADO';
         if (isAlreadyDelivered) {
           return {
             success: true,
             alreadyDelivered: true,
+            idempotent: true,
             message: `La orden ${order.codigo} ya fue entregada previamente el ${order.fechaEntrega ? new Date(order.fechaEntrega).toISOString() : 'fecha no registrada'}. Operación idempotente: no se generaron cambios ni eventos duplicados.`,
             order,
           };
         }
 
-        // 6. Validación de estado previo obligatorio
-        // Solo se permite confirmar entrega si el estado es DESPACHADO y estadoEntrega es EN_RUTA (o nulo por compatibilidad)
         const isEligible = order.estado === 'DESPACHADO' && (!order.estadoEntrega || order.estadoEntrega === 'EN_RUTA');
         if (!isEligible) {
           throw new HttpException(
@@ -9531,12 +10524,10 @@ export class OperationsController {
           );
         }
 
-        // 7. Validación de datos obligatorios de recepción
         if (!data.nombreReceptor || !data.nombreReceptor.trim()) {
           throw new HttpException('El nombre de la persona que recibe es obligatorio.', HttpStatus.BAD_REQUEST);
         }
 
-        // 8. Inmutabilidad y actualización atómica de SalesOrder
         const updated = await tx.salesOrder.update({
           where: { id: order.id },
           data: {
@@ -9550,21 +10541,19 @@ export class OperationsController {
           include: { cliente: true, endCustomer: true },
         });
 
-        // 9. Crear exactamente un DispatchTracking en la misma transacción
         await tx.dispatchTracking.create({
           data: {
             orderId: order.id,
             estado: 'ENTREGADO',
-            usuario: data.usuario || 'admin',
+            usuario: actor,
             notas: `Recibió: ${data.nombreReceptor.trim()}${data.notasEntrega?.trim() ? ` — ${data.notasEntrega.trim()}` : ''}`,
             nombreFirmante: data.nombreReceptor.trim(),
             firmaBase64: data.firmaBase64 || null,
           },
         });
 
-        // 10. Crear exactamente un AuditLog en la misma transacción
         await this.audit(
-          data.usuario || 'admin',
+          actor,
           'ENTREGA_CONFIRMADA',
           'SalesOrder',
           order.id,

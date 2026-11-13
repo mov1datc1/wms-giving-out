@@ -78,10 +78,8 @@ export function NewOrderModal({
         const clientList = await cRes.json();
         setClients(clientList);
         if (clientList.length > 0) {
-          // Preseleccionar AlimNorte o el primero
-          const preferred = clientList.find((c: any) => c.codigo === 'DEP-ALIMENTOS-01') || clientList[0];
-          setClienteId(preferred.id);
-          await loadClientContext(preferred.id);
+          setClienteId(clientList[0].id);
+          await loadClientContext(clientList[0].id);
         }
       }
 
@@ -110,16 +108,15 @@ export function NewOrderModal({
       if (ecRes.ok) {
         const ecData = await ecRes.json();
         setEndCustomers(ecData);
-        // Preseleccionar Walmart si existe
-        const walmart = ecData.find((ec: any) => ec.nombre.toLowerCase().includes('walmart'));
-        setEndCustomerId(walmart ? walmart.id : ecData[0]?.id || '');
+        setEndCustomerId(ecData[0]?.id || '');
       }
 
       if (skuRes.ok) {
         const skuData = await skuRes.json();
         setSkus(skuData);
         if (skuData.length > 0) {
-          setLines([{ skuId: skuData[0].id, cantidadSolicitada: 10 }]);
+          const defaultPack = Number(skuData[0]?.capacidadEmpaque || 1);
+          setLines([{ skuId: skuData[0].id, cantidadSolicitada: defaultPack > 1 ? defaultPack : 1 }]);
         }
       }
 
@@ -193,7 +190,7 @@ export function NewOrderModal({
       return;
     }
     if (!endCustomerId) {
-      setErrorMsg('Debe seleccionar el cliente final de destino (ej. Walmart).');
+      setErrorMsg('Debe seleccionar el cliente final de destino.');
       return;
     }
 
@@ -319,7 +316,7 @@ export function NewOrderModal({
                 Nuevo Pedido de Salida (Retail / Cliente Final)
               </h2>
               <p style={{ margin: 0, fontSize: 12, color: '#64748B' }}>
-                Reserva inmediata de stock disponible con resguardo del inventario físico en racks.
+                Reserva inmediata de stock disponible con resguardo del inventario físico en almacén.
               </p>
             </div>
           </div>
@@ -517,7 +514,7 @@ export function NewOrderModal({
                   <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#64748B' }}>
                     <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>Producto (SKU)</th>
                     <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, width: 140 }}>
-                      Stock en Racks
+                      Stock en Almacén
                     </th>
                     <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, width: 130 }}>
                       Cantidad Solicitada
@@ -628,7 +625,7 @@ export function NewOrderModal({
             <div style={{ fontSize: 12, color: '#134E4A', lineHeight: 1.4 }}>
               <strong>Mecanismo de Reserva Inmediata (Giving Out 3PL):</strong> Al confirmar el pedido, el stock
               disponible libre para venta se reducirá instantáneamente para evitar sobreventas cruzadas. Las existencias
-              físicas en racks permanecerán intactas hasta que el surtidor las baje y se confirme el despacho formal.
+              físicas en piso y almacenamiento permanecerán intactas hasta que el surtidor las baje y se confirme el despacho formal.
             </div>
           </div>
 
@@ -641,7 +638,7 @@ export function NewOrderModal({
               type="text"
               value={notas}
               onChange={e => setNotas(e.target.value)}
-              placeholder="Ej. Cita Walmart programada 9:00 hrs. Solicita entrega en tarimas estándar."
+              placeholder="Ej. Cita programada 09:00 hrs. Solicita entrega en tarimas estándar."
               style={{
                 width: '100%',
                 padding: '8px 12px',

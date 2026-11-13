@@ -10,12 +10,18 @@ import {
 import { DispatchManifestModal } from '../components/DispatchManifestModal';
 import { useNavigate } from 'react-router-dom';
 import { checkCitaVencida } from '../utils/order-sla.util';
+import { formatCalendarDate } from '../utils/dateUtils';
 
 export function Picking() {
-  const { token, user } = useAuth();
+  const { token, user, hasActionPermission } = useAuth();
+  const canExecutePicking =
+    hasActionPermission('picking', 'crear') || hasActionPermission('picking', 'editar');
+  const canDispatch =
+    hasActionPermission('despacho', 'editar') || hasActionPermission('despacho', 'aprobar');
   const navigate = useNavigate();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'queue' | 'active' | 'done'>('active');
 
@@ -59,7 +65,7 @@ export function Picking() {
     'Content-Type': 'application/json',
   };
 
-  const currentUserEmail = user?.email || 'surtidor1@givingout.com';
+  const currentUserEmail = user?.email || user?.nombre || 'Surtidor autenticado';
 
   useEffect(() => {
     loadData();
@@ -67,6 +73,7 @@ export function Picking() {
 
   async function loadData() {
     setLoading(true);
+    setErrorMsg(null);
     try {
       const res = await fetch(`${API}/orders`, { headers });
       if (res.ok) {
@@ -75,9 +82,13 @@ export function Picking() {
           ['APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado)
         );
         setOrders(filtered);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setErrorMsg(err.message || `Error HTTP ${res.status} al cargar cola de picking.`);
       }
     } catch (err) {
       console.error(err);
+      setErrorMsg('No se pudo conectar con el servidor para cargar los pedidos de picking.');
     }
     setLoading(false);
   }
@@ -95,6 +106,11 @@ export function Picking() {
 
   // Regla de oro: 1 pedido por surtidor & Carga Inmediata (<10ms)
   async function handleStartPicking(order: any, force = false) {
+    if (!canExecutePicking) {
+      setErrorMsg('No tienes permisos operativos para iniciar o ejecutar picking.');
+      return;
+    }
+    setErrorMsg(null);
     const tStart = performance.now();
     // Si ya está asignado al surtidor actual y en EN_PICKING, abrir modal inmediatamente sin bloqueos
     if (order.surtidor === currentUserEmail && order.estado === 'EN_PICKING') {
@@ -111,7 +127,11 @@ export function Picking() {
         body: JSON.stringify({ surtidor: currentUserEmail, forzarReasignacion: force }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErrorMsg(data.message || `No se pudo iniciar el picking (HTTP ${res.status}).`);
+        return;
+      }
       if (!data.success && data.requiereConfirmacion) {
         setTakeoverDialog({ message: data.mensaje, order });
         return;
@@ -122,9 +142,9 @@ export function Picking() {
       const ms = Math.round(performance.now() - tStart);
       console.log(`[Picking] Terminal de surtido abierta en ${ms}ms tras start-picking`);
       loadData();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error al iniciar picking:', err);
-      openTerminal(order);
+      setErrorMsg(err?.message || 'Error de conexión al iniciar el surtido.');
     }
   }
 
@@ -159,8 +179,8 @@ export function Picking() {
           id: `${line.id}-0`,
           lineId: line.id,
           sku: line.sku,
-          ubicacionCodigo: (line.ubicacionAsignada || line.lote?.ubicacion?.codigo || 'A01-R01-N1').trim(),
-          loteCodigo: (line.loteAsignado || line.lote?.lote || 'LOTE-DEFAULT').trim(),
+          ubicacionCodigo: (line.ubicacionAsignada || line.lote?.ubicacion?.codigo || 'Sin asignar').trim(),
+          loteCodigo: (line.loteAsignado || line.lote?.lote || 'Sin lote').trim(),
           lotId: line.lotId,
           cantidadObjetivo: solicitada,
           cantidadPickeada: realLinePicked,
@@ -168,11 +188,11 @@ export function Picking() {
           cajasEscaneadas: existingBoxes,
         });
       } else {
-        // Desglose por ubicación de asignación (ej. B01: 12 pzs, B02: 12 pzs)
+        // Desglose por ubicación de asignación
         parsedAllocs.forEach((alloc: any, aIdx: number) => {
           const objQty = Number(alloc.cantidad) || 0;
-          const allocLoc = (alloc.ubicacionCodigo || line.ubicacionAsignada || 'B01-R01-N1').trim();
-          const allocLot = (alloc.lote || line.loteAsignado || 'LOTE').trim();
+          const allocLoc = (alloc.ubicacionCodigo || line.ubicacionAsignada || 'Sin asignar').trim();
+          const allocLot = (alloc.lote || line.loteAsignado || 'Sin lote').trim();
 
           // 1. Obtener cantidad recolectada específica de la asignación persistida
           let taskPicked = 0;
@@ -670,13 +690,39 @@ export function Picking() {
           <div className="search-box">
             <Search size={16} />
             <input
-              placeholder="Buscar por folio, cliente depositante o destino (Walmart, etc.)..."
+              placeholder="Buscar por folio, cliente depositante o destino final..."
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
           </div>
         </div>
       </div>
+
+      {errorMsg && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '12px 16px',
+            borderRadius: 8,
+            background: 'rgba(239,68,68,0.1)',
+            border: '1px solid var(--error)',
+            color: 'var(--error)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={16} /> {errorMsg}
+          </span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setErrorMsg(null)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Orders List */}
       {loading ? (
@@ -723,12 +769,12 @@ export function Picking() {
                     </div>
 
                     <div style={{ display: 'flex', gap: 8 }}>
-                      {o.estado === 'APROBADO' && (
+                      {o.estado === 'APROBADO' && canExecutePicking && (
                         <button className="btn btn-primary" onClick={() => handleStartPicking(o)}>
                           <PlayCircle size={16} /> Tomar Pedido & Surtir
                         </button>
                       )}
-                      {o.estado === 'EN_PICKING' && (
+                      {o.estado === 'EN_PICKING' && canExecutePicking && (
                         <button
                           className={`btn ${isMyOrder ? 'btn-warning' : 'btn-secondary'}`}
                           onClick={() => handleStartPicking(o)}
@@ -737,20 +783,28 @@ export function Picking() {
                         </button>
                       )}
                       {o.estado === 'CONSOLIDADO' && (
-                        <div style={{ display: 'flex', gap: 8 }}>
-                          <button
-                            className="btn btn-success"
-                            onClick={() => setManifestOrderId(o.id)}
-                            style={{ fontWeight: 700 }}
-                          >
-                            <FileText size={15} /> Manifiesto de Salida
-                          </button>
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => navigate('/dispatch')}
-                          >
-                            <Truck size={14} /> Rampa de Salida
-                          </button>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          {canDispatch ? (
+                            <>
+                              <button
+                                className="btn btn-success"
+                                onClick={() => setManifestOrderId(o.id)}
+                                style={{ fontWeight: 700 }}
+                              >
+                                <FileText size={15} /> Manifiesto de Salida
+                              </button>
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => navigate('/dispatch')}
+                              >
+                                <Truck size={14} /> Rampa de Salida
+                              </button>
+                            </>
+                          ) : (
+                            <span className="badge badge-success" style={{ fontSize: 12, padding: '6px 10px' }}>
+                              <CheckCircle2 size={14} /> Consolidado en Staging · Listo para Despacho
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -777,7 +831,7 @@ export function Picking() {
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                             <Clock size={13} />
-                            Cita: {new Date(o.fechaCompromiso).toLocaleDateString('es-MX')} {o.horaCompromiso ? `(${o.horaCompromiso})` : ''}
+                            Cita: {formatCalendarDate(o.fechaCompromiso, 'Sin fecha')} {o.horaCompromiso ? `(${o.horaCompromiso})` : ''}
                           </span>
                           {sla.isVencida && (
                             <span
@@ -859,7 +913,7 @@ export function Picking() {
                     Terminal de Surtido — {activeOrder.codigo}
                   </h2>
                   <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: '2px 0 0 0' }}>
-                    Destino: <strong style={{ color: 'var(--text-primary)' }}>{activeOrder.endCustomer?.nombre || activeOrder.cliente?.nombreComercial}</strong> · Carrito / Pallet Activo #1
+                    Destino: <strong style={{ color: 'var(--text-primary)' }}>{activeOrder.endCustomer?.nombre || activeOrder.cliente?.nombreComercial}</strong> · Surtido en Almacén
                   </p>
                 </div>
               </div>
@@ -906,7 +960,7 @@ export function Picking() {
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>Cita de Entrega</div>
                   <div style={{ fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     <span>
-                      {activeOrder.fechaCompromiso ? new Date(activeOrder.fechaCompromiso).toLocaleDateString('es-MX') : 'Inmediata'}{' '}
+                      {formatCalendarDate(activeOrder.fechaCompromiso, 'Inmediata')}{' '}
                       {activeOrder.horaCompromiso ? `(${activeOrder.horaCompromiso})` : ''}
                     </span>
                     {(() => {
@@ -1264,17 +1318,29 @@ export function Picking() {
               {(() => {
                 // Caso A: Todas las paradas completas al 100%
                 if (allLinesComplete && pickingLines.length > 0 && pickingLines.every(l => l.completo && l.cantidadPickeada >= l.cantidadObjetivo && l.cantidadObjetivo > 0)) {
+                  if (canDispatch) {
+                    return (
+                      <button
+                        className="btn btn-success"
+                        style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
+                        onClick={() => {
+                          setManifestOrderId(activeOrder.id);
+                          setActiveOrder(null);
+                        }}
+                      >
+                        <CheckCircle2 size={16} />
+                        Surtido al 100% — Proceder a Manifiesto de Despacho
+                      </button>
+                    );
+                  }
                   return (
                     <button
                       className="btn btn-success"
                       style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
-                      onClick={() => {
-                        setManifestOrderId(activeOrder.id);
-                        setActiveOrder(null);
-                      }}
+                      onClick={closeTerminal}
                     >
                       <CheckCircle2 size={16} />
-                      Surtido al 100% — Proceder a Manifiesto de Despacho
+                      Surtido al 100% — Pedido Consolidado en Staging
                     </button>
                   );
                 }

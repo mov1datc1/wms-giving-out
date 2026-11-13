@@ -12,6 +12,7 @@ import {
 } from './dto/client.dto';
 import { classifyLocationOperationalRole } from '../../common/location-classifier.util';
 import { evaluateInventoryItemOperationalState, isExpired } from '../../common/inventory-operational-state.util';
+import { filterEffectiveActiveHus } from '../../common/hu-classification.util';
 
 @ApiTags('Depositantes')
 @Controller('api/clients')
@@ -98,13 +99,14 @@ export class ClientsController {
           estadoHu: 'ACTIVO',
           ...(req?.user?.clienteId ? { clienteId: req.user.clienteId } : {}),
         },
-        select: { id: true, clienteId: true, parentHuId: true, tipoHu: true },
+        select: { id: true, codigo: true, clienteId: true, parentHuId: true, tipoHu: true, uom: true, lotId: true, skuCodigo: true, cantidad: true },
       }),
     ]);
 
+    const effectiveActiveHus = filterEffectiveActiveHus(activeHus as any[]);
     const palletsByClient: Record<string, Set<string>> = {};
     const boxesByClient: Record<string, number> = {};
-    for (const hu of activeHus as any[]) {
+    for (const hu of effectiveActiveHus as any[]) {
       if (!hu.clienteId) continue;
       if (!palletsByClient[hu.clienteId]) palletsByClient[hu.clienteId] = new Set<string>();
       palletsByClient[hu.clienteId].add(hu.parentHuId || hu.id);
@@ -158,16 +160,18 @@ export class ClientsController {
       }),
       this.prisma.handlingUnit.findMany({
         where: { clienteId: id, estadoHu: 'ACTIVO' },
-        select: { id: true, parentHuId: true, tipoHu: true },
+        select: { id: true, codigo: true, parentHuId: true, tipoHu: true, uom: true, lotId: true, skuCodigo: true, cantidad: true },
       }),
     ]);
     if (!client) throw new HttpException('Depositante no encontrado', HttpStatus.NOT_FOUND);
 
     // Contar tarimas físicas reales agrupando cajas hijas bajo su Tarima Master padre (parentHuId)
+    // y excluyendo contenedores vacíos sin hijas comerciales activas
+    const effectiveActiveHus = filterEffectiveActiveHus(activeHus as any[]);
     const physicalPalletsCount = new Set(
-      activeHus.map((h: any) => h.parentHuId || h.id).filter(Boolean),
+      effectiveActiveHus.map((h: any) => h.parentHuId || h.id).filter(Boolean),
     ).size;
-    const activeBoxesCount = activeHus.filter((h: any) => h.tipoHu === 'CAJA').length;
+    const activeBoxesCount = effectiveActiveHus.filter((h: any) => h.tipoHu === 'CAJA').length;
 
     return {
       ...client,

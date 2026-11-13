@@ -59,19 +59,32 @@ export function checkCitaVencida(
     };
   }
 
-  const dComp = new Date(fechaCompromiso);
-  if (isNaN(dComp.getTime())) {
-    return {
-      isVencida: false,
-      diasAtraso: 0,
-      badgeTexto: '',
-      alertaTerminal: '',
-      alertaDetallada: '',
-    };
+  // Extraer YYYY-MM-DD canónico sin conversión UTC → local (evita desfase -1 día en UTC-6)
+  const rawStr = typeof fechaCompromiso === 'string'
+    ? fechaCompromiso.trim()
+    : fechaCompromiso instanceof Date
+    ? fechaCompromiso.toISOString()
+    : String(fechaCompromiso);
+  const ymdMatch = rawStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+  let compDay: number;
+  if (ymdMatch) {
+    const [, yStr, mStr, dStr] = ymdMatch;
+    compDay = new Date(Number(yStr), Number(mStr) - 1, Number(dStr)).getTime();
+  } else {
+    const dComp = new Date(fechaCompromiso);
+    if (isNaN(dComp.getTime())) {
+      return {
+        isVencida: false,
+        diasAtraso: 0,
+        badgeTexto: '',
+        alertaTerminal: '',
+        alertaDetallada: '',
+      };
+    }
+    compDay = new Date(dComp.getUTCFullYear(), dComp.getUTCMonth(), dComp.getUTCDate()).getTime();
   }
 
-  // Normalizar a día calendario YYYY-MM-DD
-  const compDay = new Date(dComp.getFullYear(), dComp.getMonth(), dComp.getDate()).getTime();
   const todayDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate()).getTime();
 
   const diffMs = todayDay - compDay;
