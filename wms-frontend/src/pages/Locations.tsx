@@ -3018,7 +3018,7 @@ function PhysicalWarehouseMap({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
                 <span style={{ color: '#64748B' }}>Capacidad Física:</span>
-                <strong style={{ color: '#0F172A' }}>1 Tarima Estándar (1/1)</strong>
+                <strong style={{ color: '#0F172A' }}>1 Tarima Estándar (Capacidad: 1)</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: 6, borderBottom: '1px solid #F1F5F9' }}>
                 <span style={{ color: '#64748B' }}>Accesibilidad:</span>
@@ -3079,7 +3079,7 @@ function PhysicalWarehouseMap({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#64748B' }}>Estado Físico:</span>
                   <span style={{ fontSize: 11, fontWeight: 800, color: selectedLiveLocation.estado === 'LIBRE' ? '#166534' : '#991B1B' }}>
-                    {selectedLiveLocation.estado || 'LIBRE'}
+                    {selectedLiveLocation.estado === 'LIBRE' ? 'LIBRE (0/1 ocupadas)' : `${selectedLiveLocation.estado || 'OCUPADA'} (1/1 ocupada)`}
                   </span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

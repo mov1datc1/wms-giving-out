@@ -853,6 +853,46 @@ npm run build          # Build completo
 
 ---
 
+## 19. Actualización Bloque 4 RC — Confirmación de Entrega E2E y Cierre de Ciclo Logístico
+
+**Estado:** Certificado al 100% en base de datos real y frontend sobre `fix/rc-block4-delivery-e2e` (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`).
+
+### 19.1 Flujo Operativo y Hardening de Entrega (`confirmDelivery`)
+1. **Transición Canónica a `ENTREGADO` (`POST /api/orders/:id/confirm-delivery`):**
+   - Transacción atómica `$transaction` con bloqueo de fila `SELECT ... FOR UPDATE` sobre `SalesOrder`.
+   - Exige que la orden esté previamente despachada (`estado === 'DESPACHADO'` y `estadoEntrega === 'EN_RUTA'`) y con registro existente en `DispatchTracking` (`409 Conflict` si no cumple).
+   - Promueve la orden a `estado = 'ENTREGADO'` y `estadoEntrega = 'ENTREGADO'`, registrando `fechaEntrega` inmutable y notas.
+   - Sincroniza `DispatchTracking.estado = 'ENTREGADO'`, completando la trazabilidad de última milla.
+2. **Actor Autenticado vs Receptor:**
+   - La identidad del operador responsable se extrae estrictamente desde el JWT verificado en `req.user` (`getRequestActor(req, 'Despachador')`), bloqueando inyecciones en payload.
+   - Soporta `recibidoPor` / `nombreReceptor` para asentar formalmente al receptor en destino (`Walmart México (CEDIS San Martín)` -> `RESPONSABLE QA CEDIS`).
+3. **Idempotencia y Auditoría:**
+   - Si la orden ya fue entregada, retorna HTTP 200 `{ alreadyDelivered: true, idempotent: true }` sin alterar `fechaEntrega` ni duplicar logs.
+   - Genera exactamente un registro de auditoría `ENTREGA_CONFIRMADA` en `AuditLog`.
+4. **Preservación de Invariantes de Almacén:**
+   - La entrega ocurre fuera del almacén físico: **no genera movimientos en Kárdex** (`InventoryMovement` = 6 movimientos exactos).
+   - No modifica `LotInventory`, reservas, bloqueos ni ubicaciones físicas.
+
+### 19.2 Resultados E2E Certificados en Operación Real
+* **`PED-QA-E2E-OUT-001` (Entregado):** `ENTREGADO / ENTREGADO`, receptor `RESPONSABLE QA CEDIS`, fecha de entrega `2026-11-13T17:09:41.316Z`, `DispatchTracking = ENTREGADO`.
+* **`PED-QA-E2E-OUT-002` (Control Negativo):** Conservado estrictamente en `DESPACHADO / EN_RUTA` (`fechaEntrega: null`, `recibidoPor: null`).
+* **Invariantes del Almacén Central (WH-001):**
+  - `LotInventory`: 0 PZA físico, 0 vendible, 0 reservado, 0 bloqueado.
+  - Ubicaciones `G0001` y `STG-01`: `LIBRE` (0/1 tarimas ocupadas).
+  - Plano 2D: 45/45 posiciones físicas oficiales `Gxxxx` libres.
+  - Kárdex: 6 movimientos exactos.
+* **Seguridad & Multi-Tenant:**
+  - Picking 403, Recepción 403, Portal 403, anti-spoofing `x-user-role` 403.
+  - Portal AlimNorte visualiza sus órdenes (`PED-001` entregado, `PED-002` en ruta).
+  - Portal Fashion Forward no visualiza órdenes ajenas (0 pedidos).
+* **Validación Integral:**
+  - Jest backend `block4-delivery.spec.ts`: **18/18 tests PASS**.
+  - Suite completa backend: **10/10 suites, 79/79 tests PASS**.
+  - Chrome Headless: **22/22 checks PASS, 0 console errors, 0 page exceptions, 0 HTTP errors**.
+  - Builds: `nest build PASS`, `vite build PASS`, `git diff --check PASS`.
+
+---
+
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline
 - [ ] Cache de datos críticos en dispositivo
