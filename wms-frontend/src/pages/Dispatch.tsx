@@ -11,14 +11,30 @@ import { OrderPreparationModal } from '../components/OrderPreparationModal';
 import { NewOrderModal } from '../components/NewOrderModal';
 import { DispatchManifestModal } from '../components/DispatchManifestModal';
 import { useNavigate } from 'react-router-dom';
+import { formatCalendarDate } from '../utils/dateUtils';
 
 type TabKey = 'approvals' | 'ready' | 'transit' | 'delivered';
 
 export function Dispatch() {
-  const { token, user } = useAuth();
+  const { token, user, hasActionPermission } = useAuth();
+  const canCreateOrder =
+    hasActionPermission('despacho', 'crear') || hasActionPermission('despacho', 'editar');
+  const canPrepare =
+    hasActionPermission('despacho', 'editar') ||
+    hasActionPermission('despacho', 'aprobar') ||
+    hasActionPermission('picking', 'editar');
+  const canApproveReject =
+    hasActionPermission('despacho', 'aprobar') || hasActionPermission('despacho', 'editar');
+  const canDispatch =
+    hasActionPermission('despacho', 'editar') || hasActionPermission('despacho', 'aprobar');
+  const canExecutePicking =
+    hasActionPermission('picking', 'crear') || hasActionPermission('picking', 'editar');
+  const canViewManifest = hasActionPermission('despacho', 'ver');
   const navigate = useNavigate();
   const [allOrders, setAllOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('approvals');
   const [dispatchModal, setDispatchModal] = useState<any>(null);
   const [dispatchForm, setDispatchForm] = useState({ tipoTransporte: '', paqueteria: '', numeroGuia: '', vehiculoPlaca: '' });
@@ -43,8 +59,16 @@ export function Dispatch() {
     setLoading(true);
     try {
       const res = await fetch(`${API}/orders`, { headers });
-      if (res.ok) setAllOrders(await res.json());
-    } catch (err) { console.error(err); }
+      if (res.ok) {
+        setAllOrders(await res.json());
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setFeedback({ type: 'error', text: err.message || `Error HTTP ${res.status} al cargar órdenes.` });
+      }
+    } catch (err: any) {
+      console.error(err);
+      setFeedback({ type: 'error', text: err?.message || 'Error de conexión al cargar órdenes.' });
+    }
     setLoading(false);
   }
 
@@ -56,62 +80,95 @@ export function Dispatch() {
 
   // --- Actions ---
   async function approveOrder(id: string) {
+    setFeedback(null);
     try {
-      await fetch(`${API}/orders/${id}/approve`, {
+      const res = await fetch(`${API}/orders/${id}/approve`, {
         method: 'POST', headers,
-        body: JSON.stringify({ usuario: user?.email || 'admin' }),
+        body: JSON.stringify({ usuario: user?.email || user?.nombre || 'Supervisor' }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setFeedback({ type: 'error', text: err.message || `Error HTTP ${res.status} al aprobar pedido.` });
+        return;
+      }
+      setFeedback({ type: 'success', text: 'Pedido aprobado exitosamente.' });
       loadData();
-    } catch (err) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      setFeedback({ type: 'error', text: err?.message || 'Error de conexión al aprobar pedido.' });
+    }
   }
 
   async function rejectOrder() {
     if (!rejectModal || !rejectMotivo) return;
+    setFeedback(null);
     try {
-      await fetch(`${API}/orders/${rejectModal.id}/reject`, {
+      const res = await fetch(`${API}/orders/${rejectModal.id}/reject`, {
         method: 'POST', headers,
-        body: JSON.stringify({ usuario: user?.email || 'admin', motivo: rejectMotivo }),
+        body: JSON.stringify({ usuario: user?.email || user?.nombre || 'Supervisor', motivo: rejectMotivo }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setFeedback({ type: 'error', text: err.message || `Error HTTP ${res.status} al rechazar pedido.` });
+        return;
+      }
       setRejectModal(null); setRejectMotivo('');
+      setFeedback({ type: 'success', text: 'Pedido rechazado y reservas liberadas.' });
       loadData();
-    } catch (err) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      setFeedback({ type: 'error', text: err?.message || 'Error de conexión al rechazar pedido.' });
+    }
   }
 
   async function dispatchOrder() {
     if (!dispatchModal) return;
+    setFeedback(null);
     try {
-      await fetch(`${API}/orders/${dispatchModal.id}/dispatch`, {
+      const res = await fetch(`${API}/orders/${dispatchModal.id}/dispatch`, {
         method: 'POST', headers,
-        body: JSON.stringify({ despachador: user?.email || 'admin', ...dispatchForm }),
+        body: JSON.stringify({ despachador: user?.email || user?.nombre || 'Despachador', ...dispatchForm }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setFeedback({ type: 'error', text: err.message || `Error HTTP ${res.status} al despachar.` });
+        return;
+      }
       setDispatchModal(null);
       setDispatchForm({ tipoTransporte: '', paqueteria: '', numeroGuia: '', vehiculoPlaca: '' });
+      setFeedback({ type: 'success', text: 'Despacho confirmado exitosamente.' });
       loadData();
-    } catch (err) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      setFeedback({ type: 'error', text: err?.message || 'Error de conexión al despachar.' });
+    }
   }
 
   async function confirmDelivery() {
     if (!deliveryModal) return;
+    setDeliveryError(null);
     try {
       const res = await fetch(`${API}/orders/${deliveryModal.id}/confirm-delivery`, {
         method: 'POST', headers,
         body: JSON.stringify({
-          usuario: user?.email || 'admin',
+          usuario: user?.email || user?.nombre || 'Despachador',
           nombreReceptor: deliveryForm.nombreReceptor,
           notasEntrega: deliveryForm.notasEntrega,
         }),
       });
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
-        alert(errorData.message || 'Error al confirmar la entrega');
+        setDeliveryError(errorData.message || `Error HTTP ${res.status} al confirmar la entrega.`);
         return;
       }
       setDeliveryModal(null);
+      setDeliveryError(null);
       setDeliveryForm({ nombreReceptor: '', notasEntrega: '' });
+      setFeedback({ type: 'success', text: 'Entrega confirmada exitosamente.' });
       loadData();
     } catch (err: any) {
       console.error(err);
-      alert(err.message || 'Error de conexión al confirmar la entrega');
+      setDeliveryError(err?.message || 'Error de conexión al confirmar la entrega.');
     }
   }
 
@@ -154,15 +211,38 @@ export function Dispatch() {
           <button className="btn btn-secondary" onClick={loadData}>
             <RefreshCw size={16} /> Actualizar
           </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => setNewOrderModalOpen(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-          >
-            <Plus size={16} /> Nuevo Pedido (Cliente Final)
-          </button>
+          {canCreateOrder && (
+            <button
+              className="btn btn-primary"
+              onClick={() => setNewOrderModalOpen(true)}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <Plus size={16} /> Nuevo Pedido (Cliente Final)
+            </button>
+          )}
         </div>
       </div>
+
+      {feedback && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '12px 16px',
+            borderRadius: 8,
+            background: feedback.type === 'error' ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)',
+            border: `1px solid ${feedback.type === 'error' ? 'var(--error)' : 'var(--emerald)'}`,
+            color: feedback.type === 'error' ? 'var(--error)' : 'var(--emerald)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          <span>{feedback.text}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setFeedback(null)}><X size={14} /></button>
+        </div>
+      )}
 
       {/* KPI Ribbon */}
       <div className="stats-grid" style={{ marginBottom: 20 }}>
@@ -247,30 +327,34 @@ export function Dispatch() {
                         )}
                       </div>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <button
-                          className="btn btn-primary"
-                          onClick={() => setPreparationOrder(o)}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            backgroundColor: '#0D9488',
-                            color: '#FFFFFF',
-                            fontWeight: 700,
-                          }}
-                        >
-                          <Sliders size={16} /> Panel de Preparación
-                        </button>
+                        {canPrepare && (
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => setPreparationOrder(o)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              backgroundColor: '#0D9488',
+                              color: '#FFFFFF',
+                              fontWeight: 700,
+                            }}
+                          >
+                            <Sliders size={16} /> Panel de Preparación
+                          </button>
+                        )}
                         <button className="btn btn-secondary" onClick={() => setDetailModal(o)}>
                           <Eye size={14} /> Detalle
                         </button>
-                        <button
-                          className="btn"
-                          style={{ background: 'var(--error)', color: 'white' }}
-                          onClick={() => setRejectModal(o)}
-                        >
-                          <ThumbsDown size={15} /> Rechazar
-                        </button>
+                        {canApproveReject && (
+                          <button
+                            className="btn"
+                            style={{ background: 'var(--error)', color: 'white' }}
+                            onClick={() => setRejectModal(o)}
+                          >
+                            <ThumbsDown size={15} /> Rechazar
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -310,27 +394,37 @@ export function Dispatch() {
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
                         {o.estado === 'CONSOLIDADO' ? (
-                          <button className="btn btn-primary" onClick={() => setManifestOrder(o)}>
-                            <FileText size={16} /> Manifiesto & Salida
-                          </button>
+                          canDispatch ? (
+                            <button className="btn btn-primary" onClick={() => setManifestOrder(o)}>
+                              <FileText size={16} /> Manifiesto & Salida
+                            </button>
+                          ) : canViewManifest ? (
+                            <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
+                              <FileText size={14} /> Ver Manifiesto
+                            </button>
+                          ) : null
                         ) : o.estado === 'EN_PICKING' ? (
                           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setPreparationOrder(o)}
-                              style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                            >
-                              <Sliders size={13} /> Ajustar Lotes
-                            </button>
-                            <button
-                              className="btn btn-primary btn-sm"
-                              onClick={() => navigate('/picking')}
-                              style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                            >
-                              <Package size={13} /> Terminal Surtidor
-                            </button>
+                            {canPrepare && !(o.lineas || []).some((l: any) => Number(l.cantidadPickeada || 0) > 0) && (
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => setPreparationOrder(o)}
+                                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                              >
+                                <Sliders size={13} /> Ajustar Lotes
+                              </button>
+                            )}
+                            {canExecutePicking && (
+                              <button
+                                className="btn btn-primary btn-sm"
+                                onClick={() => navigate('/picking')}
+                                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                              >
+                                <Package size={13} /> Terminal Surtidor
+                              </button>
+                            )}
                           </div>
-                        ) : (
+                        ) : canPrepare ? (
                           <button
                             className="btn btn-secondary btn-sm"
                             onClick={() => setPreparationOrder(o)}
@@ -338,7 +432,7 @@ export function Dispatch() {
                           >
                             <Sliders size={13} /> Panel de Preparación
                           </button>
-                        )}
+                        ) : null}
                         <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Detalle</button>
                       </div>
                     </div>
@@ -393,7 +487,7 @@ export function Dispatch() {
                           )}
                           {o.fechaDespacho && (
                             <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <Calendar size={12} /> Despachado: {new Date(o.fechaDespacho).toLocaleDateString('es-MX')}
+                              <Calendar size={12} /> Despachado: {formatCalendarDate(o.fechaDespacho)}
                             </span>
                           )}
                           {o.despachador && (
@@ -409,12 +503,16 @@ export function Dispatch() {
                         </div>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <button className="btn btn-success" onClick={() => setDeliveryModal(o)}>
-                          <UserCheck size={16} /> Confirmar Entrega
-                        </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
-                          <FileText size={14} /> Manifiesto
-                        </button>
+                        {canDispatch && (
+                          <button className="btn btn-success" onClick={() => { setDeliveryError(null); setDeliveryModal(o); }}>
+                            <UserCheck size={16} /> Confirmar Entrega
+                          </button>
+                        )}
+                        {canViewManifest && (
+                          <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
+                            <FileText size={14} /> Manifiesto
+                          </button>
+                        )}
                         <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Ver Detalle</button>
                       </div>
                     </div>
@@ -452,7 +550,7 @@ export function Dispatch() {
                           )}
                           {o.fechaEntrega && (
                             <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <Calendar size={12} /> Entrega: {new Date(o.fechaEntrega).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              <Calendar size={12} /> Entrega: {formatCalendarDate(o.fechaEntrega)}
                             </span>
                           )}
                           {o.paqueteria && (
@@ -476,9 +574,11 @@ export function Dispatch() {
                         </div>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
-                          <FileText size={14} /> Acuse Salida
-                        </button>
+                        {canViewManifest && (
+                          <button className="btn btn-secondary btn-sm" onClick={() => setManifestOrder(o)}>
+                            <FileText size={14} /> Acuse Salida
+                          </button>
+                        )}
                         <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Ver Detalle</button>
                       </div>
                     </div>
@@ -603,6 +703,11 @@ export function Dispatch() {
                 <label className="form-label">Notas de entrega</label>
                 <textarea className="form-input" rows={2} placeholder="Observaciones sobre la entrega (daños, faltantes, etc.)" value={deliveryForm.notasEntrega} onChange={e => setDeliveryForm(f => ({ ...f, notasEntrega: e.target.value }))} />
               </div>
+              {deliveryError && (
+                <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 6, background: 'rgba(239,68,68,0.1)', border: '1px solid var(--error)', color: 'var(--error)', fontSize: 12, fontWeight: 600 }}>
+                  {deliveryError}
+                </div>
+              )}
             </div>
             <div className="modal-footer">
               <button className="btn btn-ghost" onClick={() => setDeliveryModal(null)}>Cancelar</button>
@@ -718,7 +823,7 @@ export function Dispatch() {
         <OrderPreparationModal
           orderId={preparationOrder.id}
           token={token || ''}
-          currentUser={user?.email || 'Alejandra (Supervisor)'}
+          currentUser={user?.email || user?.nombre || 'Supervisor'}
           onClose={() => setPreparationOrder(null)}
           onSuccess={() => {
             loadData();

@@ -1,6 +1,7 @@
 import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { isExpired } from '../../common/inventory-operational-state.util';
+import { filterEffectiveActiveHus } from '../../common/hu-classification.util';
 
 export interface LocationClassification {
   categoriaUbicacion: 'FISICA_ALMACENABLE' | 'RECIBO_TRANSITO' | 'VIRTUAL_NO_CONFORME' | 'STAGING' | 'ESPECIAL_OTRAS';
@@ -347,9 +348,11 @@ export class PutawayEngineService {
           id: true,
           codigo: true,
           tipoHu: true,
+          uom: true,
           parentHuId: true,
           ubicacionActual: true,
           clienteId: true,
+          lotId: true,
           skuCodigo: true,
           loteTexto: true,
           cantidad: true,
@@ -398,15 +401,16 @@ export class PutawayEngineService {
       if (effectiveLoc && !['RAMPA_RECEPCION', 'REC-01', 'RECIBO', 'STAGING', 'ANDEN'].includes(effectiveLoc)) {
         if (!husByLoc[effectiveLoc]) husByLoc[effectiveLoc] = [];
         husByLoc[effectiveLoc].push({ ...hu, ubicacionActual: effectiveLoc });
-
-        if (!distinctPalletsByLoc[effectiveLoc]) distinctPalletsByLoc[effectiveLoc] = new Set<string>();
-        // Si la caja pertenece a una tarima master (parentHuId), cuenta como parte de dicha tarima
-        // Si es una tarima independiente o HU raíz, cuenta su propio ID
-        distinctPalletsByLoc[effectiveLoc].add(this.getPhysicalPalletKey(hu));
       }
     }
 
-    for (const locKey of Object.keys(distinctPalletsByLoc)) {
+    for (const locKey of Object.keys(husByLoc)) {
+      const effectiveList = filterEffectiveActiveHus(husByLoc[locKey]);
+      husByLoc[locKey] = effectiveList;
+      distinctPalletsByLoc[locKey] = new Set<string>();
+      for (const hu of effectiveList) {
+        distinctPalletsByLoc[locKey].add(this.getPhysicalPalletKey(hu));
+      }
       huCountByLoc[locKey] = distinctPalletsByLoc[locKey].size;
     }
 
@@ -1627,13 +1631,14 @@ export class PutawayEngineService {
     const existingOtherPallets = new Set<string>();
     const samePalletLotIds = new Set<string>();
     if (typeof db.handlingUnit?.findMany === 'function') {
-      const activeHusInLoc = await db.handlingUnit.findMany({
+      const rawActiveHusInLoc = await db.handlingUnit.findMany({
         where: {
           OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
           estadoHu: { notIn: ['INACTIVO', 'DESPACHADO'] },
         },
-        select: { id: true, parentHuId: true, tipoHu: true, lotId: true },
+        select: { id: true, codigo: true, parentHuId: true, tipoHu: true, uom: true, lotId: true, skuCodigo: true, cantidad: true },
       });
+      const activeHusInLoc = filterEffectiveActiveHus(rawActiveHusInLoc);
       const distinctPallets = new Set<string>();
       for (const h of activeHusInLoc) {
         const palletKey = this.getPhysicalPalletKey(h);
@@ -1781,6 +1786,7 @@ export class PutawayEngineService {
     codigo: string;
     estadoAnterior: string;
     nuevoEstado: string;
+    estadoCapacidad: string;
     ocupacionUnidades: number;
     ocupacionBultos: number;
     capacidadUnits: number;
@@ -1797,13 +1803,14 @@ export class PutawayEngineService {
 
     const classification = this.classifyLocation(loc);
 
-    // Si no es física almacenable (ej. REC-01, DEV-01, STAGING), su estado operativo no se altera como rack comercial
+    // Si no es física almacenable (ej. REC-01, DEV-01, STAGING), su estado operativo no se altera como ubicación comercial
     if (!classification.esAlmacenable) {
       return {
         id: loc.id,
         codigo: loc.codigo,
         estadoAnterior: loc.estado,
         nuevoEstado: loc.estado,
+        estadoCapacidad: 'NO_APLICA',
         ocupacionUnidades: 0,
         ocupacionBultos: 0,
         capacidadUnits: loc.capacidadUnits || 100,
@@ -1817,16 +1824,17 @@ export class PutawayEngineService {
       0,
     );
 
-    // Ocupación canónica de bultos/tarimas físicas derivada de HandlingUnit activas
+    // Ocupación canónica de bultos/tarimas físicas derivada de HandlingUnit activas (excluyendo tarimas vacías fantasma)
     let ocupacionBultos = 0;
     if (typeof tx.handlingUnit?.findMany === 'function') {
-      const activeHus = await tx.handlingUnit.findMany({
+      const rawActiveHus = await tx.handlingUnit.findMany({
         where: {
           ubicacionActual: loc.codigo,
           estadoHu: 'ACTIVO',
         },
-        select: { id: true, parentHuId: true, tipoHu: true },
+        select: { id: true, codigo: true, parentHuId: true, tipoHu: true, uom: true, lotId: true, skuCodigo: true, cantidad: true },
       });
+      const activeHus = filterEffectiveActiveHus(rawActiveHus);
       const distinctPallets = new Set(activeHus.map((h: any) => h.parentHuId || h.id));
       ocupacionBultos = distinctPallets.size;
     } else if (typeof tx.handlingUnit?.count === 'function') {
@@ -1849,6 +1857,7 @@ export class PutawayEngineService {
         codigo: loc.codigo,
         estadoAnterior: loc.estado,
         nuevoEstado: 'BLOQUEADO',
+        estadoCapacidad: 'BLOQUEADO',
         ocupacionUnidades,
         ocupacionBultos,
         capacidadUnits: capUnits,
@@ -1864,24 +1873,28 @@ export class PutawayEngineService {
     const effectiveCapBultos = isFloorPallet ? 1 : capBultos;
     const hasCapBultos = isFloorPallet || hasConfiguredCapBultos;
 
-    let nuevoEstado = 'LIBRE';
+    let estadoCapacidad = 'LIBRE';
     if (isFloorPallet) {
       if (ocupacionBultos > 1) {
-        nuevoEstado = 'SOBRECAPACIDAD';
+        estadoCapacidad = 'SOBRECAPACIDAD';
       } else if (ocupacionBultos >= 1 || ocupacionUnidades > 0) {
-        nuevoEstado = 'LLENO';
+        estadoCapacidad = 'LLENO';
       } else {
-        nuevoEstado = 'LIBRE';
+        estadoCapacidad = 'LIBRE';
       }
     } else if (ocupacionUnidades === 0 && ocupacionBultos === 0) {
-      nuevoEstado = 'LIBRE';
+      estadoCapacidad = 'LIBRE';
     } else if (ocupacionUnidades > capUnits || (hasCapBultos && effectiveCapBultos !== null && ocupacionBultos > effectiveCapBultos)) {
-      nuevoEstado = 'SOBRECAPACIDAD';
+      estadoCapacidad = 'SOBRECAPACIDAD';
     } else if (ocupacionUnidades >= capUnits || (hasCapBultos && effectiveCapBultos !== null && ocupacionBultos >= effectiveCapBultos)) {
-      nuevoEstado = 'LLENO';
+      estadoCapacidad = 'LLENO';
     } else {
-      nuevoEstado = 'PARCIAL';
+      estadoCapacidad = 'PARCIAL';
     }
+
+    // Location.estado en BD sigue la convención canónica LIBRE / OCUPADO / BLOQUEADO;
+    // la granularidad PARCIAL / LLENO / SOBRECAPACIDAD se deriva como estadoCapacidad.
+    const nuevoEstado = estadoCapacidad === 'LIBRE' ? 'LIBRE' : 'OCUPADO';
 
     if (loc.estado !== nuevoEstado) {
       await tx.location.update({
@@ -1898,6 +1911,7 @@ export class PutawayEngineService {
       codigo: loc.codigo,
       estadoAnterior: loc.estado,
       nuevoEstado,
+      estadoCapacidad,
       ocupacionUnidades,
       ocupacionBultos,
       capacidadUnits: capUnits,

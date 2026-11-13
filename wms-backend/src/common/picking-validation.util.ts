@@ -360,7 +360,7 @@ export async function validatePickingEligibility(
   if (client.handlingUnit && typeof client.handlingUnit.count === 'function') {
     activeHusCount = await client.handlingUnit.count({
       where: {
-        tipoHu: 'CAJA',
+        tipoHu: { notIn: ['PALLET', 'TARIMA', 'CONTENEDOR', 'MASTER_PALLET'] },
         estadoHu: 'ACTIVO',
         OR: [
           { lotId: freshLot.id },

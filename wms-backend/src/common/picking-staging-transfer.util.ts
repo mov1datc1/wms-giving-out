@@ -1,4 +1,9 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
+import {
+  assertPickableProductHu,
+  isInventariablePickableHu,
+  syncParentPalletContainers,
+} from './hu-classification.util';
 
 /**
  * ============================================================================
@@ -99,18 +104,26 @@ export async function validateHuAllocationCompatibility(
     };
   }
 
-  // 2. Buscar HUs activas asociadas a este lote y ubicación
-  const activeHus = await tx.handlingUnit.findMany({
+  // 2. Buscar HUs inventariables activas asociadas a este lote y ubicación (excluye Tarimas Master/contenedores)
+  const rawActiveHus = await tx.handlingUnit.findMany({
     where: {
       OR: [
         { lotId },
         { loteTexto: lot.lote, clienteId },
       ],
       estadoHu: 'ACTIVO',
+      tipoHu: { notIn: ['PALLET', 'TARIMA', 'CONTENEDOR', 'MASTER_PALLET'] },
       ...(lot.ubicacion?.codigo ? { ubicacionActual: lot.ubicacion.codigo } : {}),
     },
     orderBy: { codigo: 'asc' },
   });
+
+  const parentIdsWithChildren = new Set<string>(
+    rawActiveHus.map((h: any) => h.parentHuId).filter(Boolean),
+  );
+  const activeHus = rawActiveHus.filter((h: any) =>
+    isInventariablePickableHu(h, parentIdsWithChildren),
+  );
 
   if (activeHus.length === 0) {
     // Inventario legado sin HUs: no se gestiona por cajas completas
@@ -263,6 +276,18 @@ export async function transferHuToStaging(
       HttpStatus.CONFLICT,
     );
   }
+
+  let childHusCount = 0;
+  if (typeof tx.handlingUnit?.count === 'function') {
+    childHusCount = await tx.handlingUnit.count({
+      where: {
+        parentHuId: hu.id,
+        estadoHu: 'ACTIVO',
+      },
+    });
+  }
+  const parentIds = new Set<string>(childHusCount > 0 ? [hu.id] : []);
+  assertPickableProductHu(hu, parentIds);
 
   // 2. Relectura de la ubicación física de origen (Rack)
   const cleanRackCode = rackLocationCode.trim().toUpperCase();
@@ -497,6 +522,12 @@ export async function transferHuToStaging(
       lotId: stagingLot.id,
     },
   });
+
+  // 8b. Sincronizar Tarima Master padre (si todas sus hijas activas salieron de la posición origen hacia Staging,
+  // la tarima acompaña lógicamente al consolidado en Staging para no dejar una tarima fantasma en origen)
+  if ((hu as any).parentHuId) {
+    await syncParentPalletContainers(tx, [(hu as any).parentHuId]);
+  }
 
   // 9. Registro de Trazabilidad Oficial en Kardex (InventoryMovement)
   const movement = await tx.inventoryMovement.create({

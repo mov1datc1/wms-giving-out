@@ -6,6 +6,7 @@ import {
   ShieldAlert, FileWarning, Clock, ArrowRight
 } from 'lucide-react';
 import { API } from '../config/api';
+import { useAuth } from '../contexts/AuthContext';
 import { formatCalendarDate } from '../utils/dateUtils';
 
 interface DispatchManifestModalProps {
@@ -37,6 +38,9 @@ export function DispatchManifestModal({
   onClose,
   onSuccess,
 }: DispatchManifestModalProps) {
+  const { hasActionPermission } = useAuth();
+  const canDispatch =
+    hasActionPermission('despacho', 'editar') || hasActionPermission('despacho', 'aprobar');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -46,7 +50,7 @@ export function DispatchManifestModal({
   // Formulario de transporte
   const [transportForm, setTransportForm] = useState({
     tipoTransporte: 'DIRECTO',
-    fletera: 'Transportes Logísticos Especializados',
+    fletera: '',
     choferNombre: '',
     choferLicencia: '',
     vehiculoPlaca: '',
@@ -85,7 +89,7 @@ export function DispatchManifestModal({
       if (data.order) {
         setTransportForm({
           tipoTransporte: data.order.tipoTransporte || 'DIRECTO',
-          fletera: data.order.fletera || (data.order.paqueteria ? data.order.paqueteria : 'Transportes Logísticos Especializados'),
+          fletera: data.order.fletera || (data.order.paqueteria ? data.order.paqueteria : ''),
           choferNombre: data.order.choferNombre || '',
           choferLicencia: data.order.choferLicencia || '',
           vehiculoPlaca: data.order.vehiculoPlaca || '',
@@ -258,7 +262,27 @@ export function DispatchManifestModal({
         throw new Error(err.message || 'Error al procesar el despacho');
       }
 
-      setSuccessMsg('Salida de almacén y despacho confirmados exitosamente. El inventario físico ha sido descontado y las ubicaciones liberadas.');
+      const respData = await res.json();
+      const dispatchedUnits = Number(respData?.totalPiezasDespachadas ?? manifestData?.totalPiezas ?? 0);
+      const originSummary: any[] = Array.isArray(respData?.originLocationsSummary)
+        ? respData.originLocationsSummary
+        : [];
+      const stillOccupied = originSummary.filter((s) => Number(s.remainingPieces) > 0);
+      const freedLocs = originSummary.filter((s) => Number(s.remainingPieces) <= 0);
+
+      let locationNote = '';
+      if (stillOccupied.length > 0) {
+        const parts = stillOccupied.map(
+          (s) => `La posición física ${s.codigo} permanece ${s.estado} con ${s.remainingPieces} unidades restantes`,
+        );
+        locationNote = ` ${parts.join('. ')}.`;
+      } else if (freedLocs.length > 0) {
+        locationNote = ` ${freedLocs.map((s) => `Ubicación ${s.codigo} liberada (${s.estado})`).join('. ')}.`;
+      }
+
+      setSuccessMsg(
+        `Despacho confirmado. Se descontaron ${dispatchedUnits} unidades del inventario físico.${locationNote}`,
+      );
       if (onSuccess) onSuccess();
       await loadManifest();
     } catch (err: any) {
@@ -698,7 +722,7 @@ export function DispatchManifestModal({
                         {transportForm.tipoTransporte === 'CLIENTE_RECOGE' ? 'Empresa / Cliente que Retira' : 'Empresa Fletera / Transporte'}
                       </label>
                       {isAlreadyDispatched ? (
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.fletera}</div>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{transportForm.fletera || 'No registrada'}</div>
                       ) : (
                         <input
                           type="text"
@@ -809,7 +833,7 @@ export function DispatchManifestModal({
                         <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Descripción</th>
                         <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote</th>
                         <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Caja / HU</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Rack Origen</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Ubicación Origen</th>
                         <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Staging / Salida</th>
                         <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
                           {isAlreadyDispatched ? 'CANT. DESPACHADA' : 'CANT. PREPARADA'}
@@ -842,15 +866,15 @@ export function DispatchManifestModal({
                           </td>
                           <td style={{ padding: '10px 12px' }}>
                             <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                              {l.rackOrigen || l.ubicacion || 'RACK'}
+                              {l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}
                             </span>
                           </td>
                           <td style={{ padding: '10px 12px' }}>
                             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'monospace', fontSize: 11 }}>
-                              <span style={{ color: 'var(--text-secondary)' }}>{l.rackOrigen || l.ubicacion || 'RACK'}</span>
+                              <span style={{ color: 'var(--text-secondary)' }}>{l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}</span>
                               <ArrowRight size={13} color="var(--primary)" style={{ flexShrink: 0 }} />
                               <span className="badge badge-cyan" style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px' }}>
-                                {l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01'}
+                                {l.stagingUbicacion || l.stagingLocationCodigo || 'Sin asignar'}
                               </span>
                             </div>
                           </td>
@@ -989,7 +1013,7 @@ export function DispatchManifestModal({
           <button className="btn btn-ghost" onClick={onClose}>
             Cerrar
           </button>
-          {!isAlreadyDispatched && (
+          {!isAlreadyDispatched && canDispatch && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               {!isReadyToDispatch && (
                 <span style={{ fontSize: 11, color: 'var(--amber)', display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600 }}>
@@ -1014,6 +1038,11 @@ export function DispatchManifestModal({
                 {submitting ? 'Procesando Salida Física...' : 'Confirmar Salida Física y Despacho'}
               </button>
             </div>
+          )}
+          {!isAlreadyDispatched && !canDispatch && (
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+              Vista preliminar de solo lectura · Despacho restringido a roles autorizados
+            </span>
           )}
         </div>
       </div>

@@ -11,6 +11,7 @@ import {
   isExpired,
   toCalendarDayString,
 } from '../../common/inventory-operational-state.util';
+import { filterEffectiveActiveHus } from '../../common/hu-classification.util';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'giving-out-wms-secret-2026';
 
@@ -736,10 +737,12 @@ export class MasterDataController {
           id: true,
           codigo: true,
           tipoHu: true,
+          uom: true,
           parentHuId: true,
           ubicacionActual: true,
           cantidad: true,
           clienteId: true,
+          skuCodigo: true,
           lotId: true,
           lote: {
             select: {
@@ -758,6 +761,7 @@ export class MasterDataController {
     const husByLocAndClient: Record<string, Record<string, number>> = {};
     const distinctPalletsByLoc: Record<string, Set<string>> = {};
     const distinctPalletsByLocAndClient: Record<string, Record<string, Set<string>>> = {};
+    const stockFilteredHusByLoc: Record<string, any[]> = {};
 
     for (const hu of allActiveHus) {
       // Si la HU tiene lote asociado, verificar que el lote tenga saldo físico real (> 0)
@@ -769,18 +773,27 @@ export class MasterDataController {
       }
 
       if (hu.ubicacionActual) {
+        if (!stockFilteredHusByLoc[hu.ubicacionActual]) stockFilteredHusByLoc[hu.ubicacionActual] = [];
+        stockFilteredHusByLoc[hu.ubicacionActual].push(hu);
+      }
+    }
+
+    for (const locKey of Object.keys(stockFilteredHusByLoc)) {
+      const effectiveHus = filterEffectiveActiveHus(stockFilteredHusByLoc[locKey]);
+      if (effectiveHus.length === 0) continue;
+
+      distinctPalletsByLoc[locKey] = new Set<string>();
+      distinctPalletsByLocAndClient[locKey] = {};
+
+      for (const hu of effectiveHus) {
         const physicalUnitKey = (hu as any).parentHuId || hu.id;
-        if (!distinctPalletsByLoc[hu.ubicacionActual]) distinctPalletsByLoc[hu.ubicacionActual] = new Set<string>();
-        distinctPalletsByLoc[hu.ubicacionActual].add(physicalUnitKey);
+        distinctPalletsByLoc[locKey].add(physicalUnitKey);
 
         const cid = hu.clienteId || (hu.lote as any)?.clienteId || 'DESCONOCIDO';
-        if (!distinctPalletsByLocAndClient[hu.ubicacionActual]) {
-          distinctPalletsByLocAndClient[hu.ubicacionActual] = {};
+        if (!distinctPalletsByLocAndClient[locKey][cid]) {
+          distinctPalletsByLocAndClient[locKey][cid] = new Set<string>();
         }
-        if (!distinctPalletsByLocAndClient[hu.ubicacionActual][cid]) {
-          distinctPalletsByLocAndClient[hu.ubicacionActual][cid] = new Set<string>();
-        }
-        distinctPalletsByLocAndClient[hu.ubicacionActual][cid].add(physicalUnitKey);
+        distinctPalletsByLocAndClient[locKey][cid].add(physicalUnitKey);
       }
     }
 
@@ -946,13 +959,15 @@ export class MasterDataController {
       orderBy: { codigo: 'asc' },
     });
 
-    // Solo HUs con saldo físico real en existencia
-    const hus = rawHus.filter(h => {
-      if (h.lote) {
-        return ((h.lote.cantidadDisponible || 0) + (h.lote.cantidadBloqueada || 0)) > 0;
-      }
-      return (h.cantidad || 0) > 0;
-    });
+    // Solo HUs con saldo físico real en existencia y excluyendo tarimas padre vacías sin hijas activas
+    const hus = filterEffectiveActiveHus(
+      rawHus.filter((h) => {
+        if (h.lote) {
+          return ((h.lote.cantidadDisponible || 0) + (h.lote.cantidadBloqueada || 0)) > 0;
+        }
+        return (h.cantidad || 0) > 0;
+      }),
+    );
 
     const classification = this.classifyLocation(loc);
 
@@ -1274,14 +1289,15 @@ export class MasterDataController {
         );
       }
 
-      // 4.4 Handling Units comerciales activas en la ubicación
-      const activeCommercialHus = await this.prisma.handlingUnit.findMany({
+      // 4.4 Handling Units comerciales activas en la ubicación (excluyendo tarimas padre vacías sin hijas)
+      const rawActiveCommercialHus = await this.prisma.handlingUnit.findMany({
         where: {
           OR: [{ ubicacionActual: loc.codigo }, { ubicacionActual: loc.id }],
           estadoHu: { in: ['ACTIVO', 'EN_TRANSITO'] },
         },
-        select: { id: true, codigo: true, tipoHu: true },
+        select: { id: true, codigo: true, tipoHu: true, uom: true, parentHuId: true, lotId: true, skuCodigo: true, cantidad: true },
       });
+      const activeCommercialHus = filterEffectiveActiveHus(rawActiveCommercialHus);
       if (activeCommercialHus.length > 0) {
         throw new BadRequestException(
           `No es posible designar la ubicación ${loc.codigo} como PNC: contiene ${activeCommercialHus.length} Handling Units comerciales activas (${activeCommercialHus.map(h => h.codigo).slice(0, 3).join(', ')}). Desaloje o reasigne las unidades antes de cambiar la designación.`,

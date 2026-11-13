@@ -815,6 +815,44 @@ npm run build          # Build completo
 
 ---
 
+## 18. Actualización Bloque 3 RC — Picking, Reserva Atómica, Staging y Despacho E2E
+
+**Estado:** Validado funcional y técnicamente en Bloque 3A (salida parcial `12 PZA`) y Bloque 3B (salida final `12 PZA`) sobre `fix/rc-block3-picking-dispatch-e2e` (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`), pendiente de checkpoint final, commit y promoción a `dev`.
+
+### 18.1 Flujo Operativo Certificado (`Pedido → Reserva → Preparación/Aprobación → Picking → Staging → Despacho`)
+1. **Creación de Orden y Reserva Atómica (`POST /api/orders`):**
+   - Ejecutada en `$transaction` bloqueando filas de `LotInventory` con `SELECT ... FOR UPDATE`.
+   - Fuerza estado inicial `SOLICITADO`, rechaza alteración de `estado` vía payload, deriva `solicitadoPor` desde `req.user` y aplica validación estricta de caja cerrada (`409 Conflict` ante cantidades no cerradas, p. ej. `1` o `13 PZA`).
+2. **Preparación y Aprobación Integrada (`POST /api/orders/:id/prepare`):**
+   - Flujo canónico activo en `Dispatch.tsx` / `OrderPreparationModal.tsx`: restringido por RBAC a Supervisor/Admin (`editar`/`aprobar`), acepta `SOLICITADO`, preserva la reserva de `12 PZA`, marca `aprobado = true`, `fechaAprobacion`, `aprobadoPor = actor`, promueve a `EN_PICKING` y crea exactamente un registro `OrderApproval` (`estado: 'APROBADO'`) cuando `!order.aprobado` (`/approve` permanece disponible como ruta API opcional de pre-aprobación sin duplicar registros).
+   - `PUT /api/orders/:id/status` bloquea bypass directo a `DESPACHADO` (`409 Conflict`), y `rejectOrder` libera reservas y retorna inventario/cajas desde Staging al origen dentro de transacción.
+3. **Picking, Consolidación en Staging y Control de Contenedores (`start-picking`, `validate-scan`, `record-pick`, `transferHuToStaging`):**
+   - `hu-classification.util.ts` y `picking-validation.util.ts` excluyen Tarima Master (`PALLET` / `TARIMA` / `PLT-*`) de sugerencias FEFO/FIFO, validaciones de escaneo y movimientos como producto.
+   - El surtido traslada físicamente la caja (`BOX-*`) desde `Gxxxx` hacia `STG-01` generando movimiento `TRASIEGO` en Kárdex y promoviendo la orden a `CONSOLIDADO`.
+   - Reintento idempotente sobre orden `CONSOLIDADO` retorna `{ idempotent: true }`; intento posterior al despacho retorna `409 ESTADO_NO_APTO_PARA_PICKING`.
+4. **Despacho Final Atómico (`POST /api/orders/:id/dispatch`):**
+   - Exige orden `CONSOLIDADO`, deduce saldo reservado y físico en `STG-01`, registra `DispatchTracking` (`SALIDA_ALMACEN`), movimiento `SALIDA_PEDIDO` (`STG-01 → cliente`), cambia `estado = DESPACHADO` / `estadoEntrega = EN_RUTA` y soporta reintentos idempotentes (`alreadyDispatched: true, idempotent: true`).
+
+### 18.2 Comportamiento Canónico de Tarima Master (`PLT-*`), Salida Parcial y Vaciado Total
+- **Semántica canónica (`cantidad` en `PALLET`):** Representa el número de cajas hijas activas contenidas (`operations.controller.ts` — `generateLabels`). Antes de Bloque 3B se armonizó de forma controlada `PLT-REC-2026-0020-01.cantidad` de `2 → 1` para reflejar su única hija activa restante (`BOX-REC-2026-0020-0002`).
+- **Prevención de Tarima Fantasma (`syncParentPalletContainers` & `filterEffectiveActiveHus`):**
+  - En salida parcial (`BOX-0001` despachada, `BOX-0002` activa en `G0001`): la tarima padre pasa a `cantidad = 1`, `estadoHu = ACTIVO` en `G0001`.
+  - Al retirar la última caja activa hacia `STG-01` durante picking: `syncParentPalletContainers` traslada el contenedor lógico a `STG-01` y recalcula de inmediato `G0001` a `LIBRE` (`0 bultos`, `0 PZA`).
+  - Al despachar la última caja: `syncParentPalletContainers` actualiza la tarima padre a `cantidad = 0`, `estadoHu = 'DESPACHADO'` (conservando trazabilidad documental de `REC-2026-0020`) y `filterEffectiveActiveHus` garantiza `0` ocupación fantasma en `putaway-engine.service.ts`, `master-data.controller.ts` y `clients.controller.ts`.
+- **Fechas y terminología:** `order-sla.util.ts` asegura formato calendar-day exacto (`30/06/2027` y fecha compromiso `15/11/2026`); se eliminó el alias redundante `rackOrigen` en la API y UI del manifiesto en favor de nombres neutrales (`ubicacion` / `ubicacionOrigen`), y tanto Picking/Despacho como Manifiesto utilizan nomenclatura `"posición física Gxxxx"` en UI.
+
+### 18.3 Resultados E2E Certificados (`PED-QA-E2E-OUT-001` y `PED-QA-E2E-OUT-002`) y Estado Final
+* **`PED-QA-E2E-OUT-001` (Bloque 3A — Salida Parcial `12 PZA`):** `DESPACHADO` / `EN_RUTA`, caja `BOX-REC-2026-0020-0001 DESPACHADO`, manifiesto `MAN-PED-QA-E2E-OUT-001` (`Carlos Méndez`, `NLX-4821`, `SEAL-QA-3A-001`), conservando `OrderApproval = 0` histórico previo al ajuste de `prepareOrder`.
+* **`PED-QA-E2E-OUT-002` (Bloque 3B — Salida Final `12 PZA`):** `DESPACHADO` / `EN_RUTA`, caja `BOX-REC-2026-0020-0002 DESPACHADO`, `OrderApproval = 1` (`APROBADO`, `supervisor@givingout.com`), manifiesto `MAN-PED-QA-E2E-OUT-002` (`Roberto Sánchez`, `NLY-7734`, `SEAL-QA-3B-002`).
+* **Estado Final Post-3B (`G0001`, `STG-01`, Inventario y Kárdex):**
+  - **Inventario:** `24` recibidas − `12` (`PED-001`) − `12` (`PED-002`) = **`0 PZA` físicas / `0` vendibles / `0` reservadas / `0` bloqueadas / `0` tránsito** (`LotInventory` en `0/0/0`; Dashboard y Portal AlimNorte en `0`).
+  - **Ubicaciones:** `G0001 = LIBRE` (`estadoCapacidad: LIBRE`, `ocupacionBultos = 0`, `capacidadDisponibleBultos = 1`, `stockFisicoPiezas = 0`, `bultosPorCliente = {}`), **`45/45` posiciones `Gxxxx` en `LIBRE`** en Plano 2D; `STG-01 = LIBRE` (`0 PZA`, `0` HUs activas, `0` reservas).
+  - **HUs:** `BOX-0001 DESPACHADO`, `BOX-0002 DESPACHADO`, `PLT-REC-2026-0020-01 DESPACHADO (cantidad = 0)`.
+  - **Kárdex (`InventoryMovement`):** Exactamente **`6` movimientos** (`2` `TRASIEGO` inbound `REC-01 → G0001`, `1` `TRASIEGO` 3A `G0001 → STG-01`, `1` `SALIDA_PEDIDO` 3A, `1` `TRASIEGO` 3B `G0001 → STG-01`, `1` `SALIDA_PEDIDO` 3B; `0` de Tarima Master).
+  - **Validación:** Jest **`9/9 suites` (`61/61 tests PASS`)**, `npx nest build` PASS, `tsc -b && vite build` PASS, `git diff --check` PASS, Chrome Headless `0 consoleErrors / 0 pageExceptions / 0 httpErrors`.
+
+---
+
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline
 - [ ] Cache de datos críticos en dispositivo

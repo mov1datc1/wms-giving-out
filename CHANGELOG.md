@@ -4,6 +4,44 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.29] — 2026-11-11 (Checkpoint Pre-Commit Bloque 3 RC: Picking + Reserva + Despacho E2E y Prevención de Tarima Fantasma)
+
+### 📦 Remediación y Certificación Bloque 3 Pre-Release Candidate (Rama `fix/rc-block3-picking-dispatch-e2e`, pendiente de commit/promoción)
+
+Certificación E2E integral (Bloque 3A parcial + Bloque 3B vaciado total) de los módulos **I. Picking**, **J. Despacho** y **P. Integridad Cruzada BD** (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`), garantizando atomicidad de reservas, regla de caja cerrada, idempotencia, control RBAC y liberación física completa sin tarima fantasma.
+
+### Hardening Pedido, Reserva, Picking, Staging y Despacho (Módulos I y J)
+- **Creación y Reserva Atómica (`OperationsController.createOrder`):**
+  - Bloqueo transaccional `$transaction` + `SELECT ... FOR UPDATE` sobre filas relevantes de `LotInventory` antes de validar saldo vendible e incrementar `cantidadReservada`.
+  - Estado inicial forzado estrictamente a `SOLICITADO` (rechaza cualquier `body.estado` distinto) y actor `solicitadoPor` tomado exclusivamente desde `req.user`.
+  - Regla estricta de caja cerrada (`picking-validation.util.ts`): rechaza solicitudes con cantidades fraccionarias o incompatibles con múltiplos/cajas cerradas disponibles (`409 Conflict`, p. ej. `1 PZA` o `13 PZA` ante cajas de `12 PZA`).
+- **Aprobación / Preparación Canónica y Máquina de Estados (`OperationsController.prepareOrder`, `approveOrder`, `rejectOrder`, `startPicking`, `updateOrderStatus`):**
+  - Unificado el flujo operativo actual donde `prepareOrder` exige permiso Supervisor/Admin (`editar`/`aprobar`), acepta `SOLICITADO`, promueve a `EN_PICKING`, registra `aprobado = true`, `fechaAprobacion`, `aprobadoPor = actor` e inserta el registro canónico en `OrderApproval` (`estado: 'APROBADO'`) cuando `!order.aprobado` (evitando duplicados si previamente pasó por `/approve`).
+  - Bloqueado bypass `PUT /api/orders/:id/status -> DESPACHADO` (`409 Conflict`) e incrementada atomicidad transaccional en `rejectOrder` (libera reservas y retorna cajas de Staging a su ubicación de origen).
+- **Exclusión de Tarima Master como HU Surtible (`hu-classification.util.ts`, `picking-validation.util.ts`, `operations.controller.ts`):**
+  - Centralizada clasificación de contenedores logísticos (`PALLET`, `TARIMA`, `PLT-*`); `suggest-allocation`, `validate-scan`, `record-pick` y `transferHuToStaging` excluyen sistemáticamente cualquier Tarima Master como ítem surtible.
+- **Sincronización de Tarima Master y Prevención de Tarima Fantasma (`hu-classification.util.ts`, `picking-staging-transfer.util.ts`, `putaway-engine.service.ts`, `master-data.controller.ts`, `clients.controller.ts`):**
+  - Implementado `syncParentPalletContainers(tx, parentHuIds)`: recalcula `PALLET.cantidad` según el conteo real de cajas hijas activas (`2 → 1` tras salida parcial), acompaña lógicamente al último hijo hacia `STG-01` durante picking (liberando de inmediato la posición física de almacenamiento `Gxxxx`) y cierra el contenedor padre a `cantidad = 0`, `estadoHu = 'DESPACHADO'` tras el despacho de la última caja.
+  - Aplicado `filterEffectiveActiveHus` como defensa en profundidad en `getEnrichedWarehouseLayout`, `evaluateLocationCapacity`, `recalculateLocationState`, `getLocations`, `getLocationById`, `designatePnc`, `getClients` y `getClient` para evitar tarimas vacías fantasma.
+- **Idempotencia, Seguridad RBAC, Fechas y Terminología (`Picking.tsx`, `Dispatch.tsx`, `NewOrderModal.tsx`, `OrderPreparationModal.tsx`, `DispatchManifestModal.tsx`, `order-sla.util.ts`, `wms-auth-rbac.spec.ts`):**
+  - Idempotencia estricta en `record-pick` (`CONSOLIDADO -> { idempotent: true }`; post-despacho bloqueado con `409 ESTADO_NO_APTO_PARA_PICKING`) y `dispatchOrder` (`{ idempotent: true, alreadyDispatched: true }`, sin doble descuento ni duplicación de `DispatchTracking` / `SALIDA_PEDIDO` / `AuditLog`).
+  - Separación RBAC estricta: `Operador Recepción` (`403`), `Operador Picking` limitado a surtido (`403` en `prepare`/`dispatch`/`confirm-delivery`), `Portal Depositante` bloqueado en acciones staff y cross-tenant (`403`), sin token (`401`) y rechazo de spoofing `x-user-role`. Actores reales tomados exclusivamente de `req.user`.
+  - Corrección calendar-day (`order-sla.util.ts` -> caducidad `30/06/2027` y `fechaCompromiso` sin desfase `-1` día) y estandarización de terminología `"posición física Gxxxx"` en lugar de textos `"Rack Gxxxx"`.
+
+### Certificación E2E Bloque 3A + Bloque 3B (Salidas Controladas Reales)
+- **Armonización controlada Pre-3B:** Ajustada explícitamente `PLT-REC-2026-0020-01.cantidad` de `2 → 1` antes del Bloque 3B conforme a la semántica canónica (`cantidad` del `PALLET` = número de cajas hijas activas). Resguardado snapshot independiente `pre_block3b_snapshot_2026-11-11.json`.
+- **Bloque 3A (Salida parcial `12 PZA` — `PED-QA-E2E-OUT-001`):** Salida de `BOX-REC-2026-0020-0001` (`MAN-PED-QA-E2E-OUT-001`, `DESPACHADO` / `EN_RUTA`), conservando `12 PZA` disponibles y `G0001 = OCUPADO`.
+- **Bloque 3B (Salida final `12 PZA` — `PED-QA-E2E-OUT-002`):** Salida de `BOX-REC-2026-0020-0002` (`OrderApproval = 1`, `MAN-PED-QA-E2E-OUT-002`, `DESPACHADO` / `EN_RUTA`).
+- **Estado Final Certificado Post-3B:**
+  - **`G0001`:** Liberada completamente (`estado = LIBRE`, `estadoCapacidad = LIBRE`, `ocupacionBultos = 0`, `capacidadDisponibleBultos = 1`, `stockFisicoPiezas = 0`, `bultosPorCliente = {}`, `0` HUs activas; **`45/45` posiciones libres en Plano 2D**).
+  - **`STG-01`:** `LIBRE`, `0 PZA`, `0` HUs activas, `0` reservas.
+  - **Inventario y HUs:** `0 PZA` físicas / `0` vendibles / `0` reservadas / `0` bloqueadas / `0` tránsito (`24 - 12 - 12 = 0`); `BOX-0001 = DESPACHADO`, `BOX-0002 = DESPACHADO`, `PLT-REC-2026-0020-01 = DESPACHADO (cantidad = 0)`.
+  - **Kárdex (`InventoryMovement`):** Exactamente `6` movimientos (`2` inbound `REC-01 → G0001`, `2` Bloque 3A, `2` Bloque 3B; `0` movimientos de Tarima Master).
+  - **Pruebas, Builds y Chrome QA:** Jest backend **`9/9 suites` — `61/61 tests PASS`** (incluye nuevo `block3-picking-dispatch.spec.ts`), `npx nest build` PASS, `tsc -b && vite build` PASS, `git diff --check` PASS, Chrome Headless UI (`0 consoleErrors`, `0 pageExceptions`, `0 httpErrors`).
+  - **Saneamiento de alias legacy y residuales no bloqueantes:** Eliminada la propiedad redundante `rackOrigen` en el payload JSON de `/manifest` y en `DispatchManifestModal.tsx` tras auditar ausencia de consumidores externos, dejando únicamente nombres neutrales (`ubicacion` / `ubicacionOrigen`); `PED-QA-E2E-OUT-001` conserva `OrderApproval = 0` histórico sin backfill retrospectivo, ambos pedidos permanecen en `EN_RUTA` (preparados para Bloque 4) y advertencia informativa de chunk Vite `> 500 kB`.
+
+---
+
 ## [1.9.28] — 2026-11-11 (Cierre Bloque 2 RC: Regresión e Higiene Operativa Inbound Post-RBAC)
 
 ### ✅ Remediación Bloque 2 Pre-Release Candidate (Rama `fix/rc-block2-inbound-cleanup` -> `dev`)

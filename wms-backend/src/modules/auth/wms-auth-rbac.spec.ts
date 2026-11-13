@@ -274,6 +274,26 @@ describe('WmsAuthGuard, RBAC Matrix, Anti-Spoofing y AuthController', () => {
     }
   });
 
+  it('separa Operador Picking de operaciones de Despacho y Supervisión (aprobar/preparar/despachar -> 403)', async () => {
+    const dbUser = makeDbUser('Operador Picking');
+    const prismaMock = { user: { findUnique: jest.fn().mockResolvedValue(dbUser) } };
+    const guard = new WmsAuthGuard(prismaMock as any, new Reflector());
+    const token = jwt.sign({ userId: dbUser.id }, JWT_SECRET);
+    const headers = { authorization: `Bearer ${token}` };
+
+    await expect(guard.canActivate(makeContext(OperationsController, 'startPicking', headers).context)).resolves.toBe(true);
+    await expect(guard.canActivate(makeContext(OperationsController, 'recordPick', headers).context)).resolves.toBe(true);
+    await expect(guard.canActivate(makeContext(OperationsController, 'dispatchOrder', headers).context)).rejects.toMatchObject({
+      status: HttpStatus.FORBIDDEN,
+    });
+    await expect(guard.canActivate(makeContext(OperationsController, 'confirmDelivery', headers).context)).rejects.toMatchObject({
+      status: HttpStatus.FORBIDDEN,
+    });
+    await expect(guard.canActivate(makeContext(OperationsController, 'prepareOrder', headers).context)).rejects.toMatchObject({
+      status: HttpStatus.FORBIDDEN,
+    });
+  });
+
   it('concede acceso total al Super Admin autenticado y devuelve permisosDetalle completos en /api/auth/me', async () => {
     const dbUser = makeDbUser('Super Admin');
     const prismaMock = { user: { findUnique: jest.fn().mockResolvedValue(dbUser) } };
