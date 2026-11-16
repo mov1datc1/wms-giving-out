@@ -4,6 +4,76 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.31] — 2026-11-16 (Cierre Bloque 5 RC: Conteo Cíclico, Reportes / CSV, AuditLog / AdminPanel e Integridad Transversal)
+
+### 📦 Remediación y Certificación Bloque 5 Pre-Release Candidate (Rama `fix/rc-block5-cycle-reports-audit` -> `dev`)
+
+Certificación integral de los módulos restantes pre-RC (**M. Conteo Cíclico**, **N. Reportes y Exportación CSV**, **O. AuditLog y AdminPanel**, **P. Integridad Transversal y Multi-Tenant**; `0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`), garantizando conciliación de inventario con snapshot atómico, inmutabilidad de finalización, bitácora de auditoría centralizada con actor auténtico JWT, exportaciones CSV fidedignas sin datos demo y aislamiento absoluto multi-tenant.
+
+### Módulo M: Conteo Cíclico y Blindaje Transaccional (`CycleCount`)
+- **Conteo Cíclico Controlado en Vivo (`CC-2026-001`):**
+  - Ejecución controlada en vivo sobre posición física `G0001` (`"Conteo Cíclico QA G0001 Pre-RC (Caso Seguro 0 vs 0)"`).
+  - Captura fidedigna de snapshot inicial: `cantidadSistema = 0`.
+  - Captura física: `cantidadFisica = 0` -> `discrepancia = 0`.
+  - Estado final: **`COMPLETADO`** con marca de cierre inmutable.
+- **Idempotencia Absoluta de Cierre:**
+  - Segunda invocación a `finalizeCycleCount` rechazada con HTTP **`409 Conflict`** (`CONTEO_YA_COMPLETADO`), impidiendo conciliaciones repetidas.
+- **Invariante de Stock Físico:**
+  - Al no haber discrepancias (0 vs 0), se generaron exactamente **`0 movimientos de ajuste`** en Kárdex y **`0 alteraciones en LotInventory`**.
+- **Blindaje Transaccional ante Escenarios Críticos:**
+  - Rechazo estricto con HTTP `400 Bad Request` ante intentos de registrar cantidades físicas negativas.
+  - Sobrantes físicos sin lote o cliente identificado son bloqueados preventivamente como `SOBRANTE_NO_IDENTIFICADO` sin mutar stock físico vendible.
+  - Discrepancias sobre líneas gestionadas por HUs activas son interceptadas y bloqueadas como `REQUIERE_CONCILIACION_HU`.
+  - Requisito obligatorio de motivo explícito referenciando el folio del conteo en cualquier movimiento de ajuste válido.
+- **Frontend y UX (`CycleCount.tsx`):**
+  - Visualización del badge `COMPLETADO` y acordeón de posiciones con detalle de SKU `ACE-OLI-1L`, lote `LOT-QA-E2E-001` y ubicación `G0001`.
+  - Una vez finalizado el conteo, la interfaz bloquea y no expone botones de captura manual ni escaneo con terminal Zebra.
+
+### Módulo N: Reportes y Exportación CSV Sin Datos Demo
+- **Kárdex y Trazabilidad (`Traceability.tsx`):**
+  - Exportación CSV de trazabilidad conectada al endpoint oficial `/api/inventory/movements`, conteniendo exactamente los 6 movimientos históricos certificados.
+  - Terminología física corregida: normalización de motivos históricos en exportación CSV y UI a *"en posición física G0001"* (sustituyendo textos antiguos con palabra "rack").
+  - Formato calendar-day estricto en caducidades (`30/06/2027`) sin desfases de zona horaria UTC.
+- **Inventario General (`Inventory.tsx`):**
+  - Exportación CSV con existencias en 0 PZA genera encabezados oficiales y 0 filas de producto, sin exponer Tarimas Master como stock ni datos sintéticos demo.
+
+### Módulo O: AdminPanel y Bitácora de Auditoría Global (`AuditLog`)
+- **Pestaña Bitácora de Auditoría (`AdminPanel.tsx`):**
+  - Nueva pestaña Tab 4 (*Bitácora de Auditoría del Sistema*) consumiendo `GET /api/admin/audit-log`.
+  - Búsqueda reactiva en tiempo real por texto (usuario, acción, entidad, ID, detalle) con debounce.
+  - Filtro interactivo por tipo de acción (`ENTREGA_CONFIRMADA`, `CONTEO_CICLICO_FINALIZADO`, etc.).
+  - Visualización del actor auténtico capturado de la sesión JWT (`admin@givingout.com` / `Administrador`).
+  - Vista expandible de payload y metadata JSON para auditoría forense.
+- **Blindaje RBAC y Anti-Spoofing:**
+  - `AdminAuthGuard`: Rechazo con HTTP `403 Forbidden` a cualquier usuario operativo sin permiso `admin`.
+  - Cabeceras inyectadas o falsificadas (`x-user-role`) son estrictamente ignoradas.
+
+### Módulo P: Integridad Transversal y Multi-Tenant
+- **Aislamiento Multi-Tenant Estricto:**
+  - Usuario Portal Depositante AlimNorte (`pedro@alimnorte.mx`): Bloqueado de `/admin` y `/conteo-ciclico` (redirigido inmediatamente a `/portal`). Visualiza exclusivamente su inventario y pedidos sin visibilidad de Fashion Forward.
+  - Usuario Portal Depositante Fashion Forward (`laura@fashionforward.mx`): Sin acceso a SKUs (`ACE-OLI-1L`) ni datos de AlimNorte.
+- **Cero Duplicados de Negocio:**
+  - Verificación de ausencia de eventos operacionales duplicados en la bitácora transversal.
+- **Invariantes Físicos del Almacén:**
+  - `LotInventory`: 0 PZA (disponible: 0, reservado: 0, bloqueado: 0).
+  - `HandlingUnit`: 3 unidades (`BOX-0001`, `BOX-0002`, `PLT-01`) en `DESPACHADO`.
+  - Kárdex: exactamente 6 movimientos históricos inmutables.
+  - Ubicaciones `G0001` y `STG-01` en estado `LIBRE` (ocupación 0).
+  - 45 de 45 posiciones físicas `Gxxxx` disponibles y libres con capacidad = 1.
+  - Pedidos QA: `PED-QA-E2E-OUT-001` en `ENTREGADO`, `PED-QA-E2E-OUT-002` en `DESPACHADO / EN_RUTA` (control intacto).
+
+### Resultados de Verificación y Calificaciones Oficiales
+- **Calificaciones por Módulo:**
+  - **M. Conteo Cíclico:** **`PASS`**
+  - **N. Reportes / CSV:** **`PASS`**
+  - **O. AuditLog / AdminPanel:** **`PASS`**
+  - **P. Integridad Transversal:** **`PASS`**
+- **Pruebas Automatizadas Jest (`block5-cycle-reports-audit.spec.ts`):** **`18/18 PASS`** (Casos A–R).
+- **Auditoría Visual Chrome Headless (`scratch/qa_chrome_block5.js`):** **`28/28 PASS`** (100%), `0` consoleErrors, `0` pageExceptions, `0` httpErrors (>=400).
+- **Compilaciones:** `npx nest build` PASS, `tsc -b && vite build` PASS (2026 módulos), `git diff --check` PASS.
+
+---
+
 ## [1.9.30] — 2026-11-13 (Cierre Bloque 4 RC: Confirmación de Entrega E2E y Cierre de Ciclo Logístico)
 
 ### 📦 Remediación y Certificación Bloque 4 Pre-Release Candidate (Rama `fix/rc-block4-delivery-e2e` -> `dev`)

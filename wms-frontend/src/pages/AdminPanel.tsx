@@ -4,11 +4,11 @@ import { API } from '../config/api';
 import {
   Shield, Users, Key, Settings, Search, Plus, Edit3, Mail,
   CheckCircle, AlertTriangle, Save, RefreshCw, Wifi, Building2,
-  Lock, UserCheck, X, Eye, EyeOff, ShieldAlert, Info
+  Lock, UserCheck, X, Eye, EyeOff, ShieldAlert, Info, History, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { formatCalendarDate } from '../utils/dateUtils';
 
-const tabs = ['Usuarios', 'Roles', 'Configuración', 'Correo SMTP'];
+const tabs = ['Usuarios', 'Roles', 'Configuración', 'Correo SMTP', 'Bitácora de Auditoría'];
 
 export function AdminPanel() {
   const { token, user: currentUser, hasPermission } = useAuth();
@@ -52,6 +52,14 @@ export function AdminPanel() {
   const [smtpMsg, setSmtpMsg] = useState({ type: '', text: '' });
   const [showPass, setShowPass] = useState(false);
 
+  // AuditLog state
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [loadingAudit, setLoadingAudit] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditActionFilter, setAuditActionFilter] = useState('');
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+
   const getAuthHeaders = (): Record<string, string> => {
     const activeToken = token || localStorage.getItem('wms_token') || localStorage.getItem('token');
     return {
@@ -78,7 +86,26 @@ export function AdminPanel() {
 
   useEffect(() => {
     if (activeTab === 3) loadSmtpConfig();
+    if (activeTab === 4) loadAuditLogs();
   }, [activeTab]);
+
+  async function loadAuditLogs() {
+    setLoadingAudit(true);
+    setAuditError(null);
+    try {
+      const res = await fetch(`${API}/admin/audit-log`, { headers: getAuthHeaders() });
+      if (res.ok) {
+        setAuditLogs(await res.json());
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setAuditError(errJson.message || `No fue posible cargar la bitácora de auditoría (HTTP ${res.status})`);
+      }
+    } catch (err: any) {
+      setAuditError(err.message || 'Error de conexión con el servidor');
+    } finally {
+      setLoadingAudit(false);
+    }
+  }
 
   // Protección en render si el usuario no tiene permisos
   if (currentUser && !currentUser.isSuperAdmin && !hasPermission('admin')) {
@@ -330,6 +357,31 @@ export function AdminPanel() {
     );
   });
 
+  function getActionBadgeStyle(action: string) {
+    const act = (action || '').toUpperCase();
+    if (act.includes('LOGIN')) return { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' };
+    if (act.includes('ENTREGA')) return { bg: '#ECFDF5', color: '#059669', border: '#A7F3D0' };
+    if (act.includes('DESPACH')) return { bg: '#EFF6FF', color: '#2563EB', border: '#BFDBFE' };
+    if (act.includes('PICKING')) return { bg: '#EEF2FF', color: '#4F46E5', border: '#C7D2FE' };
+    if (act.includes('RECEPCION') || act.includes('PREVIO')) return { bg: '#FDF4FF', color: '#9333EA', border: '#F0ABFC' };
+    if (act.includes('CONTEO') || act.includes('AJUSTE')) return { bg: '#FFFBEB', color: '#D97706', border: '#FDE68A' };
+    if (act.includes('CALIDAD')) return { bg: '#FEF2F2', color: '#DC2626', border: '#FECACA' };
+    return { bg: '#F8FAFC', color: '#64748B', border: '#E2E8F0' };
+  }
+
+  const uniqueActions = Array.from(new Set(auditLogs.map(l => l.accion).filter(Boolean)));
+  const filteredAuditLogs = auditLogs.filter(l => {
+    const q = auditSearch.toLowerCase().trim();
+    const matchSearch = !q ||
+      l.usuario?.toLowerCase().includes(q) ||
+      l.accion?.toLowerCase().includes(q) ||
+      l.entidad?.toLowerCase().includes(q) ||
+      l.entidadId?.toLowerCase().includes(q) ||
+      l.detalle?.toLowerCase().includes(q);
+    const matchAction = !auditActionFilter || l.accion === auditActionFilter;
+    return matchSearch && matchAction;
+  });
+
   return (
     <div className="page-container">
       <div className="page-header">
@@ -353,6 +405,7 @@ export function AdminPanel() {
               {i === 1 && <Key size={14} />}
               {i === 2 && <Settings size={14} />}
               {i === 3 && <Mail size={14} />}
+              {i === 4 && <History size={14} />}
               {tab}
             </button>
           ))}
@@ -647,6 +700,149 @@ export function AdminPanel() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ===== TAB 4: BITÁCORA DE AUDITORÍA (AUDITLOG) ===== */}
+      {activeTab === 4 && (
+        <div className="card">
+          <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <span style={{ fontWeight: 700, fontSize: 14 }}>
+                Bitácora de Auditoría del Sistema {loadingAudit ? '(Cargando...)' : `(${filteredAuditLogs.length} eventos)`}
+              </span>
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--text-secondary)' }}>
+                Registro inmutable de trazabilidad operativa y de seguridad (WMS AuditLog)
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="search-box">
+                <Search size={14} />
+                <input
+                  placeholder="Buscar en bitácora..."
+                  value={auditSearch}
+                  onChange={e => setAuditSearch(e.target.value)}
+                />
+              </div>
+              <select
+                className="form-select"
+                style={{ fontSize: 12, padding: '4px 8px', height: 32 }}
+                value={auditActionFilter}
+                onChange={e => setAuditActionFilter(e.target.value)}
+              >
+                <option value="">Todas las acciones ({uniqueActions.length})</option>
+                {uniqueActions.map(act => (
+                  <option key={act} value={act}>{act}</option>
+                ))}
+              </select>
+              <button className="btn btn-secondary btn-sm" onClick={loadAuditLogs} title="Recargar bitácora">
+                <RefreshCw size={14} className={loadingAudit ? 'animate-spin' : ''} />
+              </button>
+            </div>
+          </div>
+
+          {auditError ? (
+            <div style={{ padding: 24, textAlign: 'center', color: '#DC2626' }}>
+              <AlertTriangle size={32} style={{ margin: '0 auto 8px', display: 'block' }} />
+              <p style={{ fontWeight: 600, fontSize: 14, margin: '0 0 8px' }}>{auditError}</p>
+              <button className="btn btn-secondary btn-sm" onClick={loadAuditLogs}>Reintentar</button>
+            </div>
+          ) : loadingAudit ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
+              <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 8px', display: 'block' }} />
+              <p style={{ fontSize: 13 }}>Cargando bitácora de auditoría...</p>
+            </div>
+          ) : filteredAuditLogs.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
+              <Info size={28} style={{ margin: '0 auto 8px', display: 'block', opacity: 0.6 }} />
+              <p style={{ fontSize: 13, fontWeight: 500 }}>No se encontraron registros de auditoría que coincidan con los filtros aplicados.</p>
+            </div>
+          ) : (
+            <div className="table-responsive" style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto' }}>
+              <table className="table" style={{ fontSize: 12, width: '100%' }}>
+                <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)', zIndex: 1 }}>
+                  <tr>
+                    <th style={{ width: 160 }}>Fecha / Hora</th>
+                    <th style={{ width: 180 }}>Usuario / Actor</th>
+                    <th style={{ width: 200 }}>Acción</th>
+                    <th style={{ width: 140 }}>Entidad</th>
+                    <th>Detalle de Auditoría</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredAuditLogs.map(log => {
+                    const badge = getActionBadgeStyle(log.accion);
+                    const isExpanded = expandedLogId === log.id;
+                    return (
+                      <tr key={log.id} style={{ verticalAlign: 'top' }}>
+                        <td style={{ whiteSpace: 'nowrap', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: 11.5 }}>
+                          {new Date(log.createdAt).toLocaleString('es-MX')}
+                        </td>
+                        <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                          {log.usuario}
+                        </td>
+                        <td>
+                          <span style={{
+                            display: 'inline-block',
+                            padding: '2px 8px',
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            letterSpacing: '0.02em',
+                            background: badge.bg,
+                            color: badge.color,
+                            border: `1px solid ${badge.border}`,
+                          }}>
+                            {log.accion}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: 600, color: '#0F172A' }}>{log.entidad || '—'}</div>
+                          {log.entidadId && (
+                            <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontFamily: 'monospace' }} title={log.entidadId}>
+                              {log.entidadId.length > 18 ? `${log.entidadId.slice(0, 8)}...${log.entidadId.slice(-6)}` : log.entidadId}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <div style={{
+                            fontSize: 12,
+                            color: 'var(--text-secondary)',
+                            lineHeight: 1.45,
+                            maxHeight: isExpanded ? 'none' : '2.9em',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}>
+                            {log.detalle || '—'}
+                          </div>
+                          {log.detalle && log.detalle.length > 90 && (
+                            <button
+                              type="button"
+                              onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: 'var(--accent-primary)',
+                                fontSize: 11,
+                                cursor: 'pointer',
+                                padding: '2px 0 0',
+                                fontWeight: 600,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 2,
+                              }}
+                            >
+                              {isExpanded ? <>Ver menos <ChevronUp size={12} /></> : <>Ver detalle completo <ChevronDown size={12} /></>}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

@@ -893,6 +893,49 @@ npm run build          # Build completo
 
 ---
 
+## 20. Actualización Bloque 5 RC — Conteo Cíclico, Reportes / CSV, AuditLog / AdminPanel e Integridad Transversal
+
+**Estado:** Certificado al 100% en base de datos real, backend y frontend sobre `fix/rc-block5-cycle-reports-audit` (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`).
+
+### 20.1 Resumen de Módulos Certificados y Calificaciones
+* **Módulo M (Conteo Cíclico):** **`PASS`**
+  - Conteo cíclico `CC-2026-001` ejecutado en vivo sobre ubicación `G0001` (caso seguro 0 vs 0).
+  - Snapshot de sistema capturado fielmente (`cantidadSistema = 0`), conteo físico verificado (`cantidadFisica = 0`), discrepancia resultante (`discrepancia = 0`).
+  - Estado promovido a `COMPLETADO`. Segundo intento de cierre (`finalizeCycleCount`) rechazado con HTTP `409 Conflict` por inmutabilidad de conciliación.
+  - Al no existir diferencias, se generaron exactamente **0 movimientos de ajuste en Kárdex** y **0 alteraciones en LotInventory**.
+  - Blindajes transaccionales verificados: rechazo de cantidades físicas negativas (`400 Bad Request`), sobrante sin lote bloqueado como `SOBRANTE_NO_IDENTIFICADO`, líneas con HUs activas bloqueadas como `REQUIERE_CONCILIACION_HU` y requerimiento mandatorio de motivo explícito en ajustes.
+  - En UI (`CycleCount.tsx`), no se exponen botones de captura manual ni escáner Zebra tras la finalización.
+
+* **Módulo N (Reportes y Exportación CSV):** **`PASS`**
+  - Eliminación total de datos demo o sintéticos en reportes de inventario y trazabilidad.
+  - Exportación CSV de Trazabilidad (`Traceability.tsx`) conectada a `/api/inventory/movements`, conteniendo exactamente los 6 movimientos históricos certificados.
+  - Terminología física corregida: normalización automática en exportación CSV y UI de motivos antiguos a *"en posición física G0001"*, suprimiendo la denominación anticuada de rack.
+  - Fechas de caducidad preservadas estrictamente bajo formato calendar-day (`30/06/2027`) sin desplazamientos por huso horario UTC.
+  - Exportación CSV de Inventario con stock en 0 PZA genera encabezados oficiales y 0 filas sin incluir Tarimas Master como stock disponible.
+
+* **Módulo O (AdminPanel y AuditLog):** **`PASS`**
+  - Incorporación de Tab 4 (*Bitácora de Auditoría del Sistema*) en `AdminPanel.tsx` consumiendo `GET /api/admin/audit-log`.
+  - Captura del actor auténtico desde sesión JWT (`admin@givingout.com` / `Administrador`), erradicando spoofing de identidad.
+  - Búsqueda reactiva por texto libre y filtrado por acción (`CONTEO_CICLICO_FINALIZADO`, `ENTREGA_CONFIRMADA`) validados visualmente.
+  - Control de acceso RBAC estricto: `AdminAuthGuard` rechaza con HTTP `403 Forbidden` a usuarios sin permiso admin, ignorando headers `x-user-role` inyectados.
+
+* **Módulo P (Integridad Transversal y Multi-Tenant):** **`PASS`**
+  - Ausencia absoluta de eventos operacionales duplicados en la bitácora transversal.
+  - Aislamiento multi-tenant: Portal Depositante AlimNorte (`pedro@alimnorte.mx`) bloqueado de `/admin` y `/conteo-ciclico` (redirigido a `/portal`); sin visibilidad de Fashion Forward.
+  - Portal Depositante Fashion Forward (`laura@fashionforward.mx`) sin acceso a SKUs ni datos de AlimNorte.
+  - Invariantes de almacén intactos: `LotInventory = 0 PZA`, `HandlingUnit = 3` (todas en `DESPACHADO`), `InventoryMovement = 6 exactos`, `G0001` y `STG-01` en `LIBRE`, 45/45 posiciones `Gxxxx` disponibles y libres con capacidad = 1.
+  - Pedidos QA: `PED-QA-E2E-OUT-001` en `ENTREGADO`, `PED-QA-E2E-OUT-002` en `DESPACHADO / EN_RUTA` (control intacto).
+
+### 20.2 Resultados de Validación Integral
+* **Pruebas Automatizadas Unitarias (Jest):** `block5-cycle-reports-audit.spec.ts` -> **`18/18 PASS`**.
+* **Auditoría Visual E2E (Chrome Headless):** `qa_chrome_block5.js` -> **`28/28 VERIFICACIONES PASS`**, 0 `consoleErrors`, 0 `pageExceptions`, 0 `httpErrors (>=400)`.
+* **Compilaciones Oficiales:**
+  - `nest build`: **PASS (código 0)**.
+  - `tsc -b && vite build`: **PASS (código 0)**.
+  - `git diff --check`: **PASS (código 0)**.
+
+---
+
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline
 - [ ] Cache de datos críticos en dispositivo
