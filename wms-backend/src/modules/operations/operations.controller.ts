@@ -7750,8 +7750,8 @@ export class OperationsController {
 
           const lotOrderBy: any =
             client.reglaInventario === 'FEFO'
-              ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }]
-              : [{ createdAt: 'asc' }];
+              ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }]
+              : [{ createdAt: 'asc' }, { id: 'asc' }];
 
           const candidateLotsPreLock = await tx.lotInventory.findMany({
             where: lotWhere,
@@ -8076,8 +8076,8 @@ export class OperationsController {
           },
         },
         orderBy: isFefo
-          ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }]
-          : [{ createdAt: 'asc' }],
+          ? [{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }]
+          : [{ createdAt: 'asc' }, { id: 'asc' }],
       });
 
       // Mapear reservas iniciales de la línea (soporta multi-lote vía asignacionesJson y retrocompatibilidad vía lotId)
