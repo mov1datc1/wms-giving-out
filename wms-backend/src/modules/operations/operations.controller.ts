@@ -5864,14 +5864,39 @@ export class OperationsController {
   @Post('print-log')
   @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['crear', 'imprimir', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar log de impresión de etiquetas' })
-  async createPrintLog(@Body() data: { usuario: string; tipoEtiqueta: string; referencia: string; motivo?: string }) {
+  async createPrintLog(
+    @Body() data: { usuario?: string; tipoEtiqueta?: string; referencia: string; reimpresion?: boolean; motivo?: string },
+    @Req() req?: any,
+  ) {
+    const actor = req?.user?.nombre || req?.user?.email || data.usuario || 'Operador';
+    const isReprint = Boolean(data.reimpresion);
     return this.prisma.printLog.create({
       data: {
-        usuario: data.usuario || 'Operador',
+        usuario: actor,
         tipoEtiqueta: data.tipoEtiqueta || 'RECEPCION',
         referencia: data.referencia,
-        motivo: data.motivo || 'Impresión de etiquetas para recepción y escaneo',
+        reimpresion: isReprint,
+        motivo: data.motivo || (isReprint ? 'Reimpresión de etiqueta' : 'Impresión de etiquetas para recepción y escaneo'),
       },
+    });
+  }
+
+  @Get('print-log')
+  @RequireAccess({ modules: ['recepcion', 'etiquetado'], actions: ['ver'], allowPortal: false })
+  @ApiOperation({ summary: 'Consultar bitácora de impresión y reimpresión de etiquetas' })
+  async getPrintLogs(
+    @Query('referencia') referencia?: string,
+    @Query('tipoEtiqueta') tipoEtiqueta?: string,
+    @Query('reimpresion') reimpresion?: string,
+  ) {
+    const where: any = {};
+    if (referencia) where.referencia = { contains: referencia, mode: 'insensitive' };
+    if (tipoEtiqueta) where.tipoEtiqueta = tipoEtiqueta;
+    if (reimpresion !== undefined && reimpresion !== '') where.reimpresion = reimpresion === 'true';
+    return this.prisma.printLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
     });
   }
 

@@ -4,6 +4,61 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.32] — 2026-11-16 (Certificación Etiquetado: Histórico y Reimpresión — Revisión Alejandra)
+
+### 📦 Remediación y Certificación de Etiquetado Pre-RC (Rama `fix/rc-label-history-reprint` -> `dev`)
+
+Certificación integral y cierre definitivo del pendiente histórico del módulo de **Etiquetado → Histórico / Reimpresión (Revisión Alejandra)** (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`). Se garantizó la separación estricta entre unidades físicas en almacén e histórico, preservación íntegra de unidades logísticas despachadas para reposición y auditoría, tarjeta térmica Zebra con procedencia de recepción y andén, tratamiento de Tarima Master como contenedor logístico puro, registro canónico de reimpresión en `PrintLog` y blindaje RBAC anti-spoofing.
+
+### Módulo Etiquetado: Ámbitos Operativo vs Histórico y Reimpresión Documental
+- **Separación Rigurosa `scope=FISICO` vs `scope=HISTORICO`:**
+  - Consulta `scope=FISICO` retorna exclusivamente unidades logísticas activas físicamente en almacén. Ante inventario comercial en 0 PZA, despliega estado vacío limpio (*"0 unidades logísticas en almacén físico"*, *"Inventario comercial disponible = 0 PZA"*), eliminando cualquier uso indebido del histórico como fallback visual.
+  - Consulta `scope=HISTORICO` conserva y retorna las 3 unidades logísticas despachadas (`PLT-REC-2026-0020-01`, `BOX-REC-2026-0020-0001`, `BOX-REC-2026-0020-0002`) sin filtrarlas ni ocultarlas tras la salida del almacén.
+- **Enriquecimiento de Procedencia y Trazabilidad:**
+  - El backend (`inventory.controller.ts`) incluye la relación `recepcion: { select: { id, codigo, andenAsignado, fechaRecepcion, createdAt } }` en el selector de HUs.
+  - Búsqueda cruzada multicriterio por código de recepción (`REC-2026-0020`), código de HU, SKU y Lote.
+  - Presentación térmica en UI e impresión HTML despliega: Recepción (`REC-2026-0020`), Andén (`Andén 01`), SKU (`ACE-OLI-1L`), Lote (`LOT-QA-E2E-001`), Caducidad (`30/06/2027`), Tarima Matriz (`PLT-REC-2026-0020-01`), orden de salida asociada y marca visual destacada `*** REIMPRESIÓN HISTÓRICA — FUERA DE ALMACÉN ***`.
+- **Tratamiento de Tarima Master como Contenedor Logístico:**
+  - La Tarima Master `PLT-REC-2026-0020-01` se presenta como contenedor de 2 cajas asociadas (1 tarima, 0 PZA comerciales adicionales).
+  - Eliminación total de textos demo o fallbacks ambiguos (`SKU-N/A`, `Sin descripción`, conteo artificial de `2 PZA`).
+- **Formato Calendar-Day Estricto en Caducidad:**
+  - Caducidad de `LOT-QA-E2E-001` fijada en `30/06/2027` mediante formateo calendar-day, previniendo el desfase UTC de -1 día a `29/06/2027`.
+- **Reimpresión Documental y Bitácora `PrintLog`:**
+  - Invocación de reimpresión registra evento canónico en `POST /api/print-log` distinguiendo `reimpresion: true`.
+  - Captura del operador auténtico desde la sesión JWT (`req.user.name || req.user.email`).
+  - Blindaje anti-spoofing: cabeceras inyectadas `x-user-role` son estrictamente ignoradas.
+  - Aislamiento RBAC: restricción `allowPortal: false` deniega el acceso a depositantes externos.
+- **Invarianza Absoluta de Inventario y Kárdex:**
+  - La reimpresión histórica NO crea HandlingUnits nuevas en base de datos.
+  - NO reactiva el estado de las HUs (permanecen inmutables en `DESPACHADO`).
+  - NO muta `LotInventory` (inventario físico permanece en 0 PZA).
+  - NO genera registros en `InventoryMovement` (Kárdex permanece intacto con 6 movimientos históricos).
+  - NO ocupa posiciones físicas (`G0001` y `STG-01` permanecen `LIBRE` con 0/1 ocupación).
+- **Aislamiento Multi-Tenant:**
+  - La ruta `/etiquetado` es exclusiva para personal staff; cualquier usuario de portal depositante (`pedro@alimnorte.mx`) es redirigido de forma automática a `/portal`.
+
+### Resultados de Verificación y Calificaciones Oficiales
+- **Calificaciones:**
+  - **Etiquetado Operativo:** **`PASS`**
+  - **Histórico de HUs:** **`PASS`**
+  - **Reimpresión Documental:** **`PASS`**
+  - **Integridad de Almacén:** **`PASS`**
+- **Pruebas Automatizadas Jest (`label-history-reprint.spec.ts`):** **`14/14 PASS`** (Casos A–N).
+- **Auditoría Visual Chrome Headless (`scratch/qa_chrome_label_history.js`):** **`9/9 PASS`** (100%), `0` consoleErrors, `0` pageExceptions, `0` httpErrors (>=400).
+- **Compilaciones:** `npx nest build` PASS, `tsc -b && vite build` PASS (2026 módulos), `git diff --check` PASS.
+- **Estado de Base de Datos Post-Auditoría:**
+  - `HandlingUnit = 3` (todas `DESPACHADO`).
+  - `LotInventory = 0 PZA` (0 disponible, 0 bloqueada, 0 reservada).
+  - `InventoryMovement = 6` movimientos históricos inmutables.
+  - `Location G0001 = LIBRE` (0/1 ocupación).
+  - `Location STG-01 = LIBRE` (0/1 ocupación).
+  - `45/45` posiciones físicas `Gxxxx` libres.
+  - `Receipt REC-2026-0020 = CERRADA`, `etiquetasEstado: COLOCADAS`, `andenAsignado: Andén 01`.
+  - `PED-QA-E2E-OUT-001 = ENTREGADO` | `PED-QA-E2E-OUT-002 = DESPACHADO / EN_RUTA` (control intacto).
+  - `PrintLog = 3` registros (exactamente +1 registro nuevo canónico por la reimpresión controlada).
+
+---
+
 ## [1.9.31] — 2026-11-16 (Cierre Bloque 5 RC: Conteo Cíclico, Reportes / CSV, AuditLog / AdminPanel e Integridad Transversal)
 
 ### 📦 Remediación y Certificación Bloque 5 Pre-Release Candidate (Rama `fix/rc-block5-cycle-reports-audit` -> `dev`)
