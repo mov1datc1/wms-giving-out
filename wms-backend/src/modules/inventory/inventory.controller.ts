@@ -146,6 +146,7 @@ export class InventoryController {
         { codigo: { contains: q, mode: 'insensitive' } },
         { loteTexto: { contains: q, mode: 'insensitive' } },
         { skuCodigo: { contains: q, mode: 'insensitive' } },
+        { recepcion: { codigo: { contains: q, mode: 'insensitive' } } },
         { lote: { lote: { contains: q, mode: 'insensitive' } } },
         { lote: { sku: { codigo: { contains: q, mode: 'insensitive' } } } },
         { lote: { sku: { descripcion: { contains: q, mode: 'insensitive' } } } },
@@ -155,6 +156,15 @@ export class InventoryController {
     return this.prisma.handlingUnit.findMany({
       where,
       include: {
+        recepcion: {
+          select: {
+            id: true,
+            codigo: true,
+            andenAsignado: true,
+            fechaRecepcion: true,
+            createdAt: true,
+          },
+        },
         lote: {
           include: {
             sku: { select: { codigo: true, descripcion: true, categoria: true, uomBase: true, capacidadEmpaque: true } },

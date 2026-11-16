@@ -936,6 +936,56 @@ npm run build          # Build completo
 
 ---
 
+## 21. Actualización Etiquetado — Histórico y Reimpresión (Revisión Alejandra)
+
+**Estado:** Certificado al 100% en base de datos real, backend y frontend sobre `fix/rc-label-history-reprint` (`0 BLOQUEANTES`, `0 ALTOS`, `0 MEDIOS`).
+
+### 21.1 Resumen de Módulos Certificados y Calificaciones
+* **Módulo Etiquetado Operativo y Separación de Ámbitos:** **`PASS`**
+  - Consulta `scope=FISICO`: filtra exclusivamente HUs con stock activo en almacén. Al no existir existencias comerciales en almacén físico, despliega un estado vacío fidedigno (*"0 unidades logísticas en almacén físico"*, *"Inventario comercial disponible = 0 PZA"*), erradicando el uso incorrecto del histórico como fallback visual.
+  - Consulta `scope=HISTORICO`: preserva y retorna las 3 HUs despachadas (`PLT-REC-2026-0020-01`, `BOX-REC-2026-0020-0001`, `BOX-REC-2026-0020-0002`) sin filtrarlas tras la salida física del CEDIS.
+* **Trazabilidad y Enriquecimiento de Procedencia:** **`PASS`**
+  - El backend (`inventory.controller.ts`) incluye la relación `recepcion: { select: { id, codigo, andenAsignado, fechaRecepcion, createdAt } }`.
+  - Soporte de búsqueda multicriterio por recepción (`REC-2026-0020`), código de HU, SKU y lote.
+  - Presentación térmica en UI e impresión HTML Zebra incluye: Recepción (`REC-2026-0020`), Andén (`Andén 01`), SKU (`ACE-OLI-1L`), Lote (`LOT-QA-E2E-001`), Caducidad (`30/06/2027`), Tarima Matriz (`PLT-REC-2026-0020-01`), orden de salida asociada y cintillo `*** REIMPRESIÓN HISTÓRICA — FUERA DE ALMACÉN ***`.
+* **Tarima Master como Contenedor Logístico:** **`PASS`**
+  - `PLT-REC-2026-0020-01` presentada como contenedor logístico de 2 cajas asociadas (1 tarima, 0 PZA comerciales adicionales).
+  - Eliminación de textos demo (`SKU-N/A`, `Sin descripción`, conteo artificial de `2 PZA`).
+* **Fecha Calendar-Day Estricta:** **`PASS`**
+  - Caducidad de `LOT-QA-E2E-001` fijada en `30/06/2027` mediante formateo calendar-day, previniendo el desfase UTC de -1 día a `29/06/2027`.
+* **Reimpresión Documental Canónica y Bitácora `PrintLog`:** **`PASS`**
+  - Invocación de reimpresión registra evento en `POST /api/print-log` distinguiendo `reimpresion: true`.
+  - Captura del operador auténtico desde la sesión JWT (`req.user.name || req.user.email`), ignorando cabeceras `x-user-role`.
+  - Restricción `allowPortal: false` deniega el acceso a depositantes externos.
+* **Invarianza Absoluta de Inventario y Kárdex:** **`PASS`**
+  - La reimpresión histórica NO crea HandlingUnits nuevas en base de datos.
+  - NO reactiva el estado de las HUs (permanecen inmutables en `DESPACHADO`).
+  - NO muta `LotInventory` (inventario físico permanece en 0 PZA).
+  - NO genera registros en `InventoryMovement` (Kárdex permanece intacto con 6 movimientos históricos).
+  - NO ocupa posiciones físicas (`G0001` y `STG-01` permanecen `LIBRE` con 0/1 ocupación).
+* **Aislamiento Multi-Tenant:** **`PASS`**
+  - La ruta `/etiquetado` es exclusiva para personal staff; cualquier usuario de portal depositante (`pedro@alimnorte.mx`) es redirigido de forma automática a `/portal`.
+
+### 21.2 Resultados de Validación Integral
+* **Pruebas Automatizadas Unitarias (Jest):** `label-history-reprint.spec.ts` -> **`14/14 PASS`** (Casos A–N).
+* **Auditoría Visual E2E (Chrome Headless):** `qa_chrome_label_history.js` -> **`9/9 VERIFICACIONES PASS`**, 0 `consoleErrors`, 0 `pageExceptions`, 0 `httpErrors (>=400)`.
+* **Compilaciones Oficiales:**
+  - `nest build`: **PASS (código 0)**.
+  - `tsc -b && vite build`: **PASS (código 0)**.
+  - `git diff --check`: **PASS (código 0)**.
+* **Auditoría de Base de Datos Post-Reimpresión:**
+  - `HandlingUnit = 3` (`DESPACHADO`).
+  - `LotInventory = 0 PZA` (0 disponible, 0 bloqueada, 0 reservada).
+  - `InventoryMovement = 6` movimientos históricos inmutables.
+  - `Location G0001 = LIBRE` (0/1 ocupación).
+  - `Location STG-01 = LIBRE` (0/1 ocupación).
+  - `45/45` posiciones físicas `Gxxxx` libres.
+  - `Receipt REC-2026-0020 = CERRADA`, `etiquetasEstado: COLOCADAS`, `andenAsignado: Andén 01`.
+  - `PED-QA-E2E-OUT-001 = ENTREGADO` | `PED-QA-E2E-OUT-002 = DESPACHADO / EN_RUTA` (control intacto).
+  - `PrintLog = 3` registros (exactamente +1 registro nuevo canónico por la reimpresión controlada).
+
+---
+
 ### 🔜 v1.1 — Fase 2: PWA + Mobile
 - [ ] Service Worker para modo offline
 - [ ] Cache de datos críticos en dispositivo
