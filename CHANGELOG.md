@@ -4,6 +4,50 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.33] — 2026-11-16 (Preflight Motor Asignación FEFO / FIFO Determinista — Pre-E2E Manual)
+
+### 📦 Motor de Asignación y Reserva FEFO / FIFO Pre-RC (Rama `test/rc-final-integral-e2e` -> `dev`)
+
+Certificación profunda y remediación preventiva del motor de asignación, reserva y sugerencia inteligente de lotes (`createOrder` y `suggestOrderAllocation` en `operations.controller.ts`) previo a la Prueba Manual Integral E2E. Se garantizó el total ordenamiento determinista mediante Primary Key inmutable, eliminación de colisiones por timestamps idénticos, exclusión de HUs despachadas y Tarimas Master, validación de compatibilidad con cajas cerradas (HTTP 409 ante fraccionamiento), aislamiento multi-tenant y blindaje anti-spoofing con HTTP 403.
+
+### Motor de Asignación / Reserva: FEFO, FIFO y Desempate Canónico
+- **Desempate Determinista Canónico (`id: 'asc'`):**
+  - Implementación de un tercer criterio determinista en FEFO: `[{ fechaVencimiento: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }]`.
+  - Implementación de un segundo criterio determinista en FIFO: `[{ createdAt: 'asc' }, { id: 'asc' }]`.
+  - Justificación técnica: La Primary Key (`id`) de `LotInventory` garantiza ordenamiento total estrictamente unívoco en PostgreSQL, resolviendo cualquier condición de borde donde dos lotes compartan idéntica fecha de caducidad y mismo `createdAt` al milisegundo.
+- **Precedencia Absoluta FEFO:**
+  - En clientes FEFO (`client.reglaInventario === 'FEFO'`), la caducidad domina incondicionalmente sobre la fecha de ingreso.
+  - Evaluación centralizada vía `evaluateInventoryItemOperationalState`: lotes vencidos (`VENCIDO`), en cuarentena (`CUARENTENA`) o en merma (`MERMA`) quedan automáticamente fuera de la asignación comercial.
+- **Mecanismo FIFO Fidedigno:**
+  - Basado en `LotInventory.createdAt ASC`, marcando el momento exacto en que la mercancía completó el Putaway y quedó disponible físicamente en el rack de almacenamiento para surtido.
+- **Tratamiento de Lotes sin Caducidad (`fechaVencimiento: null`):**
+  - Por estándar PostgreSQL (`NULLS LAST` en orden ascendente), los lotes sin fecha de caducidad se consumen al final en clientes FEFO, preservando la prioridad del inventario perecedero. En clientes FIFO se ordenan por `createdAt ASC`.
+- **Validación de Caja Cerrada (`ACE-OLI-1L`):**
+  - Validación autoritativa en `validateHuAllocationCompatibility`: pedidos por múltiplos exactos (12, 24 PZA) son asignados satisfactoriamente; solicitudes con cantidades incompatibles (ej. 13 PZA) son rechazadas con HTTP 409 Conflict (`CANTIDAD_NO_COMPATIBLE_CON_HU` / `CANTIDAD_NO_COMPATIBLE_CON_CAJA_CERRADA`).
+- **Exclusión de Tarimas Master y HUs Despachadas:**
+  - Exclusión explícita de `tipoHu: { notIn: ['PALLET', 'TARIMA', 'CONTENEDOR', 'MASTER_PALLET'] }`.
+  - HUs en estado `DESPACHADO` no participan en asignaciones activas ni en sugerencias de stock.
+- **Aislamiento Cross-Tenant y Anti-Spoofing:**
+  - Filtro estricto por `clienteId` en todas las consultas de inventario.
+  - Rechazo con HTTP 403 Forbidden cuando un usuario de Portal Depositante intenta crear pedidos para un depositante ajeno a su token de sesión.
+
+### Resultados de Verificación y Calificaciones Oficiales
+- **Calificaciones:**
+  - **Desempate Determinista:** **`PASS`**
+  - **Prioridad FEFO:** **`PASS`**
+  - **Desempate FIFO:** **`PASS`**
+  - **Caja Cerrada e Integridad:** **`PASS`**
+- **Pruebas Automatizadas Jest (`fefo-fifo-allocation.spec.ts`):** **`16/16 PASS`** (100%).
+- **Compilaciones:** `npx nest build` PASS (Código 0), `tsc -b && vite build` PASS (2026 módulos), `git diff --check` PASS.
+- **Estado de Base de Datos Post-Auditoría:**
+  - `LotInventory = 0 PZA` (0 disponible, 0 bloqueada, 0 reservada).
+  - `HandlingUnit = 3` (todas `DESPACHADO`: `BOX-REC-2026-0020-0001`, `BOX-REC-2026-0020-0002`, `PLT-REC-2026-0020-01`).
+  - `InventoryMovement = 6` movimientos históricos inmutables.
+  - `G0001 = LIBRE` (0/1 ocupación) | `STG-01 = LIBRE` (0/1 ocupación).
+  - `45/45 Gxxxx libres` (0 ocupadas).
+  - `PED-QA-E2E-OUT-001 = ENTREGADO` | `PED-QA-E2E-OUT-002 = DESPACHADO / EN_RUTA`.
+  - `PrintLog = 3` registros canónicos.
+
 ## [1.9.32] — 2026-11-16 (Certificación Etiquetado: Histórico y Reimpresión — Revisión Alejandra)
 
 ### 📦 Remediación y Certificación de Etiquetado Pre-RC (Rama `fix/rc-label-history-reprint` -> `dev`)
