@@ -10703,6 +10703,7 @@ export class OperationsController {
       lotWhere.ubicacion = { ...(lotWhere.ubicacion || {}), zonaId: data.zonaId };
     } else if (data.tipo === 'UBICACION' && data.ubicacionId) {
       lotWhere.ubicacionId = data.ubicacionId;
+      if (data.skuId) lotWhere.skuId = data.skuId;
     } else if (data.tipo === 'SKU' && data.skuId) {
       lotWhere.skuId = data.skuId;
     }
@@ -10841,7 +10842,7 @@ export class OperationsController {
   @Put('cycle-counts/:id/count')
   @RequireAccess({ modules: ['conteo-ciclico'], actions: ['crear', 'editar'], allowPortal: false })
   @ApiOperation({ summary: 'Registrar conteo físico de líneas' })
-  async registerCycleCount(@Param('id') id: string, @Body() data: any) {
+  async registerCycleCount(@Param('id') id: string, @Body() data: any, @Req() req?: any) {
     const cc = await this.prisma.cycleCount.findUnique({ where: { id } });
     if (!cc) throw new HttpException('Conteo no encontrado', HttpStatus.NOT_FOUND);
 
@@ -10852,7 +10853,13 @@ export class OperationsController {
       throw new HttpException('Operación rechazada: El conteo está CANCELADO.', HttpStatus.CONFLICT);
     }
 
-    for (const line of data.lineas) {
+    const actorUser = req?.user?.email || req?.user?.nombre || data.usuario || 'Operador de Inventario';
+
+    for (const line of (data.lineas || [])) {
+      if (line.cantidadFisica !== null && line.cantidadFisica !== undefined && Number(line.cantidadFisica) < 0) {
+        throw new HttpException('La cantidad física contada no puede ser negativa.', HttpStatus.BAD_REQUEST);
+      }
+
       const disc = line.cantidadFisica !== null && line.cantidadFisica !== undefined
         ? (Number(line.cantidadFisica) - (line.cantidadSistema || 0))
         : null;
@@ -10863,7 +10870,7 @@ export class OperationsController {
           cantidadFisica: line.cantidadFisica !== null && line.cantidadFisica !== undefined ? Number(line.cantidadFisica) : null,
           discrepancia: disc,
           porcentajeDisc: (disc !== null && line.cantidadSistema) ? (disc / line.cantidadSistema) * 100 : 0,
-          contadoPor: data.usuario || 'Operador de Inventario',
+          contadoPor: actorUser,
           contadoEn: new Date(),
           estado: 'CONTADO',
         },
