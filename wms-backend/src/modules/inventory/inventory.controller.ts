@@ -15,7 +15,7 @@ export class InventoryController {
   constructor(
     private prisma: PrismaService,
     private putawayEngine: PutawayEngineService,
-  ) {}
+  ) { }
 
   @Get('lots')
   @RequireAccess({
@@ -62,10 +62,10 @@ export class InventoryController {
     const now = new Date();
     const filteredLots = (tipoStock === 'DISPONIBLE' || !tipoStock)
       ? lots.filter(l => {
-          const locClass = classifyLocationOperationalRole(l.ubicacion);
-          const ev = evaluateInventoryItemOperationalState(l, locClass, now);
-          return ev.esVendible;
-        })
+        const locClass = classifyLocationOperationalRole(l.ubicacion);
+        const ev = evaluateInventoryItemOperationalState(l, locClass, now);
+        return ev.esVendible;
+      })
       : lots;
 
     return filteredLots.map(l => {
@@ -178,6 +178,10 @@ export class InventoryController {
               select: {
                 codigo: true,
                 estado: true,
+                fechaDespacho: true,
+                fechaEntrega: true,
+                createdAt: true,
+                updatedAt: true,
                 endCustomer: { select: { nombre: true } },
               },
             },

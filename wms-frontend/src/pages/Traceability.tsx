@@ -192,6 +192,7 @@ export function Traceability() {
   const [customDesde, setCustomDesde] = useState('');
   const [customHasta, setCustomHasta] = useState('');
   const [clients, setClients] = useState<any[]>([]);
+  const [warehouses, setWarehouses] = useState<any[]>([]);
   const [selectedMovement, setSelectedMovement] = useState<InventoryMovementRecord | null>(null);
 
   const headers: any = useMemo(() => ({
@@ -242,12 +243,17 @@ export function Traceability() {
         }
       }
 
-      const [movRes, cliRes] = await Promise.all([
+      const [movRes, cliRes, whRes] = await Promise.all([
         fetch(`${API}/inventory/movements?${params.toString()}`, { headers }),
         fetch(`${API}/clients`, { headers }),
+        fetch(`${API}/warehouses`, { headers }).catch(() => null),
       ]);
       if (movRes.ok) setMovements(await movRes.json());
       if (cliRes.ok) setClients(await cliRes.json());
+      if (whRes?.ok) {
+        const whData = await whRes.json();
+        setWarehouses(Array.isArray(whData) ? whData : []);
+      }
     } catch (err) {
       console.error('Error loading traceability data:', err);
     }
@@ -1012,9 +1018,20 @@ export function Traceability() {
                 const depositor = client?.nombreComercial || client?.razonSocial || 'No especificado';
                 const fromLoc = selectedMovement.fromLocation?.codigo || (selectedMovement.tipoMovimiento === 'ENTRADA' ? 'RAMPA / PROVEEDOR' : 'No especificado');
                 const toLoc = selectedMovement.toLocation?.codigo || (selectedMovement.tipoMovimiento.includes('SALIDA') ? 'CLIENTE / DESTINO FINAL' : selectedMovement.tipoMovimiento === 'ENVIO_CUARENTENA' ? 'Zona de Cuarentena' : 'No especificado');
+                const matchedWh = selectedMovement.almacenId
+                  ? warehouses.find((w: any) => w.id === selectedMovement.almacenId)
+                  : null;
                 const almacen = selectedMovement.almacen?.nombre
                   ? `${selectedMovement.almacen.nombre} (${selectedMovement.almacen.codigo})`
-                  : (selectedMovement.almacenId || 'Almacén Central');
+                  : (selectedMovement as any).fromLocation?.almacen?.nombre
+                  ? `${(selectedMovement as any).fromLocation.almacen.nombre} (${(selectedMovement as any).fromLocation.almacen.codigo})`
+                  : (selectedMovement as any).toLocation?.almacen?.nombre
+                  ? `${(selectedMovement as any).toLocation.almacen.nombre} (${(selectedMovement as any).toLocation.almacen.codigo})`
+                  : matchedWh
+                  ? `${matchedWh.nombre} (${matchedWh.codigo})`
+                  : warehouses[0]?.nombre
+                  ? `${warehouses[0].nombre} (${warehouses[0].codigo})`
+                  : 'Almacén Operativo';
 
                 return (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>

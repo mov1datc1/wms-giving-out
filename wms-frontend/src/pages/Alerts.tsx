@@ -316,7 +316,7 @@ export function Alerts() {
 
               <div className="form-group">
                 <label className="form-label">Instrucciones adicionales</label>
-                <textarea className="form-input" rows={2} placeholder="Ej: Contactar a proveedor TextilMX para cotizar 200 prendas..."
+                <textarea className="form-input" rows={2} placeholder="Ej: Programar inspección preventiva de sellos de rampa y seguimiento operativo..."
                   value={taskForm.notas} onChange={e => setTaskForm(f => ({ ...f, notas: e.target.value }))}
                   style={{ resize: 'vertical', fontFamily: 'inherit' }} />
               </div>

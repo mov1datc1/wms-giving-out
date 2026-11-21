@@ -657,7 +657,14 @@ export class MasterDataController {
   @ApiOperation({ summary: 'Listar almacenes' })
   async getWarehouses() {
     return this.prisma.warehouse.findMany({
-      include: { _count: { select: { locations: true, zones: true } } },
+      include: {
+        _count: {
+          select: {
+            locations: { where: { activo: true } },
+            zones: { where: { codigo: { notIn: ['ALM-A', 'ALM-B'] } } }
+          }
+        }
+      },
       orderBy: { nombre: 'asc' },
     });
   }
@@ -677,12 +684,18 @@ export class MasterDataController {
     allowPortal: false,
   })
   @ApiOperation({ summary: 'Listar zonas' })
-  async getZones(@Query('almacenId') almacenId?: string) {
+  async getZones(@Query('almacenId') almacenId?: string, @Query('includeLegacy') includeLegacy?: string) {
     const where: any = {};
+    if (includeLegacy !== 'true') {
+      where.codigo = { notIn: ['ALM-A', 'ALM-B'] };
+    }
     if (almacenId) where.almacenId = almacenId;
     return this.prisma.zone.findMany({
       where,
-      include: { almacen: { select: { codigo: true, nombre: true } }, _count: { select: { locations: true } } },
+      include: {
+        almacen: { select: { codigo: true, nombre: true } },
+        _count: { select: { locations: { where: { activo: true } } } }
+      },
       orderBy: { codigo: 'asc' },
     });
   }
@@ -702,8 +715,16 @@ export class MasterDataController {
     allowPortal: false,
   })
   @ApiOperation({ summary: 'Listar ubicaciones con modelo de capacidad enriquecida, clasificación y estado' })
-  async getLocations(@Query('almacenId') almacenId?: string, @Query('zonaId') zonaId?: string, @Query('estado') estado?: string) {
+  async getLocations(
+    @Query('almacenId') almacenId?: string,
+    @Query('zonaId') zonaId?: string,
+    @Query('estado') estado?: string,
+    @Query('includeLegacy') includeLegacy?: string,
+  ) {
     const where: any = {};
+    if (includeLegacy !== 'true') {
+      where.activo = true;
+    }
     if (almacenId) where.almacenId = almacenId;
     if (zonaId) where.zonaId = zonaId;
     if (estado) where.estado = estado;

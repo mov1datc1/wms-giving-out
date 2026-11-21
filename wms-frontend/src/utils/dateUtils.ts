@@ -69,6 +69,30 @@ export function formatCalendarDateShort(
 
 export const WAREHOUSE_TIMEZONE = 'America/Mexico_City';
 
+/**
+ * Retorna exclusivamente la fecha en formato DD/MM/YYYY en la zona horaria del almacén (America/Mexico_City).
+ * Ideal para etiquetas operativas, reimpresión histórica y acuses de recibo.
+ */
+export function formatWarehouseDateOnly(
+  dateInput: string | Date | null | undefined,
+  fallback = '—'
+): string {
+  if (!dateInput) return fallback;
+  try {
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return fallback;
+    const dtf = new Intl.DateTimeFormat('es-MX', {
+      timeZone: WAREHOUSE_TIMEZONE,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    return dtf.format(d);
+  } catch {
+    return fallback;
+  }
+}
+
 export interface FormatWarehouseDateTimeOptions {
   includeSeconds?: boolean;
   separator?: string; // Por defecto ' · '

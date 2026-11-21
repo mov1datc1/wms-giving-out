@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, startTransition } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
@@ -282,10 +282,12 @@ export function MasterData() {
   }
 
   function handleTabChange(newTab: Tab) {
-    setTab(newTab);
-    setSearchParams(prev => {
-      prev.set('tab', newTab);
-      return prev;
+    startTransition(() => {
+      setTab(newTab);
+      setSearchParams(prev => {
+        prev.set('tab', newTab);
+        return prev;
+      });
     });
   }
 
@@ -447,6 +449,15 @@ export function MasterData() {
 
   // Filtering data
   const filtered = data.filter((d: any) => {
+    // Excluir zonas legacy de la visualización operativa
+    if (tab === 'zones') {
+      const code = (d.codigo || '').toUpperCase();
+      const name = (d.nombre || '').toUpperCase();
+      if (code === 'ALM-A' || code === 'ALM-B' || name.includes('ALM-A') || name.includes('ALM-B')) {
+        return false;
+      }
+    }
+
     // Client filter for SKUs
     if (tab === 'skus' && filterClienteId) {
       const matchClient = d.clienteId === filterClienteId || d.cliente?.id === filterClienteId;
@@ -519,7 +530,7 @@ export function MasterData() {
               className={`btn btn-sm ${tab === t.key ? 'btn-primary' : 'btn-ghost'}`}
               onClick={() => handleTabChange(t.key)}
             >
-              <t.icon size={14} /> {t.label} ({tab === t.key ? filtered.length : ''})
+              <t.icon size={14} /> {t.label}{tab === t.key ? ` (${filtered.length})` : ''}
             </button>
           ))}
         </div>
@@ -1364,8 +1375,8 @@ export function MasterData() {
                       Requiere Número de Lote
                     </label>
                     {skuForm.requiereLote && (
-                      <p style={{ margin: '8px 0 0 26px', fontSize: 12, color: '#B45309', lineHeight: 1.4, fontWeight: 500 }}>
-                        ⚠️ <strong>Regla ASN:</strong> Todas las recepciones y previos futuros de este producto requerirán capturar el número de lote obligatorio.
+                      <p style={{ margin: '8px 0 0 26px', fontSize: 12, color: '#B45309', lineHeight: 1.4, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <AlertTriangle size={14} style={{ flexShrink: 0 }} /> <span><strong>Regla ASN:</strong> Todas las recepciones y previos futuros de este producto requerirán capturar el número de lote obligatorio.</span>
                       </p>
                     )}
                   </div>
@@ -1386,8 +1397,8 @@ export function MasterData() {
                       Requiere Fecha de Caducidad
                     </label>
                     {skuForm.requiereCaducidad && (
-                      <p style={{ margin: '8px 0 0 26px', fontSize: 12, color: '#0F766E', lineHeight: 1.4, fontWeight: 500 }}>
-                        ⚠️ <strong>Regla Recepción:</strong> Las recepciones futuras deberán incluir obligatoriamente fecha de vencimiento/caducidad (FEFO).
+                      <p style={{ margin: '8px 0 0 26px', fontSize: 12, color: '#0F766E', lineHeight: 1.4, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <AlertTriangle size={14} style={{ flexShrink: 0 }} /> <span><strong>Regla Recepción:</strong> Las recepciones futuras deberán incluir obligatoriamente fecha de vencimiento/caducidad (FEFO).</span>
                       </p>
                     )}
                   </div>

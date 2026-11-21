@@ -371,12 +371,21 @@ export function DispatchManifestModal({
             break-inside: avoid !important;
             page-break-inside: avoid !important;
           }
+          @page {
+            size: letter portrait;
+            margin: 10mm 8mm;
+          }
           #printable-dispatch-manifest table {
             width: 100% !important;
+            table-layout: fixed !important;
             border-collapse: collapse !important;
+            font-size: 8.5pt !important;
           }
           #printable-dispatch-manifest th, #printable-dispatch-manifest td {
             border: 1px solid #cbd5e1 !important;
+            padding: 4px 5px !important;
+            word-break: break-word !important;
+            overflow-wrap: break-word !important;
           }
           .draft-watermark-overlay {
             display: block !important;
@@ -829,13 +838,13 @@ export function DispatchManifestModal({
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                     <thead>
                       <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>SKU</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Descripción</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Caja / HU</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Ubicación Origen</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Staging / Salida</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                        <th style={{ width: '13%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>SKU</th>
+                        <th style={{ width: '25%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Descripción</th>
+                        <th style={{ width: '13%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote</th>
+                        <th style={{ width: '15%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Caja / HU</th>
+                        <th style={{ width: '11%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Ubicación Origen</th>
+                        <th style={{ width: '12%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Staging / Salida</th>
+                        <th style={{ width: '11%', padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
                           {isAlreadyDispatched ? 'CANT. DESPACHADA' : 'CANT. PREPARADA'}
                         </th>
                       </tr>
@@ -843,13 +852,13 @@ export function DispatchManifestModal({
                     <tbody>
                       {manifestData?.lineasDesglose?.map((l: any, idx: number) => (
                         <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
-                          <td style={{ padding: '10px 12px' }}>
+                          <td style={{ padding: '8px 10px' }}>
                             <code style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)' }}>{l.sku}</code>
                           </td>
-                          <td style={{ padding: '10px 12px', maxWidth: 180, whiteSpace: 'normal', fontSize: 12 }}>
+                          <td style={{ padding: '8px 10px', maxWidth: 180, whiteSpace: 'normal', fontSize: 12 }}>
                             {l.descripcion}
                           </td>
-                          <td style={{ padding: '10px 12px' }}>
+                          <td style={{ padding: '8px 10px' }}>
                             <span className="badge badge-default" style={{ fontSize: 11, fontWeight: 600 }}>
                               {l.lote}
                             </span>
@@ -859,27 +868,23 @@ export function DispatchManifestModal({
                               </div>
                             )}
                           </td>
-                          <td style={{ padding: '10px 12px' }}>
+                          <td style={{ padding: '8px 10px' }}>
                             <code style={{ fontSize: 11, background: 'var(--bg-secondary)', padding: '2px 5px', borderRadius: 4, color: 'var(--text-primary)' }}>
                               {l.huCodigo || (Array.isArray(l.cajasEscaneadas) && l.cajasEscaneadas.length > 0 ? l.cajasEscaneadas.join(', ') : 'S/N')}
                             </code>
                           </td>
-                          <td style={{ padding: '10px 12px' }}>
+                          <td style={{ padding: '8px 10px' }}>
                             <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
                               {l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}
                             </span>
                           </td>
-                          <td style={{ padding: '10px 12px' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'monospace', fontSize: 11 }}>
-                              <span style={{ color: 'var(--text-secondary)' }}>{l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}</span>
-                              <ArrowRight size={13} color="var(--primary)" style={{ flexShrink: 0 }} />
-                              <span className="badge badge-cyan" style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px' }}>
-                                {l.stagingUbicacion || l.stagingLocationCodigo || 'Sin asignar'}
-                              </span>
-                            </div>
+                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                            <span className="badge badge-cyan" style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px', fontFamily: 'monospace', display: 'inline-block' }}>
+                              {l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01'}
+                            </span>
                           </td>
                           <td
-                            style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: 'var(--emerald)', whiteSpace: 'nowrap' }}
+                            style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: 'var(--emerald)', whiteSpace: 'nowrap' }}
                             title={isAlreadyDispatched ? `Cantidad despachada: ${l.cantidadDespachada} ${l.uom || 'PZA'}` : `Cantidad preparada en Staging: ${l.cantidadPreparada ?? l.cantidadDespachada} ${l.uom || 'PZA'}`}
                           >
                             {isAlreadyDispatched ? l.cantidadDespachada : (l.cantidadPreparada ?? l.cantidadDespachada)} {l.uom || 'PZA'}

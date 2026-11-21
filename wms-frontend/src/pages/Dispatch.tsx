@@ -38,10 +38,12 @@ export function Dispatch() {
   const [tab, setTab] = useState<TabKey>('approvals');
   const [dispatchModal, setDispatchModal] = useState<any>(null);
   const [dispatchForm, setDispatchForm] = useState({ tipoTransporte: '', paqueteria: '', numeroGuia: '', vehiculoPlaca: '' });
+  const [submittingDispatch, setSubmittingDispatch] = useState(false);
   const [rejectModal, setRejectModal] = useState<any>(null);
   const [rejectMotivo, setRejectMotivo] = useState('');
   const [deliveryModal, setDeliveryModal] = useState<any>(null);
   const [deliveryForm, setDeliveryForm] = useState({ nombreReceptor: '', notasEntrega: '' });
+  const [submittingDelivery, setSubmittingDelivery] = useState(false);
   const [detailModal, setDetailModal] = useState<any>(null);
 
   // Fase 5: Modales de Preparación y Nuevo Pedido
@@ -122,7 +124,8 @@ export function Dispatch() {
   }
 
   async function dispatchOrder() {
-    if (!dispatchModal) return;
+    if (!dispatchModal || submittingDispatch) return;
+    setSubmittingDispatch(true);
     setFeedback(null);
     try {
       const res = await fetch(`${API}/orders/${dispatchModal.id}/dispatch`, {
@@ -141,11 +144,14 @@ export function Dispatch() {
     } catch (err: any) {
       console.error(err);
       setFeedback({ type: 'error', text: err?.message || 'Error de conexión al despachar.' });
+    } finally {
+      setSubmittingDispatch(false);
     }
   }
 
   async function confirmDelivery() {
-    if (!deliveryModal) return;
+    if (!deliveryModal || submittingDelivery) return;
+    setSubmittingDelivery(true);
     setDeliveryError(null);
     try {
       const res = await fetch(`${API}/orders/${deliveryModal.id}/confirm-delivery`, {
@@ -169,6 +175,8 @@ export function Dispatch() {
     } catch (err: any) {
       console.error(err);
       setDeliveryError(err?.message || 'Error de conexión al confirmar la entrega.');
+    } finally {
+      setSubmittingDelivery(false);
     }
   }
 
@@ -663,8 +671,10 @@ export function Dispatch() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => setDispatchModal(null)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={dispatchOrder}><Send size={16} /> Confirmar Despacho</button>
+              <button className="btn btn-ghost" onClick={() => setDispatchModal(null)} disabled={submittingDispatch}>Cancelar</button>
+              <button className="btn btn-primary" onClick={dispatchOrder} disabled={submittingDispatch}>
+                <Send size={16} /> {submittingDispatch ? 'Procesando Despacho...' : 'Confirmar Despacho'}
+              </button>
             </div>
           </div>
         </div>
@@ -710,9 +720,9 @@ export function Dispatch() {
               )}
             </div>
             <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => setDeliveryModal(null)}>Cancelar</button>
-              <button className="btn btn-success" disabled={!deliveryForm.nombreReceptor} onClick={confirmDelivery}>
-                <CheckCircle size={16} /> Confirmar Entrega
+              <button className="btn btn-ghost" onClick={() => setDeliveryModal(null)} disabled={submittingDelivery}>Cancelar</button>
+              <button className="btn btn-success" disabled={!deliveryForm.nombreReceptor || submittingDelivery} onClick={confirmDelivery}>
+                <CheckCircle size={16} /> {submittingDelivery ? 'Confirmando Entrega...' : 'Confirmar Entrega'}
               </button>
             </div>
           </div>

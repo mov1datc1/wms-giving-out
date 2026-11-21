@@ -1,11 +1,11 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, startTransition } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
   MapPin, Search, RefreshCw, Grid3X3, Layers, X,
   Package, Calendar, CheckCircle2, AlertTriangle, ShieldCheck, Box,
   Warehouse, Lock, Eye, Info, Users, UserCheck, ChevronDown, ChevronRight,
-  ZoomIn, ZoomOut, Maximize2, Tag, ArrowRightLeft, Sparkles, Archive
+  ZoomIn, ZoomOut, Maximize2, Tag, ArrowRightLeft, Sparkles
 } from 'lucide-react';
 import { formatCalendarDate } from '../utils/dateUtils';
 import {
@@ -94,13 +94,12 @@ export function Locations() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Vista predeterminada: 1. Plano Físico 2D — Operación (Fase 3B-B)
-  const [viewMode, setViewMode] = useState<'spatial' | 'operational' | 'layout'>('spatial');
+  const [viewMode, setViewMode] = useState<'spatial' | 'operational'>('spatial');
 
-  // Estados de búsqueda independientes por vista (spatial, operational, layout) — Fase 3B-B Fix
-  const [searchByView, setSearchByView] = useState<Record<'spatial' | 'operational' | 'layout', string>>({
+  // Estados de búsqueda independientes por vista (spatial, operational)
+  const [searchByView, setSearchByView] = useState<Record<'spatial' | 'operational', string>>({
     spatial: '',
     operational: '',
-    layout: '',
   });
   const search = searchByView[viewMode];
   const setSearch = (val: string) => {
@@ -149,7 +148,20 @@ export function Locations() {
       
       if (locRes.ok) {
         const data = await locRes.json();
-        setLocations(Array.isArray(data) ? data : []);
+        // Filtrar estrictamente ubicaciones activas vigentes, excluyendo cualquier remanente legacy de la UI
+        const validLocs = Array.isArray(data) ? data.filter((l: any) => {
+          const code = (l.codigo || '').toUpperCase();
+          const zCode = (l.zona?.codigo || '').toUpperCase();
+          const zName = (l.zona?.nombre || '').toUpperCase();
+          return l.activo !== false &&
+            !code.startsWith('A') &&
+            !code.startsWith('B') &&
+            zCode !== 'ALM-A' &&
+            zCode !== 'ALM-B' &&
+            !zName.includes('ALM-A') &&
+            !zName.includes('ALM-B');
+        }) : [];
+        setLocations(validLocs);
       } else {
         setLocations([]);
         setLoadError(`Error al cargar ubicaciones (HTTP ${locRes.status}).`);
@@ -326,81 +338,6 @@ export function Locations() {
     return count > 0 ? count : 6;
   }, [locations]);
 
-  // ==========================================================================
-  // DATASET EXCLUSIVO PARA HISTÓRICO — RACKS ANTERIORES (Axx/Bxx)
-  // ==========================================================================
-  // Regla estricta: Solo entran celdas con activo = false y código Axx o Bxx (exactamente 48)
-  // NINGUNA posición G0001–G0045 ni área especial puede ingresar a este conjunto
-  const isHistoricalRackLoc = (l: any) => {
-    const code = (l.codigo || '').toUpperCase();
-    const isAB = code.startsWith('A') || code.startsWith('B');
-    return l.activo === false && isAB;
-  };
-
-  const historicalLocs = useMemo(() => {
-    return locations.filter(isHistoricalRackLoc);
-  }, [locations]);
-
-  const filteredHistoricalLocs = useMemo(() => {
-    const q = (searchByView.layout || '').toLowerCase().trim();
-    return historicalLocs.filter(l => {
-      if (!q) return true;
-      return (
-        l.codigo?.toLowerCase().includes(q) ||
-        l.pasillo?.toLowerCase().includes(q) ||
-        l.rack?.toLowerCase().includes(q) ||
-        l.nivel?.toLowerCase().includes(q) ||
-        l.zona?.nombre?.toLowerCase().includes(q)
-      );
-    });
-  }, [historicalLocs, searchByView.layout]);
-
-  const historicalHierarchy = useMemo(() => {
-    const hier: Record<string, HierarchyZona> = {};
-    for (const loc of filteredHistoricalLocs) {
-      const zKey = loc.zona?.codigo || loc.zonaId || 'ZONA_HISTORICA';
-      const zNombre = loc.zona?.nombre || 'Almacenamiento Histórico';
-      const pKey = loc.pasillo || 'P01';
-      const rKey = loc.rack || 'R01';
-      const nKey = loc.nivel || 'N1';
-
-      if (!hier[zKey]) {
-        hier[zKey] = {
-          zonaNombre: zNombre,
-          zonaCodigo: zKey,
-          pasillos: {}
-        };
-      }
-      if (!hier[zKey].pasillos[pKey]) {
-        hier[zKey].pasillos[pKey] = {
-          pasilloCodigo: pKey,
-          racks: {}
-        };
-      }
-      if (!hier[zKey].pasillos[pKey].racks[rKey]) {
-        hier[zKey].pasillos[pKey].racks[rKey] = {
-          rackCodigo: rKey,
-          totalPiezas: 0,
-          capacidadPiezas: 0,
-          totalBultos: 0,
-          capacidadBultos: 0,
-          niveles: {}
-        };
-      }
-      const rackObj = hier[zKey].pasillos[pKey].racks[rKey];
-      rackObj.totalPiezas += (loc.ocupacionUnidades || 0);
-      rackObj.capacidadPiezas += (loc.capacidadUnits || 100);
-      rackObj.totalBultos += (loc.ocupacionBultos || 0);
-      rackObj.capacidadBultos += (loc.capacidadBultos || 1);
-
-      if (!rackObj.niveles[nKey]) {
-        rackObj.niveles[nKey] = [];
-      }
-      rackObj.niveles[nKey].push(loc);
-    }
-    return hier;
-  }, [filteredHistoricalLocs]);
-
   // Indicadores de capacidad sobre celdas almacenables
   const totalLibres = almacenableLocs.filter(l => l.estadoCapacidad === 'LIBRE').length;
   const totalParciales = almacenableLocs.filter(l => l.estadoCapacidad === 'PARCIAL').length;
@@ -432,86 +369,23 @@ export function Locations() {
     return stats.hasStock || isComp;
   }).length;
 
-  // Agrupación jerárquica para Mapa del Almacén: Zona -> Pasillo -> Rack -> Niveles (N3, N2, N1)
-  interface HierarchyZona {
-    zonaNombre: string;
-    zonaCodigo: string;
-    pasillos: {
-      [pasilloCode: string]: {
-        pasilloCodigo: string;
-        racks: {
-          [rackCode: string]: {
-            rackCodigo: string;
-            totalPiezas: number;
-            capacidadPiezas: number;
-            totalBultos: number;
-            capacidadBultos: number;
-            niveles: {
-              [nivelCode: string]: any[];
-            };
-          };
-        };
-      };
-    };
-  }
-
-  const hierarchy: Record<string, HierarchyZona> = {};
-  for (const loc of almacenableLocs) {
-    const zKey = loc.zona?.codigo || loc.zonaId || 'ZONA_GENERAL';
-    const zNombre = loc.zona?.nombre || 'Zona de Almacén General';
-    const pKey = loc.pasillo || 'P01';
-    const rKey = loc.rack || 'R01';
-    const nKey = loc.nivel || 'N1';
-
-    if (!hierarchy[zKey]) {
-      hierarchy[zKey] = {
-        zonaNombre: zNombre,
-        zonaCodigo: zKey,
-        pasillos: {}
-      };
+  // Agrupación y ordenamiento memoizado de Vista por Zonas para evitar violaciones de INP
+  const { byZone, sortedZoneEntries, unassignedSpecialLocs } = useMemo(() => {
+    const bz: Record<string, any[]> = {};
+    for (const loc of filtered) {
+      const zn = loc.zona?.nombre || 'Sin Zona';
+      const znCode = (loc.zona?.codigo || '').toUpperCase();
+      if (znCode === 'ALM-A' || znCode === 'ALM-B' || zn.toUpperCase().includes('ALM-A') || zn.toUpperCase().includes('ALM-B')) {
+        continue;
+      }
+      if (!bz[zn]) bz[zn] = [];
+      bz[zn].push(loc);
     }
-    if (!hierarchy[zKey].pasillos[pKey]) {
-      hierarchy[zKey].pasillos[pKey] = {
-        pasilloCodigo: pKey,
-        racks: {}
-      };
-    }
-    if (!hierarchy[zKey].pasillos[pKey].racks[rKey]) {
-      hierarchy[zKey].pasillos[pKey].racks[rKey] = {
-        rackCodigo: rKey,
-        totalPiezas: 0,
-        capacidadPiezas: 0,
-        totalBultos: 0,
-        capacidadBultos: 0,
-        niveles: {}
-      };
-    }
-    const rackObj = hierarchy[zKey].pasillos[pKey].racks[rKey];
-    rackObj.totalPiezas += (loc.ocupacionUnidades || 0);
-    rackObj.capacidadPiezas += (loc.capacidadUnits || 100);
-    rackObj.totalBultos += (loc.ocupacionBultos || 0);
-    rackObj.capacidadBultos += (loc.capacidadBultos || 1);
 
-    if (!rackObj.niveles[nKey]) {
-      rackObj.niveles[nKey] = [];
-    }
-    rackObj.niveles[nKey].push(loc);
-  }
-
-  // Agrupación de Vista por Zonas (plana)
-  const byZone: Record<string, any[]> = {};
-  for (const loc of filtered) {
-    const zn = loc.zona?.nombre || 'Sin Zona';
-    if (!byZone[zn]) byZone[zn] = [];
-    byZone[zn].push(loc);
-  }
-
-  // Ordenamiento canónico de zonas para Fase 3B-B:
-  // 1. Zonas operativas reales: Área Interior (35) y Exterior Techado (10)
-  // 2. Zonas especiales de maniobra: Recibo (2), Staging (2), Devolución/Merma (2)
-  // 3. Zonas históricas inactivas: ALM-A (36), ALM-B (12)
-  const sortedZoneEntries = useMemo(() => {
-    return Object.entries(byZone).sort(([aName, aLocs], [bName, bLocs]) => {
+    const sorted = Object.entries(bz).filter(([aName]) => {
+      const u = aName.toUpperCase();
+      return !u.includes('ALM-A') && !u.includes('ALM-B') && !u.includes('TEXTIL') && !u.includes('ALIMENTO');
+    }).sort(([aName, aLocs], [bName, bLocs]) => {
       const getPriority = (name: string, locs: any[]) => {
         const u = name.toUpperCase();
         if (u.includes('INTERIOR')) return 1;
@@ -519,27 +393,25 @@ export function Locations() {
         if (u.includes('RECIBO')) return 10;
         if (u.includes('STAGING')) return 11;
         if (u.includes('DEVOLUCI') || u.includes('MERMA') || u.includes('RETENCI')) return 12;
-        if (u.includes('ALM-A') || u.includes('TEXTIL')) return 20;
-        if (u.includes('ALM-B') || u.includes('ALIMENTO')) return 21;
         return 15;
       };
       return getPriority(aName, aLocs) - getPriority(bName, bLocs);
     });
-  }, [byZone]);
 
-  // Conjunto de IDs de ubicaciones agrupadas en zonas para evitar duplicados en Vista por Zonas (Punto 1)
-  const renderedZoneLocIds = new Set<string>();
-  Object.values(byZone).forEach(locList => {
-    locList.forEach((l: any) => {
-      if (l.id) renderedZoneLocIds.add(String(l.id));
-      if (l.codigo) renderedZoneLocIds.add(String(l.codigo));
+    const renderedIds = new Set<string>();
+    Object.values(bz).forEach(locList => {
+      locList.forEach((l: any) => {
+        if (l.id) renderedIds.add(String(l.id));
+        if (l.codigo) renderedIds.add(String(l.codigo));
+      });
     });
-  });
 
-  // Áreas especiales que no estén ya integradas en una agrupación de zona mostrada
-  const unassignedSpecialLocs = specialLocs.filter((l: any) =>
-    !renderedZoneLocIds.has(String(l.id)) && !renderedZoneLocIds.has(String(l.codigo))
-  );
+    const unassigned = specialLocs.filter((l: any) =>
+      !renderedIds.has(String(l.id)) && !renderedIds.has(String(l.codigo))
+    );
+
+    return { byZone: bz, sortedZoneEntries: sorted, unassignedSpecialLocs: unassigned };
+  }, [filtered, specialLocs]);
 
   return (
     <div className="page-container">
@@ -587,7 +459,7 @@ export function Locations() {
             <button
               type="button"
               className={`btn btn-sm ${viewMode === 'spatial' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setViewMode('spatial')}
+              onClick={() => startTransition(() => setViewMode('spatial'))}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
               title="Plano arquitectónico interactivo de las 45 posiciones físicas oficiales en piso"
             >
@@ -596,20 +468,11 @@ export function Locations() {
             <button
               type="button"
               className={`btn btn-sm ${viewMode === 'operational' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setViewMode('operational')}
+              onClick={() => startTransition(() => setViewMode('operational'))}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
               title="Distribución operativa agrupada por Área Interior y Exterior Techado"
             >
               <Grid3X3 size={15} /> Vista por Zonas
-            </button>
-            <button
-              type="button"
-              className={`btn btn-sm ${viewMode === 'layout' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setViewMode('layout')}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700 }}
-              title="Ubicaciones históricas en racks Axx/Bxx (conservadas solo para consulta y auditoría)"
-            >
-              <Archive size={15} /> Histórico — Racks anteriores
             </button>
           </div>
           <button className="btn btn-secondary" onClick={loadData}>
@@ -882,8 +745,6 @@ export function Locations() {
                 placeholder={
                   viewMode === 'spatial'
                     ? "Buscar en plano 2D (ej. G0001, Interior, PNC)..."
-                    : viewMode === 'layout'
-                    ? "Buscar en histórico de racks (ej. A01, B01-R01-N1), pasillo o nivel..."
                     : "Buscar código (ej. G0001), zona o estado…"
                 }
                 value={search}
@@ -919,10 +780,10 @@ export function Locations() {
             </div>
           </div>
 
-          {/* Fila 2: Zona | Pasillo | Estado (comparten misma fila cuando existe ancho suficiente) */}
+          {/* Fila 2: Zona | Estado (comparten misma fila) */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: viewMode === 'layout' ? 'repeat(auto-fit, minmax(180px, 1fr))' : 'repeat(auto-fit, minmax(220px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
             gap: 10
           }}>
             {/* Selector de Zona */}
@@ -930,14 +791,6 @@ export function Locations() {
               <option value="">Todas las zonas</option>
               {zonas.map(z => <option key={z} value={z}>{z}</option>)}
             </select>
-
-            {/* Selector de Pasillo (en Mapa del Almacén) */}
-            {viewMode === 'layout' && (
-              <select className="form-select" value={filterPasillo} onChange={e => setFilterPasillo(e.target.value)} style={{ width: '100%', fontSize: 12.5 }}>
-                <option value="">Todos los pasillos</option>
-                {pasillosDisponibles.map(p => <option key={p} value={p}>Pasillo {p}</option>)}
-              </select>
-            )}
 
             {/* Selector de Estado */}
             <select className="form-select" value={filterEstado} onChange={e => setFilterEstado(e.target.value)} style={{ width: '100%', fontSize: 12.5 }}>
@@ -994,13 +847,6 @@ export function Locations() {
                   </button>
                 </div>
               </div>
-
-              {viewMode === 'layout' && (
-                <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
-                  <button className="btn btn-ghost btn-xs" onClick={expandAllAisles}>Expandir pasillos</button>
-                  <button className="btn btn-ghost btn-xs" onClick={collapseAllAisles}>Contraer pasillos</button>
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -1024,407 +870,6 @@ export function Locations() {
           searchTerm={searchByView.spatial}
           onRefresh={loadData}
         />
-      ) : viewMode === 'layout' ? (
-        /* ========================================================
-           VISTA HISTÓRICA: RACKS ANTERIORES (SOLO CONSULTA / TRAZABILIDAD)
-           ======================================================== */
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {/* Banner Informativo de Trazabilidad Histórica */}
-          <div style={{
-            padding: '16px 20px',
-            borderRadius: 12,
-            backgroundColor: '#FFFBEB',
-            border: '1px solid #FCD34D',
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 14,
-            boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
-          }}>
-            <div style={{ color: '#D97706', marginTop: 2, flexShrink: 0 }}>
-              <AlertTriangle size={24} />
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#92400E' }}>
-                  Ubicaciones históricas del modelo anterior (Racks Axx/Bxx) — Solo Trazabilidad y Consulta
-                </h4>
-                <span style={{
-                  fontSize: 11,
-                  fontWeight: 800,
-                  padding: '2px 8px',
-                  borderRadius: 6,
-                  backgroundColor: '#FEE2E2',
-                  color: '#991B1B',
-                  border: '1px solid #FCA5A5'
-                }}>
-                  100% Inactivas en BD
-                </span>
-              </div>
-              <p style={{ margin: '6px 0 0', fontSize: 13, color: '#78350F', lineHeight: 1.5 }}>
-                Estas 48 celdas de estantería pertenecieron al modelo previo de desarrollo y demostraciones y se encuentran <strong>completamente inactivas</strong> (<code>activo = false, estado = LIBRE</code>). Se conservan en base de datos para preservar la trazabilidad documental histórica sin eliminar referencias.
-              </p>
-              <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: '#92400E', lineHeight: 1.6 }}>
-                <li><strong>No representan el almacén físico actual:</strong> La operación real se realiza en nave abierta sin racks elevados.</li>
-                <li><strong>Excluidas de algoritmos WMS:</strong> No participan en el motor de alojamiento (Putaway), surtido (Picking), ni en rotación FEFO/FIFO.</li>
-                <li><strong>Operación activa:</strong> Toda la estiba y surtido se gestiona en las <strong>45 posiciones físicas oficiales de tarima en piso (G0001–G0045)</strong> en la pestaña <em>Plano Físico 2D</em>.</li>
-              </ul>
-            </div>
-          </div>
-          {Object.entries(historicalHierarchy).map(([zonaKey, zData]) => (
-            <div key={zonaKey} className="card animate-fade-in" style={{ overflow: 'hidden' }}>
-              {/* Encabezado de Zona */}
-              <div style={{
-                padding: '14px 20px',
-                borderBottom: '1px solid var(--border)',
-                backgroundColor: 'var(--bg-secondary)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: 10
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <Warehouse size={18} style={{ color: 'var(--primary)' }} />
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800 }}>{zData.zonaNombre}</h3>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                      Zona: <strong style={{ color: 'var(--text-primary)' }}>{zData.zonaCodigo}</strong> · {Object.keys(zData.pasillos).length} pasillos configurados
-                    </div>
-                  </div>
-                </div>
-
-                {!filterCliente && (
-                  <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
-                    <button className="btn btn-ghost btn-xs" onClick={expandAllAisles}>Expandir todos</button>
-                    <button className="btn btn-ghost btn-xs" onClick={collapseAllAisles}>Contraer todos</button>
-                  </div>
-                )}
-              </div>
-
-              {/* Contenedor de Pasillos de la Zona (Expandibles/Colapsables) */}
-              <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {Object.entries(zData.pasillos).map(([pasilloKey, pData]) => {
-                  const isAisleCollapsed = Boolean(collapsedAisles[pasilloKey]);
-                  const isAisleOpen = !isAisleCollapsed;
-                  
-                  // Calcular piezas y presencia de cliente en este pasillo
-                  const aisleRacksList = Object.values(pData.racks);
-                  const aisleTotalPieces = aisleRacksList.reduce((s, r) => s + r.totalPiezas, 0);
-                  const aisleTotalCap = aisleRacksList.reduce((s, r) => s + r.capacidadPiezas, 0);
-                  
-                  const hasClientStockInAisle = filterCliente ? Object.values(pData.racks).some(r =>
-                    Object.values(r.niveles).some(cells =>
-                      cells.some(loc => getLocationClientStats(loc, filterCliente).hasStock)
-                    )
-                  ) : false;
-
-                  return (
-                    <div key={pasilloKey} style={{
-                      borderRadius: 10,
-                      backgroundColor: 'rgba(15, 23, 42, 0.02)',
-                      border: '1px solid var(--border)',
-                      overflow: 'hidden',
-                      transition: 'all 0.15s ease'
-                    }}>
-                      {/* Barra de Pasillo Clicable para Expandir / Contraer (Punto 1) */}
-                      <div
-                        onClick={() => toggleAisle(pasilloKey)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '10px 14px',
-                          cursor: 'pointer',
-                          backgroundColor: isAisleOpen ? 'rgba(15, 23, 42, 0.04)' : 'var(--bg-secondary)',
-                          borderBottom: isAisleOpen ? '1px solid var(--border)' : 'none',
-                          userSelect: 'none'
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                          <span style={{
-                            padding: '3px 9px',
-                            borderRadius: 6,
-                            fontSize: 12,
-                            fontWeight: 800,
-                            backgroundColor: '#0F172A',
-                            color: '#FFFFFF'
-                          }}>
-                            PASILLO {pData.pasilloCodigo}
-                          </span>
-                          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                            {Object.keys(pData.racks).length} Racks de Almacenamiento · {aisleTotalPieces} de {aisleTotalCap} piezas
-                          </span>
-                          {hasClientStockInAisle && (
-                            <span style={{
-                              fontSize: 10.5,
-                              fontWeight: 700,
-                              padding: '2px 8px',
-                              borderRadius: 4,
-                              backgroundColor: 'rgba(37,99,235,0.12)',
-                              color: '#1E40AF',
-                              border: '1px solid rgba(37,99,235,0.25)'
-                            }}>
-                              Stock de {selectedClientName}
-                            </span>
-                          )}
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--text-secondary)' }}>
-                          <span>{isAisleOpen ? 'Contraer' : 'Expandir'}</span>
-                          {isAisleOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                        </div>
-                      </div>
-
-                      {/* Grid de Racks Físicos en el Pasillo (Visible sólo si el pasillo está abierto) */}
-                      {isAisleOpen && (
-                        <div style={{
-                          padding: 14,
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                          gap: 14
-                        }}>
-                          {Object.entries(pData.racks).map(([rackKey, rData]) => {
-                            // Ordenar niveles de arriba a abajo: N3 (superior) -> N2 (medio) -> N1 (piso/picking)
-                            const sortedNiveles = Object.keys(rData.niveles).sort((a, b) => b.localeCompare(a));
-                            const pctRackPiezas = rData.capacidadPiezas > 0 ? Math.round((rData.totalPiezas / rData.capacidadPiezas) * 100) : 0;
-
-                            return (
-                              <div key={rackKey} style={{
-                                borderRadius: 8,
-                                border: '1px solid var(--border)',
-                                backgroundColor: 'var(--bg-primary)',
-                                overflow: 'hidden',
-                                boxShadow: '0 2px 6px rgba(0,0,0,0.04)',
-                                display: 'flex',
-                                flexDirection: 'column'
-                              }}>
-                                {/* Cabecera del Rack Industrial */}
-                                <div style={{
-                                  padding: '10px 14px',
-                                  backgroundColor: 'var(--bg-secondary)',
-                                  borderBottom: '1px solid var(--border)',
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  alignItems: 'center'
-                                }}>
-                                  <span style={{ fontWeight: 800, fontSize: 13, color: 'var(--text-primary)' }}>
-                                    RACK {rData.rackCodigo}
-                                  </span>
-                                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 600 }}>
-                                    {rData.totalPiezas} de {rData.capacidadPiezas} piezas ({pctRackPiezas}%)
-                                  </span>
-                                </div>
-
-                                {/* Estantes / Niveles Físicos Claros (N3 -> N2 -> N1) */}
-                                <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                  {sortedNiveles.map(nivelKey => {
-                                    const celdasNivel = rData.niveles[nivelKey];
-                                    const nivelInfo = getNivelInfo(nivelKey);
-                                    const isPicking = nivelInfo.role === 'Picking';
-
-                                    return (
-                                      <div key={nivelKey} style={{
-                                        display: 'flex',
-                                        gap: 8,
-                                        alignItems: 'stretch'
-                                      }}>
-                                        {/* Indicador de Nivel Histórico */}
-                                        <div style={{
-                                          width: 78,
-                                          minWidth: 78,
-                                          borderRadius: 6,
-                                          display: 'flex',
-                                          flexDirection: 'column',
-                                          alignItems: 'center',
-                                          justifyContent: 'center',
-                                          padding: '4px 2px',
-                                          backgroundColor: '#F1F5F9',
-                                          color: '#64748B',
-                                          border: '1px solid #CBD5E1',
-                                          flexShrink: 0,
-                                          textAlign: 'center'
-                                        }} title={`Nivel previo: ${nivelInfo.code} (${nivelInfo.role}) — Conservado para consulta y auditoría`}>
-                                          <span style={{ fontSize: 11, fontWeight: 800, color: '#334155' }}>{nivelInfo.code}</span>
-                                          <span style={{ fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02em', color: '#64748B' }}>
-                                            HISTÓRICO
-                                          </span>
-                                        </div>
-
-                                        {/* Celdas físicas de posición en esta viga */}
-                                        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: `repeat(${celdasNivel.length}, 1fr)`, gap: 6 }}>
-                                          {celdasNivel.map((loc: any) => {
-                                            const isOver = loc.estadoCapacidad === 'SOBRECAPACIDAD';
-                                            const isBlock = loc.estado === 'BLOQUEADO' || loc.estadoCapacidad === 'BLOQUEADO';
-                                            const isFull = loc.estadoCapacidad === 'LLENO';
-                                            const isPart = loc.estadoCapacidad === 'PARCIAL';
-                                            const isFree = loc.estadoCapacidad === 'LIBRE';
-
-                                            // Diferenciación 3PL por Depositante
-                                            const clientStats = filterCliente ? getLocationClientStats(loc, filterCliente) : null;
-                                            const isComp = filterCliente ? isLocationCompatibleWithClient(loc, selectedClient, clientStats?.hasStock || false, activeOperationalZoneIds) : false;
-                                            const isClientHoldingStock = clientStats?.hasStock || false;
-
-                                            // En este tab histórico, atenuar visualmente las celdas y reemplazar el verde "LIBRE" por "INACTIVO"
-                                            let cellBorder = '1px solid #CBD5E1';
-                                            let cellBg = '#F8FAFC';
-                                            let badgeBg = '#E2E8F0';
-                                            let badgeText = 'INACTIVO';
-                                            let badgeColor = '#475569';
-
-                                            if (isOver) {
-                                              cellBorder = '2px solid #EF4444';
-                                              cellBg = 'rgba(239, 68, 68, 0.08)';
-                                              badgeBg = '#DC2626';
-                                              badgeText = 'SOBRECAP.';
-                                              badgeColor = '#FFFFFF';
-                                            } else if (isBlock) {
-                                              cellBorder = '1px solid rgba(148, 163, 184, 0.5)';
-                                              cellBg = 'rgba(148, 163, 184, 0.1)';
-                                              badgeBg = '#64748B';
-                                              badgeText = 'BLOQUEADO';
-                                              badgeColor = '#FFFFFF';
-                                            } else if (filterCliente && isClientHoldingStock) {
-                                              cellBorder = '2px solid #2563EB';
-                                              cellBg = 'rgba(37, 99, 235, 0.06)';
-                                              badgeBg = isFull ? '#EF4444' : isPart ? '#D97706' : '#2563EB';
-                                              badgeText = loc.estadoCapacidad;
-                                              badgeColor = '#FFFFFF';
-                                            } else if (filterCliente && isComp && !isClientHoldingStock) {
-                                              cellBorder = '1.5px dashed #94A3B8';
-                                              cellBg = '#F1F5F9';
-                                              badgeBg = '#E2E8F0';
-                                              badgeText = 'INACTIVO';
-                                              badgeColor = '#64748B';
-                                            }
-
-                                            const hasLocBultos = typeof loc.capacidadBultos === 'number' && loc.capacidadBultos > 0;
-                                            const tooltipText = isOver
-                                              ? `Celda histórica ${loc.codigo} · ¡SOBRECAPACIDAD! (${loc.ocupacionUnidades}/${loc.capacidadUnits} piezas)`
-                                              : `Celda histórica ${loc.codigo} · Inactiva en BD · Conservada para trazabilidad y auditoría (${loc.ocupacionUnidades || 0} de ${loc.capacidadUnits} piezas configuradas)`;
-
-                                            return (
-                                              <div
-                                                key={loc.id}
-                                                onClick={() => handleOpenLocationDetail(loc)}
-                                                title={tooltipText}
-                                                style={{
-                                                  padding: '8px 8px',
-                                                  borderRadius: 6,
-                                                  cursor: 'pointer',
-                                                  border: cellBorder,
-                                                  backgroundColor: cellBg,
-                                                  transition: 'all 0.15s ease-in-out',
-                                                  display: 'flex',
-                                                  flexDirection: 'column',
-                                                  justifyContent: 'space-between',
-                                                  minHeight: 64,
-                                                  opacity: 0.82
-                                                }}
-                                              >
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                  <span style={{ fontSize: 11, fontWeight: 800, color: '#334155' }}>
-                                                    {loc.codigo}
-                                                  </span>
-                                                  <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                                                    <span style={{
-                                                      fontSize: 8,
-                                                      fontWeight: 800,
-                                                      padding: '1px 4px',
-                                                      borderRadius: 3,
-                                                      backgroundColor: '#FEF3C7',
-                                                      color: '#92400E',
-                                                      border: '1px solid #FCD34D'
-                                                    }}>
-                                                      HISTÓRICO
-                                                    </span>
-                                                    {filterCliente && clientStats?.isShared && (
-                                                      <span
-                                                        title="Esta ubicación contiene mercancía de más de un depositante."
-                                                        style={{
-                                                          fontSize: 9,
-                                                          fontWeight: 700,
-                                                          padding: '1px 5px',
-                                                          borderRadius: 3,
-                                                          backgroundColor: 'rgba(99, 102, 241, 0.15)',
-                                                          color: '#4F46E5',
-                                                          display: 'inline-flex',
-                                                          alignItems: 'center',
-                                                          gap: 2
-                                                        }}
-                                                      >
-                                                        <Users size={10} /> Compartida
-                                                      </span>
-                                                    )}
-                                                    {isOver && (
-                                                      <AlertTriangle size={13} style={{ color: '#DC2626' }} />
-                                                    )}
-                                                    {isBlock && (
-                                                      <Lock size={12} style={{ color: '#64748B' }} />
-                                                    )}
-                                                  </div>
-                                                </div>
-
-                                                {/* Ocupación en piezas clara */}
-                                                <div style={{ fontSize: 10, fontWeight: 600, color: '#64748B', marginTop: 2 }}>
-                                                  {filterCliente && isClientHoldingStock ? (
-                                                    <span style={{ color: '#1E40AF' }}>
-                                                      {clientStats?.pieces} pzs de {selectedClientName}
-                                                    </span>
-                                                  ) : isFree ? (
-                                                    <span>0 piezas · Sin saldo</span>
-                                                  ) : (
-                                                    <span>{loc.ocupacionUnidades ?? 0} <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>de {loc.capacidadUnits} piezas</span></span>
-                                                  )}
-                                                </div>
-
-                                                {/* Bultos e indicador de estatus inactivo */}
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-                                                  <span style={{ fontSize: 9.5, color: '#94A3B8' }}>
-                                                    {filterCliente && isClientHoldingStock
-                                                      ? `${clientStats?.bultos || 0} ${(clientStats?.bultos || 0) === 1 ? 'bulto' : 'bultos'}`
-                                                      : 'Rack inactivo'
-                                                    }
-                                                  </span>
-                                                  <span style={{
-                                                    fontSize: 8.5,
-                                                    fontWeight: 800,
-                                                    padding: '1px 5px',
-                                                    borderRadius: 3,
-                                                    backgroundColor: badgeBg,
-                                                    color: badgeColor,
-                                                    border: '1px solid #CBD5E1'
-                                                  }}>
-                                                    {badgeText}
-                                                  </span>
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-
-          {filteredHistoricalLocs.length === 0 && (
-            <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>
-              No se encontraron celdas de rack históricas con la búsqueda seleccionada.
-            </div>
-          )}
-
-
-        </div>
       ) : (
         /* ========================================================
            VISTA 2: VISTA POR ZONAS
@@ -1433,7 +878,6 @@ export function Locations() {
           {sortedZoneEntries.map(([zoneName, locs]) => {
             const znUpper = zoneName.toUpperCase();
             const isPrincipal = znUpper.includes('INTERIOR') || znUpper.includes('EXTERIOR');
-            const isHistorical = znUpper.includes('ALM-A') || znUpper.includes('ALM-B') || znUpper.includes('TEXTIL') || znUpper.includes('ALIMENTO');
             const isSpecial = znUpper.includes('RECIBO') || znUpper.includes('STAGING') || znUpper.includes('DEVOLUCI') || znUpper.includes('MERMA');
 
             return (
@@ -1444,22 +888,20 @@ export function Locations() {
                   marginBottom: 16,
                   border: isPrincipal
                     ? '1.5px solid #86EFAC'
-                    : isHistorical
-                    ? '1px dashed #FCD34D'
                     : '1px solid var(--border)',
-                  opacity: isHistorical ? 0.88 : 1
+                  opacity: 1
                 }}
               >
                 <div className="card-header" style={{
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  backgroundColor: isPrincipal ? '#F0FDF4' : isHistorical ? '#FFFBEB' : 'var(--bg-secondary)',
+                  backgroundColor: isPrincipal ? '#F0FDF4' : 'var(--bg-secondary)',
                   padding: '12px 18px'
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <MapPin size={18} color={isPrincipal ? '#16A34A' : isHistorical ? '#D97706' : '#2563EB'} />
-                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: isPrincipal ? '#166534' : isHistorical ? '#92400E' : 'var(--text-primary)' }}>
+                    <MapPin size={18} color={isPrincipal ? '#16A34A' : '#2563EB'} />
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: isPrincipal ? '#166534' : 'var(--text-primary)' }}>
                       {zoneName}
                     </h3>
                     <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-tertiary)' }}>
@@ -1494,37 +936,8 @@ export function Locations() {
                         Áreas Especiales y Maniobra
                       </span>
                     )}
-                    {isHistorical && (
-                      <span style={{
-                        fontSize: 11,
-                        fontWeight: 800,
-                        padding: '3px 10px',
-                        borderRadius: 6,
-                        backgroundColor: '#FEE2E2',
-                        color: '#991B1B',
-                        border: '1px solid #FCA5A5'
-                      }}>
-                        Histórico · Racks Inactivos
-                      </span>
-                    )}
                   </div>
                 </div>
-
-                {isHistorical && (
-                  <div style={{
-                    padding: '8px 18px',
-                    backgroundColor: '#FEF3C7',
-                    borderBottom: '1px solid #FCD34D',
-                    fontSize: 11,
-                    color: '#92400E',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6
-                  }}>
-                    <AlertTriangle size={14} color="#D97706" />
-                    <span>Racks inactivos (activo = false) conservados únicamente para trazabilidad documental. No participan en alojamiento ni surtido.</span>
-                  </div>
-                )}
 
                 <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
                   {locs.map((loc: any) => {
@@ -2686,7 +2099,7 @@ function PhysicalWarehouseMap({
           <button
             type="button"
             className={`btn btn-sm ${filterMode === 'ALL' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setFilterMode('ALL')}
+            onClick={() => startTransition(() => setFilterMode('ALL'))}
             style={{ fontSize: 11, padding: '4px 10px' }}
           >
             Todas ({stats.total})
@@ -2694,7 +2107,7 @@ function PhysicalWarehouseMap({
           <button
             type="button"
             className={`btn btn-sm ${filterMode === 'INTERIOR' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setFilterMode('INTERIOR')}
+            onClick={() => startTransition(() => setFilterMode('INTERIOR'))}
             style={{ fontSize: 11, padding: '4px 10px' }}
           >
             Solo Interior ({stats.interior})
@@ -2702,7 +2115,7 @@ function PhysicalWarehouseMap({
           <button
             type="button"
             className={`btn btn-sm ${filterMode === 'EXTERIOR_TECHADO' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setFilterMode('EXTERIOR_TECHADO')}
+            onClick={() => startTransition(() => setFilterMode('EXTERIOR_TECHADO'))}
             style={{ fontSize: 11, padding: '4px 10px' }}
           >
             Solo Exterior Techado ({stats.exterior})
@@ -2710,7 +2123,7 @@ function PhysicalWarehouseMap({
           <button
             type="button"
             className={`btn btn-sm ${filterMode === 'PNC' ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setFilterMode('PNC')}
+            onClick={() => startTransition(() => setFilterMode('PNC'))}
             style={{ fontSize: 11, padding: '4px 10px' }}
           >
             Posiciones PNC

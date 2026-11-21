@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Tag, Printer, Copy, Search, RefreshCw, Layers, Building2, Package, CheckCircle, Filter, X, History, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
-import { formatCalendarDate } from '../utils/dateUtils';
+import { formatCalendarDate, formatWarehouseDateOnly } from '../utils/dateUtils';
 import { getLocationHuRowPresentation, isContainerMasterHu } from '../utils/locationHuDisplay';
 
 interface LabelData {
@@ -218,6 +218,17 @@ export function LabelPreview() {
               ? `Contenedor de ${cajasCount} ${cajasCount === 1 ? 'caja' : 'cajas'}${singleDesc ? ` · ${singleDesc}` : ''}`
               : 'Tarima Master (contenedor logístico)';
 
+          const labelFecha = isHist
+            ? formatWarehouseDateOnly(
+                h.lineasSalida?.[0]?.orden?.fechaDespacho ||
+                h.updatedAt ||
+                h.createdAt
+              )
+            : formatWarehouseDateOnly(
+                h.recepcion?.fechaRecepcion ||
+                h.createdAt
+              );
+
           return {
             huId: h.codigo || `HU-${h.id?.substring(0, 8)}`,
             sku: skuLabel,
@@ -233,7 +244,7 @@ export function LabelPreview() {
             uom: 'tarima',
             ubicacion: h.ubicacionActual || h.lote?.ubicacion?.codigo || (isHist ? 'DESPACHADO' : 'Sin asignar'),
             cliente: baseCliente,
-            fecha: formatCalendarDate(h.createdAt, '—'),
+            fecha: labelFecha,
             tipoHu: 'PALLET',
             estadoHu: h.estadoHu || (isHist ? 'DESPACHADO' : 'ACTIVO'),
             isHistorico: isHist,
@@ -248,6 +259,16 @@ export function LabelPreview() {
         const unitSku = h.lote?.sku?.codigo || h.skuCodigo || 'Sin SKU';
         const unitDesc = h.lote?.sku?.descripcion || h.skuDescripcion || 'Sin descripción';
         const unitExp = formatCalendarDate(h.fechaVencimiento || h.lote?.fechaVencimiento, 'Sin caducidad');
+        const unitFecha = isHist
+          ? formatWarehouseDateOnly(
+              h.lineasSalida?.[0]?.orden?.fechaDespacho ||
+              h.updatedAt ||
+              h.createdAt
+            )
+          : formatWarehouseDateOnly(
+              h.recepcion?.fechaRecepcion ||
+              h.createdAt
+            );
 
         return {
           huId: h.codigo || `HU-${h.id?.substring(0, 8)}`,
@@ -264,7 +285,7 @@ export function LabelPreview() {
           uom: h.lote?.sku?.uomBase || h.uom || 'PZA',
           ubicacion: h.ubicacionActual || h.lote?.ubicacion?.codigo || (isHist ? 'DESPACHADO' : 'Sin asignar'),
           cliente: baseCliente,
-          fecha: formatCalendarDate(h.createdAt, '—'),
+          fecha: unitFecha,
           tipoHu: h.tipoHu || 'CAJA',
           estadoHu: h.estadoHu || (isHist ? 'DESPACHADO' : 'ACTIVO'),
           isHistorico: isHist,

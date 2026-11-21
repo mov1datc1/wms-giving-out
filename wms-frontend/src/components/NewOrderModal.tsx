@@ -183,6 +183,7 @@ export function NewOrderModal({
   }
 
   async function handleCreateOrder(openPreparation: boolean) {
+    if (submitting) return;
     setErrorMsg(null);
 
     if (!clienteId) {
@@ -271,6 +272,12 @@ export function NewOrderModal({
       }}
     >
       <div
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.target as HTMLElement)?.tagName !== 'TEXTAREA') {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
         style={{
           backgroundColor: '#FFFFFF',
           borderRadius: 12,
@@ -321,6 +328,7 @@ export function NewOrderModal({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
             style={{
               background: 'none',
@@ -424,6 +432,7 @@ export function NewOrderModal({
                 type="date"
                 value={fechaCompromiso}
                 onChange={e => setFechaCompromiso(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
                 style={{
                   width: '100%',
                   padding: '8px 12px',
@@ -444,6 +453,7 @@ export function NewOrderModal({
                 type="time"
                 value={horaCompromiso}
                 onChange={e => setHoraCompromiso(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
                 style={{
                   width: '100%',
                   padding: '8px 12px',
@@ -570,6 +580,12 @@ export function NewOrderModal({
                             value={line.cantidadSolicitada}
                             placeholder="0"
                             onChange={e => updateLineQty(idx, e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              }
+                            }}
                             style={{
                               width: 80,
                               padding: '6px 10px',
@@ -638,6 +654,12 @@ export function NewOrderModal({
               type="text"
               value={notas}
               onChange={e => setNotas(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }
+              }}
               placeholder="Ej. Cita programada 09:00 hrs. Solicita entrega en tarimas estándar."
               style={{
                 width: '100%',

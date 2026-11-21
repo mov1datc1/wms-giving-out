@@ -141,10 +141,10 @@ export function LocationSelect({
           reasons.push('Zona preferente del depositante');
         } else if (isRopa && zoneType === 'TEXTIL') {
           score += 1200;
-          reasons.push('Zona Textil / Prendas (ALM-A)');
+          reasons.push('Zona Textil / Prendas');
         } else if (isComida && zoneType === 'ALIMENTOS') {
           score += 1200;
-          reasons.push('Zona Alimentos (ALM-B)');
+          reasons.push('Zona Alimentos');
         } else if (zoneType === 'CUARENTENA') {
           score -= 3000; // No almacenar conforme en cuarentena
         }
@@ -343,9 +343,9 @@ export function LocationSelect({
       case 'EXTERIOR_TECHADO':
         return { bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)', text: '#065f46', label: 'Ext. Techado' };
       case 'TEXTIL':
-        return { bg: 'rgba(124, 58, 237, 0.1)', border: 'rgba(124, 58, 237, 0.3)', text: '#7c3aed', label: 'ALM-A Textil' };
+        return { bg: 'rgba(124, 58, 237, 0.1)', border: 'rgba(124, 58, 237, 0.3)', text: '#7c3aed', label: 'Textil' };
       case 'ALIMENTOS':
-        return { bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)', text: '#059669', label: 'ALM-B Alimentos' };
+        return { bg: 'rgba(16, 185, 129, 0.1)', border: 'rgba(16, 185, 129, 0.3)', text: '#059669', label: 'Alimentos' };
       case 'CUARENTENA':
         return { bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.3)', text: '#d97706', label: 'DEV Cuarentena' };
       default:

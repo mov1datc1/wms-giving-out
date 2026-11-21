@@ -82,6 +82,7 @@ export function Dashboard() {
   const [rackStats, setRackStats] = useState<RackCapacityStats | null>(null);
   const [ordersInProcess, setOrdersInProcess] = useState<any[]>([]);
   const [activities, setActivities] = useState<CommercialActivityItem[]>([]);
+  const [warehouseInfo, setWarehouseInfo] = useState<{ nombre: string; codigo: string } | null>(null);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -99,12 +100,20 @@ export function Dashboard() {
       const canOrders = hasPermission('despacho') || hasPermission('picking') || hasPermission('dashboard');
       const canReceipts = hasPermission('recepcion');
 
-      const [conRes, locRes, ordRes, recRes] = await Promise.all([
+      const [conRes, locRes, ordRes, recRes, whRes] = await Promise.all([
         fetch(`${API}/inventory/consolidated`, { headers }),
         canLocations ? fetch(`${API}/locations`, { headers }) : Promise.resolve(null),
         canOrders ? fetch(`${API}/orders`, { headers }) : Promise.resolve(null),
         canReceipts ? fetch(`${API}/receipts`, { headers }) : Promise.resolve(null),
+        fetch(`${API}/warehouses`, { headers }).catch(() => null),
       ]);
+
+      if (whRes?.ok) {
+        const whData = await whRes.json().catch(() => null);
+        if (Array.isArray(whData) && whData.length > 0) {
+          setWarehouseInfo({ nombre: whData[0].nombre, codigo: whData[0].codigo });
+        }
+      }
 
       // 1. Inventario Consolidado y Desglose por Depositante
       if (conRes?.ok) {
@@ -231,6 +240,13 @@ export function Dashboard() {
         else if (o.estado === 'DESPACHADO') tipoLabel = 'Despacho';
         else if (o.estado === 'ENTREGADO') tipoLabel = 'Entrega';
 
+        let fechaHora = o.updatedAt || o.createdAt;
+        if (o.estado === 'ENTREGADO') {
+          fechaHora = o.fechaEntrega || o.fechaDespacho || o.updatedAt || o.createdAt;
+        } else if (o.estado === 'DESPACHADO') {
+          fechaHora = o.fechaDespacho || o.updatedAt || o.createdAt;
+        }
+
         return {
           id: o.id,
           tipo: 'PEDIDO',
@@ -239,7 +255,7 @@ export function Dashboard() {
           depositante: o.cliente?.nombreComercial || 'Desconocido',
           cantidad: (o.lineas || []).reduce((s: number, l: any) => s + (l.cantidadSolicitada || l.cantidadAsignada || 0), 0) || null,
           estado: o.estado,
-          fechaHora: o.fechaDespacho || o.fechaEntrega || o.updatedAt || o.createdAt,
+          fechaHora,
           referencia: o.destinatario || o.endCustomer?.nombre || null,
           moduloUrl: ['EN_PICKING', 'CONSOLIDADO'].includes(o.estado) ? '/picking' : '/despacho',
         };
@@ -269,10 +285,10 @@ export function Dashboard() {
   const ordersSubtitle = ordersInProcess.length === 0
     ? 'Sin órdenes activas en proceso'
     : [
-        enPickingOrders.length > 0 ? `${enPickingOrders.length} en picking (${enPickingUnits.toLocaleString()} pza)` : null,
-        consolidadosCount > 0 ? `${consolidadosCount} consolidado(s)` : null,
-        solicitadosCount > 0 ? `${solicitadosCount} pendiente(s)` : null,
-      ].filter(Boolean).join(' · ');
+      enPickingOrders.length > 0 ? `${enPickingOrders.length} en picking (${enPickingUnits.toLocaleString()} pza)` : null,
+      consolidadosCount > 0 ? `${consolidadosCount} consolidado(s)` : null,
+      solicitadosCount > 0 ? `${solicitadosCount} pendiente(s)` : null,
+    ].filter(Boolean).join(' · ');
 
   // 6 KPIs Ejecutivos WMS
   const statCards = [
@@ -347,7 +363,7 @@ export function Dashboard() {
         <div>
           <h1 className="page-title">Dashboard Ejecutivo WMS</h1>
           <p className="page-subtitle">
-            Resumen Operativo en Tiempo Real · Almacén Central (WH-001) · {user?.nombre || 'Operador WMS'} · {new Date().toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            Resumen Operativo en Tiempo Real · {warehouseInfo ? `${warehouseInfo.nombre} (${warehouseInfo.codigo})` : 'Almacén Operativo'} · {user?.nombre || 'Operador WMS'} · {new Date().toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
           </p>
         </div>
         <button className="btn btn-secondary" onClick={loadDashboardData} disabled={refreshing}>
@@ -566,6 +582,7 @@ export function Dashboard() {
                       </td>
                       <td style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>
                         {new Date(a.fechaHora).toLocaleDateString('es-MX', {
+                          timeZone: 'America/Mexico_City',
                           day: '2-digit',
                           month: 'short',
                           year: 'numeric',

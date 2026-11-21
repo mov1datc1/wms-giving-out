@@ -210,7 +210,7 @@ export function PortalNewOrder() {
     <div className="page-container">
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => navigate('/portal/pedidos')}><ArrowLeft size={18} /></button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/portal/pedidos')}><ArrowLeft size={18} /></button>
           <div>
             <h1 className="page-title">Nuevo Pedido de Salida</h1>
             <p className="page-subtitle">Solicitud con selección de almacén, cita de transporte y reserva automática de existencias</p>
@@ -231,7 +231,14 @@ export function PortalNewOrder() {
       )}
 
       {!success && (
-        <form onSubmit={handleSubmit}>
+        <form
+          onSubmit={handleSubmit}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+              e.preventDefault();
+            }
+          }}
+        >
           {/* Header Info */}
           <div className="card" style={{ marginBottom: 20 }}>
             <div style={{ padding: '20px 24px' }}>

@@ -4,6 +4,51 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.34] — 2026-11-21 (Remediación Final Integral y Certificación Operativa — 11 Hallazgos Resueltos)
+
+### 📦 Remediación Operativa de 11 Puntos Críticos y Certificación de Calidad
+Cierre exhaustivo y remediación integral de los 11 hallazgos identificados en la operación real de Giving Out WMS, distribuidos en 5 bloques operativos con validación de suite completa (15/15 suites PASS, 135/135 tests PASS):
+
+### Bloque 1 — Layout Legacy & Datos Maestros
+- **Ocultamiento Total de Layout Legacy:** Se eliminó cualquier representación visual de `ALM-A`, `ALM-B`, ubicaciones `Axx-Rxx-Nx` y `Bxx-Rxx-Nx` en toda la interfaz de usuario (`Locations.tsx`, `LocationSelect.tsx`, `MasterData.tsx` y vista por zonas).
+- **Eliminación de Pestaña Histórica:** Se removió la pestaña y botón `<Archive /> Histórico — Racks anteriores` y ~400 líneas de código visual legacy sin borrar registros de la base de datos (preservando integridad referencial para trazabilidad histórica).
+- **Normalización de Iconografía:** Se sustituyeron emojis literales `⚠️` por `<AlertTriangle size={14} />` en Datos Maestros (`MasterData.tsx`) y `<AlertTriangle size={13} />` en `RampArrivalModal.tsx`.
+- **Corrección de Contadores Vacíos en Pestañas:** Se ajustó la interpolación de texto `{t.label}{tab === t.key ? ` (${filtered.length})` : ''}` en `MasterData.tsx` para evitar que pestañas inactivas muestren paréntesis vacíos `()`.
+
+### Bloque 2 — Textos Operativos & Resolución Dinámica de Almacén Real
+- **Sustitución de Placeholder Demo en Alertas:** Se reemplazó el texto demo que mencionaba `TextilMX` por un placeholder neutral de seguimiento operativo: `"Ej: Programar inspección preventiva de sellos de rampa y seguimiento operativo..."`.
+- **Eliminación de Hardcodes `Almacén Central` / `WH-001`:** Se erradicaron todos los fallbacks estáticos en `Dashboard.tsx` y `Traceability.tsx`. El almacén operativo se resuelve dinámicamente consultando el endpoint `/warehouses` y los atributos de la entidad, reflejando el almacén real `Almacén Tepotzotlán (ALM-TEPOZ)` con 0 hardcodes.
+
+### Bloque 3 — Fortalecimiento Anti-Autosubmit & Manifiesto de Despacho
+- **Prevención de Envíos Accidentales (Anti-Autosubmit):** Se blindaron los formularios de pedido en `NewOrderModal.tsx` y `PortalNewOrder.tsx` con interceptores `onKeyDown` que cancelan el evento `Enter` en inputs numéricos, de fecha y notas, garantizando que modificar cantidades o agregar productos no dispare la creación de órdenes.
+- **Suite Automatizada de Anti-Autosubmit:** Creación de `new-order-anti-autosubmit.spec.ts` (4/4 PASS) demostrando que la edición de cantidades, inserción/eliminación de líneas y la tecla Enter no generan llamadas POST ni registros `SalesOrder`.
+- **Corrección de Impresión de Manifiesto:** En `DispatchManifestModal.tsx` se configuraron estilos de impresión `@page { size: letter portrait; margin: 10mm 8mm; }` y `table-layout: fixed !important; word-break: break-word !important;`, asignando anchos proporcionales a las cabeceras y eliminando la duplicación innecesaria de ubicación origen en la columna `Staging / Salida`, evitando cualquier recorte del documento.
+
+### Bloque 4 — Fechas y Timestamps Operativos
+- **Corrección de Timestamp de Entrega en Dashboard:** En `Dashboard.tsx` (Actividad Comercial Reciente), las filas de tipo `Entrega` (`o.estado === 'ENTREGADO'`) ahora priorizan la fecha real de entrega `o.fechaEntrega` sobre `fechaDespacho`, renderizada con `timeZone: 'America/Mexico_City'`.
+- **Corrección de Fecha en Reimpresión Histórica de Etiqueta:** En `LabelPreview.tsx`, las unidades logísticas despachadas/históricas (`isHistorico === true`) seleccionan la fecha real de despacho (`h.lineasSalida?.[0]?.orden?.fechaDespacho || h.updatedAt`) en lugar de `h.createdAt`, formateada mediante `formatWarehouseDateOnly` en zona horaria local de México, mostrando la fecha de salida correcta (`20/11/2026`) y erradicando el desfase a `19/11/2026`.
+- **Suite Automatizada de Fechas:** Creación de `delivery-and-label-dates.spec.ts` (4/4 PASS).
+
+### Bloque 5 — Optimización de INP (Interaction to Next Paint)
+- **Eliminación de Bloqueos en UI:** Se optimizaron los manejadores de eventos sobre botones `btn-primary`.
+- **Memoización de Estructuras Complejas:** En `Locations.tsx`, se unificó y memoizó `byZone`, `sortedZoneEntries` y listas filtradas dentro de un solo `useMemo` dependiente de `[filtered, specialLocs]`, eliminando la re-computación en cada frame.
+- **Transiciones No Bloqueantes:** Aplicación de `startTransition` de React en selectores de vista (`spatial` / `operational`), filtros de visualización y pestañas de Datos Maestros.
+- **Control de Estado en Despacho:** Incorporación de `submittingDispatch` y `submittingDelivery` con deshabilitación de botones y retroalimentación de proceso durante transacciones asíncronas.
+
+### Métricas de Validación y Calidad
+- **Pruebas Automatizadas Backend:** **15/15 Test Suites PASS** · **135/135 Tests PASS** (100%).
+- **Compilaciones:**
+  - Backend (`nest build`): **PASS** (Código 0).
+  - Frontend (`tsc -b && vite build`): **PASS** (2026 módulos transformados en 41.91s).
+  - Higiene Git: `git diff --check` **PASS** (limpio).
+- **Invariantes de Base de Datos Certificadas:**
+  - `Receipt`: 4
+  - `SalesOrder`: 3 (`PED-2026-0001` ENTREGADO, `PED-QA-E2E-OUT-001` ENTREGADO, `PED-QA-E2E-OUT-002` DESPACHADO).
+  - `LotInventory`: 5 (`LOT-FINAL-FIFO-A` = 0 disponible en `G0001`/`STG-01`, `LOT-FINAL-FIFO-B` = 12 disponible en `G0002`).
+  - `HandlingUnit`: 7
+  - `InventoryMovement`: 10 movimientos históricos inmutables.
+  - `G0001`: libre | `STG-01`: libre.
+
 ## [1.9.33] — 2026-11-16 (Preflight Motor Asignación FEFO / FIFO Determinista — Pre-E2E Manual)
 
 ### 📦 Motor de Asignación y Reserva FEFO / FIFO Pre-RC (Rama `test/rc-final-integral-e2e` -> `dev`)

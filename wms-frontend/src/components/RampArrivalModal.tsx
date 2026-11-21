@@ -1095,8 +1095,8 @@ export function RampArrivalModal({
 
                   <div style={{ flex: '2 1 320px', fontSize: 11 }}>
                     {!estadoSello && (
-                      <span style={{ color: '#D97706', fontWeight: 600 }}>
-                        ⚠️ Seleccione el estado observado para habilitar el registro de la unidad.
+                      <span style={{ color: '#D97706', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={13} /> Seleccione el estado observado para habilitar el registro de la unidad.
                       </span>
                     )}
                     {estadoSello === 'INTACTO' && (
@@ -1105,13 +1105,13 @@ export function RampArrivalModal({
                       </span>
                     )}
                     {estadoSello === 'ROTO' && (
-                      <span style={{ color: '#DC2626', fontWeight: 600 }}>
-                        ⚠️ Registre el folio o "ILEGIBLE" y justifique la causa en Observaciones abajo.
+                      <span style={{ color: '#DC2626', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={13} /> Registre el folio o "ILEGIBLE" y justifique la causa en Observaciones abajo.
                       </span>
                     )}
                     {estadoSello === 'SIN_SELLO' && (
-                      <span style={{ color: '#D97706', fontWeight: 600 }}>
-                        ⚠️ La unidad debía traer sello y llegó abierta/sin precinto. Justifique en Observaciones.
+                      <span style={{ color: '#D97706', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={13} /> La unidad debía traer sello y llegó abierta/sin precinto. Justifique en Observaciones.
                       </span>
                     )}
                     {estadoSello === 'NO_APLICA' && (
