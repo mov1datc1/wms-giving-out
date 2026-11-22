@@ -384,6 +384,7 @@ export function DispatchManifestModal({
           #printable-dispatch-manifest th, #printable-dispatch-manifest td {
             border: 1px solid #cbd5e1 !important;
             padding: 4px 5px !important;
+            word-wrap: break-word !important;
             word-break: break-word !important;
             overflow-wrap: break-word !important;
           }
@@ -835,16 +836,14 @@ export function DispatchManifestModal({
                 </div>
 
                 <div style={{ borderRadius: 8, overflowX: 'auto', border: '1px solid var(--border)', background: 'var(--bg-primary)' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed' }}>
                     <thead>
                       <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
-                        <th style={{ width: '13%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>SKU</th>
-                        <th style={{ width: '25%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Descripción</th>
-                        <th style={{ width: '13%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote</th>
-                        <th style={{ width: '15%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Caja / HU</th>
-                        <th style={{ width: '11%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Ubicación Origen</th>
-                        <th style={{ width: '12%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Staging / Salida</th>
-                        <th style={{ width: '11%', padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                        <th style={{ width: '30%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Producto</th>
+                        <th style={{ width: '18%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote y Vencimiento</th>
+                        <th style={{ width: '24%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Unidad Logística (HU / Caja)</th>
+                        <th style={{ width: '15%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Flujo de Ubicaciones</th>
+                        <th style={{ width: '13%', padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
                           {isAlreadyDispatched ? 'CANT. DESPACHADA' : 'CANT. PREPARADA'}
                         </th>
                       </tr>
@@ -853,41 +852,55 @@ export function DispatchManifestModal({
                       {manifestData?.lineasDesglose?.map((l: any, idx: number) => (
                         <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
                           <td style={{ padding: '8px 10px' }}>
-                            <code style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)' }}>{l.sku}</code>
-                          </td>
-                          <td style={{ padding: '8px 10px', maxWidth: 180, whiteSpace: 'normal', fontSize: 12 }}>
-                            {l.descripcion}
+                            <code style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', display: 'block', marginBottom: 2 }}>{l.sku}</code>
+                            <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.3 }}>{l.descripcion}</div>
                           </td>
                           <td style={{ padding: '8px 10px' }}>
-                            <span className="badge badge-default" style={{ fontSize: 11, fontWeight: 600 }}>
+                            <span className="badge badge-default" style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace' }}>
                               {l.lote}
                             </span>
                             {l.caducidad && (
-                              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 3 }}>
                                 Vence: {formatCalendarDate(l.caducidad)}
                               </div>
                             )}
                           </td>
                           <td style={{ padding: '8px 10px' }}>
-                            <code style={{ fontSize: 11, background: 'var(--bg-secondary)', padding: '2px 5px', borderRadius: 4, color: 'var(--text-primary)' }}>
+                            <div style={{
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: 'var(--bg-secondary)',
+                              padding: '3px 6px',
+                              borderRadius: 4,
+                              display: 'inline-block',
+                              wordBreak: 'break-all',
+                              color: 'var(--text-primary)',
+                              border: '1px solid var(--border)',
+                            }}>
                               {l.huCodigo || (Array.isArray(l.cajasEscaneadas) && l.cajasEscaneadas.length > 0 ? l.cajasEscaneadas.join(', ') : 'S/N')}
-                            </code>
+                            </div>
                           </td>
                           <td style={{ padding: '8px 10px' }}>
-                            <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                              {l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                            <span className="badge badge-cyan" style={{ fontSize: 11, fontWeight: 700, padding: '2px 6px', fontFamily: 'monospace', display: 'inline-block' }}>
-                              {l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01'}
-                            </span>
+                            <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                              <span style={{ color: 'var(--text-tertiary)', fontSize: 10, textTransform: 'uppercase' }}>Origen:</span>
+                              <strong style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}</strong>
+                            </div>
+                            <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span style={{ color: 'var(--text-tertiary)', fontSize: 10, textTransform: 'uppercase' }}>Salida:</span>
+                              <span className="badge badge-cyan" style={{ fontSize: 10, fontWeight: 700, padding: '1px 5px', fontFamily: 'monospace' }}>
+                                {l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01'}
+                              </span>
+                            </div>
                           </td>
                           <td
-                            style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: 'var(--emerald)', whiteSpace: 'nowrap' }}
+                            style={{ padding: '8px 10px', textAlign: 'right' }}
                             title={isAlreadyDispatched ? `Cantidad despachada: ${l.cantidadDespachada} ${l.uom || 'PZA'}` : `Cantidad preparada en Staging: ${l.cantidadPreparada ?? l.cantidadDespachada} ${l.uom || 'PZA'}`}
                           >
-                            {isAlreadyDispatched ? l.cantidadDespachada : (l.cantidadPreparada ?? l.cantidadDespachada)} {l.uom || 'PZA'}
+                            <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--emerald)' }}>
+                              {isAlreadyDispatched ? l.cantidadDespachada : (l.cantidadPreparada ?? l.cantidadDespachada)}{' '}
+                              <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-secondary)' }}>{l.uom || 'PZA'}</span>
+                            </div>
                           </td>
                         </tr>
                       ))}

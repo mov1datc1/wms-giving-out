@@ -158,6 +158,25 @@ export function PortalNewOrder() {
     setLines(updated);
   }
 
+  // Validación estricta y exhaustiva del pedido para habilitación del botón
+  const isEveryLineValid = lines.length > 0 && lines.every(l => {
+    if (!l.skuId || String(l.skuId).trim() === '') return false;
+    const qty = Number(l.cantidadSolicitada);
+    if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty <= 0) return false;
+    if (qty > (Number(l.available) || 0)) return false;
+    return true;
+  });
+
+  const isGeneralInfoValid = Boolean(
+    endCustomerId &&
+    String(endCustomerId).trim() !== '' &&
+    fechaCompromiso &&
+    String(fechaCompromiso).trim() !== '' &&
+    horaCompromiso &&
+    String(horaCompromiso).trim() !== ''
+  );
+
+  const isOrderValid = isEveryLineValid && isGeneralInfoValid;
   const hasStockErrors = lines.some(l => l.skuId && Number(l.cantidadSolicitada) > l.available);
   const totalItems = lines.reduce((sum, l) => sum + (Number(l.cantidadSolicitada) || 0), 0);
 
@@ -450,7 +469,12 @@ export function PortalNewOrder() {
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
             <button type="button" className="btn btn-ghost" onClick={() => navigate('/portal/pedidos')}>Cancelar</button>
-            <button type="submit" className="btn btn-primary" disabled={submitting || lines.length === 0 || hasStockErrors}>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={submitting || !isOrderValid}
+              title={!isOrderValid ? 'Completa todos los campos obligatorios y selecciona productos y cantidades válidas' : 'Confirmar y Solicitar Pedido'}
+            >
               <ShoppingCart size={16} /> {submitting ? 'Reservando stock y enviando...' : `Confirmar y Solicitar Pedido (${lines.length} productos)`}
             </button>
           </div>

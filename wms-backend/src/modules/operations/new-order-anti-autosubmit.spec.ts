@@ -1,7 +1,7 @@
 describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
   interface OrderLineState {
     skuId: string;
-    cantidadSolicitada: number;
+    cantidadSolicitada: number | string;
     available: number;
     reserved: number;
     uom: string;
@@ -47,6 +47,36 @@ describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
       submitting: false,
     };
 
+    get isEveryLineValid(): boolean {
+      return (
+        this.state.lines.length > 0 &&
+        this.state.lines.every((l) => {
+          if (!l.skuId || String(l.skuId).trim() === '') return false;
+          const qty = Number(l.cantidadSolicitada);
+          if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty <= 0) return false;
+          if (qty > (Number(l.available) || 0)) return false;
+          return true;
+        })
+      );
+    }
+
+    get isGeneralInfoValid(): boolean {
+      return Boolean(
+        this.state.clienteId &&
+          this.state.clienteId.trim() !== '' &&
+          this.state.endCustomerId &&
+          this.state.endCustomerId.trim() !== '' &&
+          this.state.fechaCompromiso &&
+          this.state.fechaCompromiso.trim() !== '' &&
+          this.state.horaCompromiso &&
+          this.state.horaCompromiso.trim() !== ''
+      );
+    }
+
+    get isOrderValid(): boolean {
+      return this.isEveryLineValid && this.isGeneralInfoValid;
+    }
+
     addLine(skuId = 'sku-1', available = 50, uom = 'PZA') {
       // Adding line MUST NOT trigger API or create order
       this.state.lines.push({
@@ -58,11 +88,21 @@ describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
       });
     }
 
-    updateQty(index: number, val: string) {
+    updateQty(index: number, val: string | number) {
       // Typing or editing quantity MUST NOT trigger API or create order
-      const parsed = parseInt(val, 10);
       if (this.state.lines[index]) {
-        this.state.lines[index].cantidadSolicitada = isNaN(parsed) ? 0 : parsed;
+        if (val === '') {
+          this.state.lines[index].cantidadSolicitada = '';
+        } else {
+          const parsed = parseInt(String(val).replace(/\D/g, ''), 10);
+          this.state.lines[index].cantidadSolicitada = isNaN(parsed) ? '' : parsed;
+        }
+      }
+    }
+
+    setLineSku(index: number, skuId: string) {
+      if (this.state.lines[index]) {
+        this.state.lines[index].skuId = skuId;
       }
     }
 
@@ -80,11 +120,9 @@ describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
     }
 
     handleSubmitExplicit() {
-      // Only explicit button click triggers submit
+      // Only explicit button click triggers submit and requires isOrderValid
       if (this.state.submitting) return;
-      if (this.state.lines.length === 0) return;
-      if (this.state.lines.some(l => l.cantidadSolicitada <= 0)) return;
-      if (this.state.lines.some(l => l.cantidadSolicitada > l.available)) return;
+      if (!this.isOrderValid) return;
 
       this.state.submitting = true;
       simulateCreateOrderApi({
@@ -92,9 +130,9 @@ describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
         endCustomerId: this.state.endCustomerId,
         fechaCompromiso: this.state.fechaCompromiso,
         horaCompromiso: this.state.horaCompromiso,
-        lineas: this.state.lines.map(l => ({
+        lineas: this.state.lines.map((l) => ({
           skuId: l.skuId,
-          cantidadSolicitada: l.cantidadSolicitada,
+          cantidadSolicitada: Number(l.cantidadSolicitada),
           uom: l.uom,
         })),
       });
@@ -174,6 +212,7 @@ describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
 
     // Still 0 before click
     expect(dbOrders.length).toBe(0);
+    expect(form.isOrderValid).toBe(true);
 
     // User explicitly clicks "Confirmar y Solicitar Pedido"
     form.handleSubmitExplicit();
@@ -184,5 +223,80 @@ describe('Anti-Autosubmit & Explicit Order Creation Protocol', () => {
     expect(dbOrders[0].lineas[0].skuId).toBe('sku-harina');
     expect(dbOrders[0].lineas[0].cantidadSolicitada).toBe(12);
   });
-});
 
+  it('5. Validation Case A: Line without product + quantity 4 -> button disabled (isOrderValid === false)', () => {
+    const form = new OrderFormSimulator();
+    // Line added with empty skuId and quantity 4
+    form.addLine('', 50);
+    form.updateQty(0, '4');
+
+    expect(form.state.lines[0].skuId).toBe('');
+    expect(form.state.lines[0].cantidadSolicitada).toBe(4);
+    expect(form.isEveryLineValid).toBe(false);
+    expect(form.isOrderValid).toBe(false);
+
+    // Explicit submit must be blocked
+    form.handleSubmitExplicit();
+    expect(dbOrders.length).toBe(0);
+    expect(apiPostOrderCalls.length).toBe(0);
+  });
+
+  it('6. Validation Case B: Valid product + quantity 0 -> button disabled (isOrderValid === false)', () => {
+    const form = new OrderFormSimulator();
+    form.addLine('ACE-OLI-1L', 50);
+    form.updateQty(0, 0);
+
+    expect(form.state.lines[0].skuId).toBe('ACE-OLI-1L');
+    expect(form.state.lines[0].cantidadSolicitada).toBe(0);
+    expect(form.isEveryLineValid).toBe(false);
+    expect(form.isOrderValid).toBe(false);
+
+    form.handleSubmitExplicit();
+    expect(dbOrders.length).toBe(0);
+    expect(apiPostOrderCalls.length).toBe(0);
+  });
+
+  it('7. Validation Case C: Valid product + quantity negative (-2) -> button disabled (isOrderValid === false)', () => {
+    const form = new OrderFormSimulator();
+    form.addLine('ACE-OLI-1L', 50);
+    form.state.lines[0].cantidadSolicitada = -2;
+
+    expect(form.isEveryLineValid).toBe(false);
+    expect(form.isOrderValid).toBe(false);
+
+    form.handleSubmitExplicit();
+    expect(dbOrders.length).toBe(0);
+    expect(apiPostOrderCalls.length).toBe(0);
+  });
+
+  it('8. Validation Case D: Valid product + quantity > available stock -> button disabled (isOrderValid === false)', () => {
+    const form = new OrderFormSimulator();
+    form.addLine('ACE-OLI-1L', 10); // available is 10
+    form.updateQty(0, 15); // requested 15 > 10
+
+    expect(form.state.lines[0].cantidadSolicitada).toBe(15);
+    expect(form.isEveryLineValid).toBe(false);
+    expect(form.isOrderValid).toBe(false);
+
+    form.handleSubmitExplicit();
+    expect(dbOrders.length).toBe(0);
+    expect(apiPostOrderCalls.length).toBe(0);
+  });
+
+  it('9. Validation Case E: Valid product + valid quantity + general info complete -> button enabled (isOrderValid === true)', () => {
+    const form = new OrderFormSimulator();
+    form.addLine('ACE-OLI-1L', 50);
+    form.updateQty(0, 4);
+
+    expect(form.state.lines[0].skuId).toBe('ACE-OLI-1L');
+    expect(form.state.lines[0].cantidadSolicitada).toBe(4);
+    expect(form.isEveryLineValid).toBe(true);
+    expect(form.isGeneralInfoValid).toBe(true);
+    expect(form.isOrderValid).toBe(true);
+
+    form.handleSubmitExplicit();
+    expect(dbOrders.length).toBe(1);
+    expect(apiPostOrderCalls.length).toBe(1);
+    expect(dbOrders[0].lineas[0].cantidadSolicitada).toBe(4);
+  });
+});

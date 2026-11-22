@@ -19,10 +19,24 @@ Cierre exhaustivo y remediación integral de los 11 hallazgos identificados en l
 - **Sustitución de Placeholder Demo en Alertas:** Se reemplazó el texto demo que mencionaba `TextilMX` por un placeholder neutral de seguimiento operativo: `"Ej: Programar inspección preventiva de sellos de rampa y seguimiento operativo..."`.
 - **Eliminación de Hardcodes `Almacén Central` / `WH-001`:** Se erradicaron todos los fallbacks estáticos en `Dashboard.tsx` y `Traceability.tsx`. El almacén operativo se resuelve dinámicamente consultando el endpoint `/warehouses` y los atributos de la entidad, reflejando el almacén real `Almacén Tepotzotlán (ALM-TEPOZ)` con 0 hardcodes.
 
-### Bloque 3 — Fortalecimiento Anti-Autosubmit & Manifiesto de Despacho
+### Bloque 3 — Fortalecimiento Anti-Autosubmit, Validación Exhaustiva & Rediseño de Manifiesto
+- **Validación Exhaustiva de Pedidos (`PortalNewOrder.tsx` y `NewOrderModal.tsx`):**
+  - Implementación de regla de negocio estricta `isOrderValid`: el botón `Confirmar y Solicitar Pedido` (y sus análogos en `NewOrderModal`) únicamente se habilita si todas las líneas tienen producto seleccionado (`skuId !== ''`), cantidad entera estrictamente mayor a 0 (`Number.isInteger(qty) && qty > 0`), cantidad dentro del límite disponible (`qty <= available`), y todos los campos obligatorios del pedido capturados.
+  - Corrección de bugs detectados en validación manual: líneas con cantidad capturada pero sin producto (Caso A) o productos con cantidad 0 (Caso B) ahora inhabilitan visualmente el botón con cursor `not-allowed` y tooltip informativo.
 - **Prevención de Envíos Accidentales (Anti-Autosubmit):** Se blindaron los formularios de pedido en `NewOrderModal.tsx` y `PortalNewOrder.tsx` con interceptores `onKeyDown` que cancelan el evento `Enter` en inputs numéricos, de fecha y notas, garantizando que modificar cantidades o agregar productos no dispare la creación de órdenes.
-- **Suite Automatizada de Anti-Autosubmit:** Creación de `new-order-anti-autosubmit.spec.ts` (4/4 PASS) demostrando que la edición de cantidades, inserción/eliminación de líneas y la tecla Enter no generan llamadas POST ni registros `SalesOrder`.
-- **Corrección de Impresión de Manifiesto:** En `DispatchManifestModal.tsx` se configuraron estilos de impresión `@page { size: letter portrait; margin: 10mm 8mm; }` y `table-layout: fixed !important; word-break: break-word !important;`, asignando anchos proporcionales a las cabeceras y eliminando la duplicación innecesaria de ubicación origen en la columna `Staging / Salida`, evitando cualquier recorte del documento.
+- **Suite Automatizada de Validación y Anti-Autosubmit:** Ampliación de `new-order-anti-autosubmit.spec.ts` a **9 pruebas unitarias exhaustivas (9/9 PASS)** demostrando que ni la edición de cantidades, inserción/eliminación de líneas, líneas vacías, cantidades en cero, cantidades negativas ni la tecla Enter generan llamadas POST o crean registros `SalesOrder` accidentales en BD.
+- **Rediseño Jerárquico de Manifiesto de Despacho (`DispatchManifestModal.tsx`):**
+  - Rediseño de la tabla de desglose oficial de mercancía despachada pasando de 7 columnas estrechas a 5 columnas legibles y jerarquizadas:
+    - Columna 1: **Producto** (30%, SKU mono bold + Descripción multilínea completa).
+    - Columna 2: **Lote y Vencimiento** (18%, Badge de lote + fecha de caducidad).
+    - Columna 3: **Unidad Logística (HU / Caja)** (24%, contenedor monospace amplio para códigos largos como `BOX-REC-2026-0021-0001` sin saltos indeseados ni traslapes).
+    - Columna 4: **Flujo de Ubicaciones** (15%, información apilada con etiquetas `Origen:` y `Salida:` con badge mono).
+    - Columna 5: **Cantidad** (13%, alineado a la derecha con número destacado y UOM).
+  - Configuración de reglas de impresión `@media print`:
+    - `@page { size: letter portrait; margin: 10mm 8mm; }`
+    - `table-layout: fixed !important; width: 100% !important;`
+    - `word-wrap: break-word !important; word-break: break-word !important; overflow-wrap: break-word !important;`
+    - Garantiza legibilidad 100% libre de recortes o solapamientos tanto en vista previa como en "Guardar como PDF".
 
 ### Bloque 4 — Fechas y Timestamps Operativos
 - **Corrección de Timestamp de Entrega en Dashboard:** En `Dashboard.tsx` (Actividad Comercial Reciente), las filas de tipo `Entrega` (`o.estado === 'ENTREGADO'`) ahora priorizan la fecha real de entrega `o.fechaEntrega` sobre `fechaDespacho`, renderizada con `timeZone: 'America/Mexico_City'`.
@@ -36,14 +50,14 @@ Cierre exhaustivo y remediación integral de los 11 hallazgos identificados en l
 - **Control de Estado en Despacho:** Incorporación de `submittingDispatch` y `submittingDelivery` con deshabilitación de botones y retroalimentación de proceso durante transacciones asíncronas.
 
 ### Métricas de Validación y Calidad
-- **Pruebas Automatizadas Backend:** **15/15 Test Suites PASS** · **135/135 Tests PASS** (100%).
+- **Pruebas Automatizadas Backend:** **15/15 Test Suites PASS** · **140/140 Tests PASS** (100%).
 - **Compilaciones:**
   - Backend (`nest build`): **PASS** (Código 0).
-  - Frontend (`tsc -b && vite build`): **PASS** (2026 módulos transformados en 41.91s).
+  - Frontend (`tsc -b && vite build`): **PASS** (2026 módulos transformados en producción).
   - Higiene Git: `git diff --check` **PASS** (limpio).
 - **Invariantes de Base de Datos Certificadas:**
   - `Receipt`: 4
-  - `SalesOrder`: 3 (`PED-2026-0001` ENTREGADO, `PED-QA-E2E-OUT-001` ENTREGADO, `PED-QA-E2E-OUT-002` DESPACHADO).
+  - `SalesOrder`: 3 (`PED-2026-0001` ENTREGADO, `PED-QA-E2E-OUT-001` ENTREGADO, `PED-QA-E2E-OUT-002` DESPACHADO; 0 pedidos accidentales).
   - `LotInventory`: 5 (`LOT-FINAL-FIFO-A` = 0 disponible en `G0001`/`STG-01`, `LOT-FINAL-FIFO-B` = 12 disponible en `G0002`).
   - `HandlingUnit`: 7
   - `InventoryMovement`: 10 movimientos históricos inmutables.

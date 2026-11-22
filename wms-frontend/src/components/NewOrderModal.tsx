@@ -182,6 +182,24 @@ export function NewOrderModal({
     setLines(updated);
   }
 
+  // Validación estricta y exhaustiva de líneas y campos obligatorios
+  const isEveryLineValid = lines.length > 0 && lines.every(l => {
+    if (!l.skuId || String(l.skuId).trim() === '') return false;
+    const qty = Number(l.cantidadSolicitada);
+    if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty <= 0) return false;
+    const stock = getStockInfo(l.skuId);
+    if (qty > stock.disponible) return false;
+    return true;
+  });
+
+  const isOrderValid = Boolean(
+    clienteId &&
+    String(clienteId).trim() !== '' &&
+    endCustomerId &&
+    String(endCustomerId).trim() !== '' &&
+    isEveryLineValid
+  );
+
   async function handleCreateOrder(openPreparation: boolean) {
     if (submitting) return;
     setErrorMsg(null);
@@ -706,16 +724,17 @@ export function NewOrderModal({
             <button
               type="button"
               onClick={() => handleCreateOrder(false)}
-              disabled={submitting}
+              disabled={submitting || !isOrderValid}
+              title={!isOrderValid ? 'Completa los datos requeridos y selecciona productos y cantidades válidas' : 'Guardar Pedido'}
               style={{
                 padding: '8px 16px',
                 borderRadius: 6,
                 border: '1px solid #CBD5E1',
-                backgroundColor: '#FFFFFF',
-                color: '#1E293B',
+                backgroundColor: !isOrderValid ? '#F1F5F9' : '#FFFFFF',
+                color: !isOrderValid ? '#94A3B8' : '#1E293B',
                 fontSize: 13,
                 fontWeight: 600,
-                cursor: 'pointer',
+                cursor: !isOrderValid ? 'not-allowed' : 'pointer',
               }}
             >
               Guardar Pedido
@@ -724,7 +743,8 @@ export function NewOrderModal({
             <button
               type="button"
               onClick={() => handleCreateOrder(true)}
-              disabled={submitting}
+              disabled={submitting || !isOrderValid}
+              title={!isOrderValid ? 'Completa los datos requeridos y selecciona productos y cantidades válidas' : 'Guardar y Abrir Panel de Preparación'}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -732,12 +752,12 @@ export function NewOrderModal({
                 padding: '8px 18px',
                 borderRadius: 6,
                 border: 'none',
-                backgroundColor: '#0D9488',
+                backgroundColor: !isOrderValid ? '#94A3B8' : '#0D9488',
                 color: '#FFFFFF',
                 fontSize: 13,
                 fontWeight: 700,
-                cursor: 'pointer',
-                boxShadow: '0 2px 4px rgba(13, 148, 136, 0.25)',
+                cursor: !isOrderValid ? 'not-allowed' : 'pointer',
+                boxShadow: !isOrderValid ? 'none' : '0 2px 4px rgba(13, 148, 136, 0.25)',
               }}
             >
               <Sliders size={16} />
