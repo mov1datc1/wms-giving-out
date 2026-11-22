@@ -9,6 +9,34 @@ El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.co
 ### 📦 Remediación Operativa de 11 Puntos Críticos y Certificación de Calidad
 Cierre exhaustivo y remediación integral de los 11 hallazgos identificados en la operación real de Giving Out WMS, distribuidos en 5 bloques operativos con validación de suite completa (15/15 suites PASS, 135/135 tests PASS):
 
+### 🎯 Certificación Visual Final de Operación Real (Resultado: PASS — 2026-11-21)
+- **Estado General Certificado:** PASS al 100% en todos los módulos de Giving Out WMS sobre rama `dev`.
+- **Dashboard:** PASS (muestra dinámicamente `Almacén Tepotzotlán (ALM-TEPOZ)` y hora real de entrega local).
+- **Ubicaciones y Layout Vigente:** PASS (solo ubicaciones operativas G0001–G0045, INTERIOR, EXTERIOR_TECHADO, RECIBO, STAGING).
+- **Layout Legacy:** PASS (completamente oculto de toda la UI, `ALM-A`, `ALM-B`, Axx/Bxx erradicados visualmente; pestaña histórica eliminada).
+- **Datos Maestros:** PASS (solo 5 zonas vigentes, sin contadores vacíos `()`, iconos profesionales en reglas).
+- **Trazabilidad:** PASS (resolución dinámica del almacén sin fallbacks hardcodeados).
+- **Etiquetado Histórico:** PASS (reimpresión con fecha real de despacho `20/11/2026` sin desfase a 19/11).
+- **Portal AlimNorte:** PASS (operación cliente fluida, segura y consistente).
+- **Validación Estricta de Nuevo Pedido:** PASS (botón final habilitado únicamente con `skuId` obligatorio, cantidad entera `> 0`, dentro de stock disponible y campos requeridos completos).
+- **Protección Anti-Autosubmit:** PASS (Enter en inputs numéricos/fechas no crea pedidos; suite 9/9 PASS; 0 pedidos accidentales).
+- **Manifiesto / Acuse de Salida (`MAN-PED-2026-0001`):** PASS visual definitivo:
+  - Estructura híbrida logística de 3 columnas ultra-legible (`Mercancía y Lote` 46%, `Unidad Logística (HU) y Ruta` 38%, `Cantidad` 16%).
+  - Código completo de HU (`BOX-REC-2026-0021-0001`) con más de 130px de margen libre, sin solapamientos.
+  - Ruta `Origen: G0001 → Salida: STG-01` claramente legible y separada con badge cian.
+  - Cantidad `12 PZA` separada correctamente en verde esmeralda alineada a la derecha.
+  - Firmas digitales de despachador y chofer/receptor ordenadas.
+  - Documento completo presentado en una sola página.
+  - Cero texto encimado tanto en vista previa como en "Guardar como PDF".
+- **Estado de Base de Datos Intacta:**
+  - `LOT-FINAL-FIFO-A` = 0 disponible
+  - `LOT-FINAL-FIFO-B` = 12 disponibles en `G0002`
+  - `PED-2026-0001` = ENTREGADO
+  - `PED-QA-E2E-OUT-002` = DESPACHADO
+  - `InventoryMovement` global = 10
+  - `G0001` libre | `STG-01` libre
+  - Invariantes de BD 100% verificadas.
+
 ### Bloque 1 — Layout Legacy & Datos Maestros
 - **Ocultamiento Total de Layout Legacy:** Se eliminó cualquier representación visual de `ALM-A`, `ALM-B`, ubicaciones `Axx-Rxx-Nx` y `Bxx-Rxx-Nx` en toda la interfaz de usuario (`Locations.tsx`, `LocationSelect.tsx`, `MasterData.tsx` y vista por zonas).
 - **Eliminación de Pestaña Histórica:** Se removió la pestaña y botón `<Archive /> Histórico — Racks anteriores` y ~400 líneas de código visual legacy sin borrar registros de la base de datos (preservando integridad referencial para trazabilidad histórica).
