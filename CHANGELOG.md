@@ -25,18 +25,16 @@ Cierre exhaustivo y remediación integral de los 11 hallazgos identificados en l
   - Corrección de bugs detectados en validación manual: líneas con cantidad capturada pero sin producto (Caso A) o productos con cantidad 0 (Caso B) ahora inhabilitan visualmente el botón con cursor `not-allowed` y tooltip informativo.
 - **Prevención de Envíos Accidentales (Anti-Autosubmit):** Se blindaron los formularios de pedido en `NewOrderModal.tsx` y `PortalNewOrder.tsx` con interceptores `onKeyDown` que cancelan el evento `Enter` en inputs numéricos, de fecha y notas, garantizando que modificar cantidades o agregar productos no dispare la creación de órdenes.
 - **Suite Automatizada de Validación y Anti-Autosubmit:** Ampliación de `new-order-anti-autosubmit.spec.ts` a **9 pruebas unitarias exhaustivas (9/9 PASS)** demostrando que ni la edición de cantidades, inserción/eliminación de líneas, líneas vacías, cantidades en cero, cantidades negativas ni la tecla Enter generan llamadas POST o crean registros `SalesOrder` accidentales en BD.
-- **Rediseño Jerárquico de Manifiesto de Despacho (`DispatchManifestModal.tsx`):**
-  - Rediseño de la tabla de desglose oficial de mercancía despachada pasando de 7 columnas estrechas a 5 columnas legibles y jerarquizadas:
-    - Columna 1: **Producto** (30%, SKU mono bold + Descripción multilínea completa).
-    - Columna 2: **Lote y Vencimiento** (18%, Badge de lote + fecha de caducidad).
-    - Columna 3: **Unidad Logística (HU / Caja)** (24%, contenedor monospace amplio para códigos largos como `BOX-REC-2026-0021-0001` sin saltos indeseados ni traslapes).
-    - Columna 4: **Flujo de Ubicaciones** (15%, información apilada con etiquetas `Origen:` y `Salida:` con badge mono).
-    - Columna 5: **Cantidad** (13%, alineado a la derecha con número destacado y UOM).
-  - Configuración de reglas de impresión `@media print`:
-    - `@page { size: letter portrait; margin: 10mm 8mm; }`
-    - `table-layout: fixed !important; width: 100% !important;`
-    - `word-wrap: break-word !important; word-break: break-word !important; overflow-wrap: break-word !important;`
-    - Garantiza legibilidad 100% libre de recortes o solapamientos tanto en vista previa como en "Guardar como PDF".
+- **Rediseño Definitivo y Erradicación de Solapamientos en Manifiesto de Despacho (`DispatchManifestModal.tsx`):**
+  - Rediseño estructural del bloque `Desglose Oficial: Mercancía, Lotes y Cajas (HUs) Despachadas` a una distribución híbrida logística de **3 columnas ultra-limpias** con información secundaria jerarquizada:
+    - Columna 1: **Mercancía y Lote** (46%): SKU en bold mono azul (`#0369A1`) + Descripción del producto en línea 1; Lote en monospace bold y fecha de vencimiento formateada en línea 2.
+    - Columna 2: **Unidad Logística (HU) y Ruta** (38%): Contenedor amplio para el código de HU completo (`BOX-REC-2026-0021-0001`) con fondo suave y borde gris en línea 1 (130px de margen libre, sin saltos de línea); flujo de ubicaciones `Origen: G0001 ➔ Salida: STG-01` claramente diferenciado en línea 2 con badge cian.
+    - Columna 3: **Cantidad** (16%): Cantidad en tipografía destacada verde esmeralda (`12 PZA`) alineada a la derecha con sub-etiqueta de estado ("Confirmado" / "En Staging").
+  - Optimización exhaustiva de estilos de impresión `@media print`:
+    - Activación de `-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;`.
+    - Márgenes calibrados `@page { size: letter portrait; margin: 8mm 8mm; }`.
+    - Cabeceras `th` con `background-color: #f1f5f9 !important`, `white-space: normal !important`, `line-height: 1.25 !important;` y celdas `td` con `vertical-align: top !important; padding: 7px 8px !important;`.
+    - Contenedores de desglose y firmas blindados con `.print-avoid-break` para garantizar que el acuse completo se mantenga en una sola página limpia y profesional al imprimir o "Guardar como PDF".
 
 ### Bloque 4 — Fechas y Timestamps Operativos
 - **Corrección de Timestamp de Entrega en Dashboard:** En `Dashboard.tsx` (Actividad Comercial Reciente), las filas de tipo `Entrega` (`o.estado === 'ENTREGADO'`) ahora priorizan la fecha real de entrega `o.fechaEntrega` sobre `fechaDespacho`, renderizada con `timeZone: 'America/Mexico_City'`.

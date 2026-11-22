@@ -341,6 +341,10 @@ export function DispatchManifestModal({
     <div className="modal-overlay" onClick={onClose} style={{ zIndex: 1200 }}>
       <style>{`
         @media print {
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
           body * {
             visibility: hidden !important;
           }
@@ -355,7 +359,7 @@ export function DispatchManifestModal({
             height: auto !important;
             background: #ffffff !important;
             color: #000000 !important;
-            padding: 20px !important;
+            padding: 16px !important;
             box-shadow: none !important;
             border: none !important;
             overflow: visible !important;
@@ -373,17 +377,33 @@ export function DispatchManifestModal({
           }
           @page {
             size: letter portrait;
-            margin: 10mm 8mm;
+            margin: 8mm 8mm;
           }
           #printable-dispatch-manifest table {
             width: 100% !important;
             table-layout: fixed !important;
             border-collapse: collapse !important;
-            font-size: 8.5pt !important;
+            font-size: 9pt !important;
           }
-          #printable-dispatch-manifest th, #printable-dispatch-manifest td {
+          #printable-dispatch-manifest th {
+            background-color: #f1f5f9 !important;
+            color: #334155 !important;
             border: 1px solid #cbd5e1 !important;
-            padding: 4px 5px !important;
+            padding: 6px 8px !important;
+            font-size: 8.5pt !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.04em !important;
+            white-space: normal !important;
+            line-height: 1.25 !important;
+            vertical-align: middle !important;
+          }
+          #printable-dispatch-manifest td {
+            border: 1px solid #cbd5e1 !important;
+            padding: 7px 8px !important;
+            font-size: 9pt !important;
+            white-space: normal !important;
+            vertical-align: top !important;
             word-wrap: break-word !important;
             word-break: break-word !important;
             overflow-wrap: break-word !important;
@@ -822,7 +842,7 @@ export function DispatchManifestModal({
               </div>
 
               {/* Items / Desglose de Mercancía */}
-              <div style={{ marginBottom: 20 }}>
+              <div style={{ marginBottom: 20 }} className="print-avoid-break">
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Layers size={15} color="var(--primary)" />
@@ -839,84 +859,116 @@ export function DispatchManifestModal({
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed' }}>
                     <thead>
                       <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
-                        <th style={{ width: '30%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Producto</th>
-                        <th style={{ width: '18%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Lote y Vencimiento</th>
-                        <th style={{ width: '24%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Unidad Logística (HU / Caja)</th>
-                        <th style={{ width: '15%', padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>Flujo de Ubicaciones</th>
-                        <th style={{ width: '13%', padding: '8px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
-                          {isAlreadyDispatched ? 'CANT. DESPACHADA' : 'CANT. PREPARADA'}
+                        <th style={{ width: '46%', padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', whiteSpace: 'normal', lineHeight: 1.3 }}>
+                          Mercancía y Lote
+                        </th>
+                        <th style={{ width: '38%', padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', whiteSpace: 'normal', lineHeight: 1.3 }}>
+                          Unidad Logística (HU) y Ruta
+                        </th>
+                        <th style={{ width: '16%', padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', whiteSpace: 'normal', lineHeight: 1.3 }}>
+                          {isAlreadyDispatched ? 'Cant. Despachada' : 'Cant. Preparada'}
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {manifestData?.lineasDesglose?.map((l: any, idx: number) => (
-                        <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
-                          <td style={{ padding: '8px 10px' }}>
-                            <code style={{ fontSize: 12, fontWeight: 700, color: 'var(--primary)', display: 'block', marginBottom: 2 }}>{l.sku}</code>
-                            <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.3 }}>{l.descripcion}</div>
-                          </td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <span className="badge badge-default" style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace' }}>
-                              {l.lote}
-                            </span>
-                            {l.caducidad && (
-                              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 3 }}>
-                                Vence: {formatCalendarDate(l.caducidad)}
+                      {manifestData?.lineasDesglose?.map((l: any, idx: number) => {
+                        const huCode = l.huCodigo || (Array.isArray(l.cajasEscaneadas) && l.cajasEscaneadas.length > 0 ? l.cajasEscaneadas.join(', ') : 'S/N');
+                        const qty = isAlreadyDispatched ? l.cantidadDespachada : (l.cantidadPreparada ?? l.cantidadDespachada);
+                        const uom = l.uom || 'PZA';
+                        const origen = l.ubicacionOrigen || l.ubicacion || 'Sin asignar';
+                        const salida = l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01';
+
+                        return (
+                          <tr key={idx} style={{ borderBottom: '1px solid var(--border)', verticalAlign: 'top' }}>
+                            {/* Columna 1: Mercancía y Lote */}
+                            <td style={{ padding: '10px 12px', whiteSpace: 'normal' }}>
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                                <code style={{ fontSize: 12, fontWeight: 800, color: 'var(--primary)', letterSpacing: '0.02em' }}>
+                                  {l.sku}
+                                </code>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+                                  {l.descripcion}
+                                </span>
                               </div>
-                            )}
-                          </td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <div style={{
-                              fontFamily: 'monospace',
-                              fontSize: 11,
-                              fontWeight: 600,
-                              background: 'var(--bg-secondary)',
-                              padding: '3px 6px',
-                              borderRadius: 4,
-                              display: 'inline-block',
-                              wordBreak: 'break-all',
-                              color: 'var(--text-primary)',
-                              border: '1px solid var(--border)',
-                            }}>
-                              {l.huCodigo || (Array.isArray(l.cajasEscaneadas) && l.cajasEscaneadas.length > 0 ? l.cajasEscaneadas.join(', ') : 'S/N')}
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-                              <span style={{ color: 'var(--text-tertiary)', fontSize: 10, textTransform: 'uppercase' }}>Origen:</span>
-                              <strong style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{l.ubicacionOrigen || l.ubicacion || 'Sin asignar'}</strong>
-                            </div>
-                            <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span style={{ color: 'var(--text-tertiary)', fontSize: 10, textTransform: 'uppercase' }}>Salida:</span>
-                              <span className="badge badge-cyan" style={{ fontSize: 10, fontWeight: 700, padding: '1px 5px', fontFamily: 'monospace' }}>
-                                {l.stagingUbicacion || l.stagingLocationCodigo || 'STG-01'}
-                              </span>
-                            </div>
-                          </td>
-                          <td
-                            style={{ padding: '8px 10px', textAlign: 'right' }}
-                            title={isAlreadyDispatched ? `Cantidad despachada: ${l.cantidadDespachada} ${l.uom || 'PZA'}` : `Cantidad preparada en Staging: ${l.cantidadPreparada ?? l.cantidadDespachada} ${l.uom || 'PZA'}`}
-                          >
-                            <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--emerald)' }}>
-                              {isAlreadyDispatched ? l.cantidadDespachada : (l.cantidadPreparada ?? l.cantidadDespachada)}{' '}
-                              <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-secondary)' }}>{l.uom || 'PZA'}</span>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <span style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-tertiary)', fontWeight: 600 }}>Lote:</span>
+                                  <strong style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>{l.lote}</strong>
+                                </span>
+                                {l.caducidad && (
+                                  <>
+                                    <span style={{ color: 'var(--border)' }}>·</span>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                      <span style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-tertiary)', fontWeight: 600 }}>Vence:</span>
+                                      <span>{formatCalendarDate(l.caducidad)}</span>
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* Columna 2: Unidad Logística (HU) y Ruta */}
+                            <td style={{ padding: '10px 12px', whiteSpace: 'normal' }}>
+                              <div style={{ marginBottom: 6 }}>
+                                <span style={{
+                                  fontFamily: 'monospace',
+                                  fontSize: 11.5,
+                                  fontWeight: 700,
+                                  background: 'var(--bg-secondary)',
+                                  padding: '3px 8px',
+                                  borderRadius: 4,
+                                  display: 'inline-block',
+                                  letterSpacing: '0.02em',
+                                  color: 'var(--text-primary)',
+                                  border: '1px solid var(--border)',
+                                  wordBreak: 'break-all',
+                                }}>
+                                  {huCode}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                  <span style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-tertiary)', fontWeight: 600 }}>Origen:</span>
+                                  <strong style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{origen}</strong>
+                                </span>
+                                <span style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>➔</span>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                  <span style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-tertiary)', fontWeight: 600 }}>Salida:</span>
+                                  <span className="badge badge-cyan" style={{ fontSize: 10, fontWeight: 700, padding: '1px 5px', fontFamily: 'monospace' }}>
+                                    {salida}
+                                  </span>
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* Columna 3: Cantidad Despachada */}
+                            <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                              <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--emerald)' }}>
+                                {qty} <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>{uom}</span>
+                              </div>
+                              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', fontWeight: 600, marginTop: 2 }}>
+                                {isAlreadyDispatched ? 'Confirmado' : 'En Staging'}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
               </div>
 
               {/* Signatures Section (Canvas) */}
-              <div style={{
-                background: 'var(--bg-secondary)',
-                borderRadius: 10,
-                padding: 16,
-                border: '1px solid var(--border)',
-                marginBottom: 16,
-              }}>
+              <div
+                className="print-avoid-break"
+                style={{
+                  background: 'var(--bg-secondary)',
+                  borderRadius: 10,
+                  padding: 16,
+                  border: '1px solid var(--border)',
+                  marginBottom: 16,
+                }}
+              >
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Edit3 size={15} color="var(--primary)" />
                   Firmas Digitales de Conformidad y Responsabilidad de Transporte
