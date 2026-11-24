@@ -4,7 +4,7 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
-## [1.9.35] — 2026-11-23 (Normalización de Zona Horaria Oficial del Almacén America/Mexico_City)
+## [1.9.35] — 2026-11-23 (Normalización de Zona Horaria Oficial del Almacén America/Mexico_City & Preparación Grabación Video)
 
 ### 🕒 Zona Horaria Operativa y Discriminación de Fechas Calendario
 - **Resolución de Zona Horaria en Recepciones:** Se corrigió el helper `formatCalendarDate` y `formatWarehouseDateOnly` en `dateUtils.ts` para discriminar entre fechas puras de calendario (caducidades, fechas de vencimiento, compromisos) y timestamps operacionales con hora intradía (`fechaRecepcion`, `createdAt`, `updatedAt`, `fechaDespacho`).
@@ -12,6 +12,70 @@ El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.co
 - **Protección Antidesfase de Caducidades (Sin "un día menos"):** Se implementó `isPureCalendarDate` para proteger strings de fecha pura (`YYYY-MM-DD` o `YYYY-MM-DDT00:00:00.000Z`) evitando que se resten 6 horas y se desfasen a `29/06/2027`; las fechas de caducidad se conservan estrictamente intactas (`30/06/2027`).
 - **Normalización de Modales Operativos:** Se actualizaron `RampArrivalModal.tsx`, `DualLabelModal.tsx` y `PutawayModal.tsx` sustituyendo llamadas `toLocaleString()` locales del navegador por `formatWarehouseDateTime` para asegurar la presentación unificada en `America/Mexico_City`.
 - **Suite de Pruebas de Fechas Ampliada:** Se agregaron pruebas automatizadas exhaustivas en `delivery-and-label-dates.spec.ts` validando la resolución de `REC-2026-0024` a `23/11/2026` y la preservación exacta de caducidades (15/15 suites PASS, 142/142 tests PASS).
+
+### 🎯 Estado Actual Certificado
+- **Rama activa:** `dev`
+- **Último commit funcional certificado:** `c010d57`
+- **`origin/dev`:** Sincronizado
+- **`main`:** Permanece 100% intacta
+- **Corrección de zona horaria en Recepción:** PASS
+- **`REC-2026-0024`:** Se muestra correctamente como `23/11/2026`
+- **Timestamp UTC en BD:** Permanece intacto (`2026-11-24T04:11:57.607Z`)
+- **Base de datos:** Sin alteraciones históricas
+- **Suite backend:** `142/142 PASS` (15/15 suites)
+- **Frontend build:** PASS (`tsc -b && vite build`)
+- **Backend build:** PASS (`npx prisma generate && npx nest build`)
+- **Auditoría de formato Git:** PASS (`git diff --check`)
+
+### 🎬 Estado Operativo Actual para la Grabación
+La recepción que se utilizará mañana para continuar el video es:
+- **Folio:** `REC-2026-0024`
+- **Depositante:** AlimNorte
+- **Factura:** `FAC-VIDEO-FINAL-001`
+- **Producto:** `ACE-OLI-1L` — Aceite de Oliva Extra Virgen 1L
+- **Cantidad esperada:** `12 PZA`
+- **Estado actual:** `En Rampa` (pendiente arribo / inspección)
+- **Fecha visible correcta:** `23/11/2026`
+*(Regla de operación: No crear otra recepción. El video continuará mañana directamente desde `Recepción → REC-2026-0024 → Arribo en Rampa`)*.
+
+### 📦 Estado Base de Inventario antes de Continuar la Prueba
+- **Lote existente en almacén:**
+  - Lote: `LOT-VIDEO-2028-A`
+  - SKU: `ACE-OLI-1L`
+  - Cantidad: `12 PZA`
+  - Caducidad: `30/06/2028`
+  - Ubicación: `G0001` (`G0001` actualmente ocupada)
+- **Lote nuevo a ingresar durante `REC-2026-0024`:**
+  - Nuevo lote: `LOT-VIDEO-FINAL-2029`
+  - Caducidad: `30/06/2029`
+  - Cantidad nueva: `12 PZA`
+- **Objetivo logístico de la demostración:**
+  - Concluir el proceso con dos lotes del mismo SKU (`LOT-VIDEO-2028-A` de 2028 y `LOT-VIDEO-FINAL-2029` de 2029).
+  - Posteriormente, generar un pedido de `12 PZA` desde el Portal AlimNorte para demostrar la regla de rotación **FEFO** (First Expired, First Out).
+  - Demostrar que Giving Out WMS selecciona automáticamente de forma prioritaria `LOT-VIDEO-2028-A` (vence 30/06/2028) ubicado en `G0001`, preservando en stock el lote nuevo de 2029.
+
+### 📍 Punto Exacto de Reanudación para Mañana
+1. Abrir `REC-2026-0024`.
+2. Continuar con Arribo en Rampa.
+3. Conteo.
+4. Captura de lote y caducidad (`LOT-VIDEO-FINAL-2029` / `30/06/2029`).
+5. Calidad.
+6. Etiquetado.
+7. Putaway.
+8. Validar inventario con ambos lotes (`LOT-VIDEO-2028-A` y `LOT-VIDEO-FINAL-2029`).
+9. Entrar al portal de AlimNorte.
+10. Crear pedido de `12 PZA`.
+11. Validar reserva.
+12. Preparación FEFO (confirmar selección prioritaria de lote 2028).
+13. Picking.
+14. Staging.
+15. Despacho.
+16. Manifiesto.
+17. Entrega.
+18. Inventario final.
+19. Ubicaciones.
+20. Trazabilidad.
+21. Cierre del video.
 
 ## [1.9.34] — 2026-11-21 (Remediación Final Integral y Certificación Operativa — 11 Hallazgos Resueltos)
 
