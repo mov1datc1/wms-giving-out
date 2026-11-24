@@ -8,7 +8,7 @@ import {
 import JsBarcode from 'jsbarcode';
 import QRCode from 'qrcode';
 import { API } from '../config/api';
-import { formatCalendarDate } from '../utils/dateUtils';
+import { formatCalendarDate, formatWarehouseDateTime } from '../utils/dateUtils';
 
 interface LineBreakdown {
   receiptLineId: string;
@@ -1564,7 +1564,7 @@ export function DualLabelModal({
             <div style={{ fontSize: 11, color: '#166534', fontWeight: 600 }}>
               Colocadas por {labelsData?.etiquetasColocadasPor || receipt?.etiquetasColocadasPor} el{' '}
               {labelsData?.fechaColocacionEtiquetas
-                ? new Date(labelsData.fechaColocacionEtiquetas).toLocaleString()
+                ? formatWarehouseDateTime(labelsData.fechaColocacionEtiquetas)
                 : ''}
             </div>
           )}

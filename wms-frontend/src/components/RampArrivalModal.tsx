@@ -5,6 +5,7 @@ import {
   Calendar, Layers, Save, Printer, History, PenTool
 } from 'lucide-react';
 import { API } from '../config/api';
+import { formatWarehouseDateTime } from '../utils/dateUtils';
 
 interface RampArrivalModalProps {
   receipt: any;
@@ -1569,7 +1570,7 @@ export function RampArrivalModal({
                 </div>
                 <p style={{ margin: '0 0 10px 0', fontSize: 12, color: '#7C2D12' }}>
                   Este folio ya fue firmado por el chofer y liberado el{' '}
-                  <strong>{activeReceipt?.fechaLiberacionChofer ? new Date(activeReceipt.fechaLiberacionChofer).toLocaleString() : ''}</strong>.
+                  <strong>{activeReceipt?.fechaLiberacionChofer ? formatWarehouseDateTime(activeReceipt.fechaLiberacionChofer) : ''}</strong>.
                   Para salvaguardar la validez jurídica, el cambio no sobrescribirá silenciosamente el registro original; se
                   grabará una entrada con sello de tiempo y justificación.
                 </p>
@@ -1642,7 +1643,7 @@ export function RampArrivalModal({
                         {historial.map((h: any, idx: number) => (
                           <tr key={idx} style={{ borderBottom: '1px solid #F1F5F9' }}>
                             <td style={{ padding: '6px 10px', color: '#334155' }}>
-                              {new Date(h.fecha).toLocaleString()}
+                              {formatWarehouseDateTime(h.fecha)}
                             </td>
                             <td style={{ padding: '6px 10px', fontWeight: 600, color: '#0F172A' }}>
                               {h.usuario || 'Almacén'}

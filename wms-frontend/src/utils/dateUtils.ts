@@ -4,6 +4,29 @@
  * Garantiza que 2027-06-30 se muestre exactamente como 30/06/2027 sin retroceder 1 día por timezone local.
  */
 
+export const WAREHOUSE_TIMEZONE = 'America/Mexico_City';
+
+/**
+ * Detecta si un string o Date corresponde a una fecha pura de calendario (sin hora o medianoche UTC),
+ * típicamente usada para fechas de vencimiento/caducidad (YYYY-MM-DD o YYYY-MM-DDT00:00:00.000Z).
+ */
+export function isPureCalendarDate(dateInput: string | Date | null | undefined): boolean {
+  if (!dateInput) return false;
+  if (dateInput instanceof Date) {
+    return (
+      dateInput.getUTCHours() === 0 &&
+      dateInput.getUTCMinutes() === 0 &&
+      dateInput.getUTCSeconds() === 0 &&
+      dateInput.getUTCMilliseconds() === 0
+    );
+  }
+  const str = String(dateInput).trim();
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(str) ||
+    /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.000)?(?:Z|[+-]00:00)?$/.test(str)
+  );
+}
+
 export function formatCalendarDate(
   dateInput: string | Date | null | undefined,
   fallback = 'N/A'
@@ -15,22 +38,42 @@ export function formatCalendarDate(
     if (typeof dateInput === 'string') {
       dateStr = dateInput.trim();
     } else if (dateInput instanceof Date) {
+      if (
+        dateInput.getUTCHours() === 0 &&
+        dateInput.getUTCMinutes() === 0 &&
+        dateInput.getUTCSeconds() === 0 &&
+        dateInput.getUTCMilliseconds() === 0
+      ) {
+        const year = dateInput.getUTCFullYear();
+        const month = String(dateInput.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(dateInput.getUTCDate()).padStart(2, '0');
+        return `${day}/${month}/${year}`;
+      }
       dateStr = dateInput.toISOString();
     } else {
       dateStr = String(dateInput);
     }
 
-    // Si viene en formato ISO (ej. 2027-06-30T00:00:00.000Z o 2027-06-30)
-    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (match) {
-      const [, year, month, day] = match;
-      return `${day}/${month}/${year}`;
+    // 1. Si es fecha pura de calendario (YYYY-MM-DD o medianoche UTC), conservar día exacto sin desfase de zona horaria
+    if (isPureCalendarDate(dateStr)) {
+      const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (match) {
+        const [, year, month, day] = match;
+        return `${day}/${month}/${year}`;
+      }
     }
 
-    // Fallback con timeZone UTC para evitar que reste horas al estar a medianoche
+    // 2. Si es timestamp con hora (evento operativo como fechaRecepcion, createdAt, fechaDespacho),
+    // proyectar a la zona horaria oficial del almacén (America/Mexico_City)
     const d = new Date(dateInput);
     if (isNaN(d.getTime())) return fallback;
-    return d.toLocaleDateString('es-MX', { timeZone: 'UTC', day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dtf = new Intl.DateTimeFormat('es-MX', {
+      timeZone: WAREHOUSE_TIMEZONE,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    return dtf.format(d);
   } catch {
     return fallback;
   }
@@ -46,28 +89,41 @@ export function formatCalendarDateShort(
     if (typeof dateInput === 'string') {
       dateStr = dateInput.trim();
     } else if (dateInput instanceof Date) {
+      if (
+        dateInput.getUTCHours() === 0 &&
+        dateInput.getUTCMinutes() === 0 &&
+        dateInput.getUTCSeconds() === 0 &&
+        dateInput.getUTCMilliseconds() === 0
+      ) {
+        const year = dateInput.getUTCFullYear();
+        const month = String(dateInput.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(dateInput.getUTCDate()).padStart(2, '0');
+        const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+        const mIdx = parseInt(month, 10) - 1;
+        return `${parseInt(day, 10)} ${meses[mIdx] || month} ${year}`;
+      }
       dateStr = dateInput.toISOString();
     } else {
       dateStr = String(dateInput);
     }
 
-    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (match) {
-      const [, year, month, day] = match;
-      const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
-      const mIdx = parseInt(month, 10) - 1;
-      return `${parseInt(day, 10)} ${meses[mIdx] || month} ${year}`;
+    if (isPureCalendarDate(dateStr)) {
+      const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (match) {
+        const [, year, month, day] = match;
+        const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+        const mIdx = parseInt(month, 10) - 1;
+        return `${parseInt(day, 10)} ${meses[mIdx] || month} ${year}`;
+      }
     }
 
     const d = new Date(dateInput);
     if (isNaN(d.getTime())) return fallback;
-    return d.toLocaleDateString('es-MX', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' });
+    return d.toLocaleDateString('es-MX', { timeZone: WAREHOUSE_TIMEZONE, day: 'numeric', month: 'short', year: 'numeric' });
   } catch {
     return fallback;
   }
 }
-
-export const WAREHOUSE_TIMEZONE = 'America/Mexico_City';
 
 /**
  * Retorna exclusivamente la fecha en formato DD/MM/YYYY en la zona horaria del almacén (America/Mexico_City).
@@ -79,6 +135,35 @@ export function formatWarehouseDateOnly(
 ): string {
   if (!dateInput) return fallback;
   try {
+    let dateStr = '';
+    if (typeof dateInput === 'string') {
+      dateStr = dateInput.trim();
+    } else if (dateInput instanceof Date) {
+      if (
+        dateInput.getUTCHours() === 0 &&
+        dateInput.getUTCMinutes() === 0 &&
+        dateInput.getUTCSeconds() === 0 &&
+        dateInput.getUTCMilliseconds() === 0
+      ) {
+        const year = dateInput.getUTCFullYear();
+        const month = String(dateInput.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(dateInput.getUTCDate()).padStart(2, '0');
+        return `${day}/${month}/${year}`;
+      }
+      dateStr = dateInput.toISOString();
+    } else {
+      dateStr = String(dateInput);
+    }
+
+    // Si es fecha pura de calendario (YYYY-MM-DD o medianoche UTC), no desfasar 1 día atrás
+    if (isPureCalendarDate(dateStr)) {
+      const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (match) {
+        const [, year, month, day] = match;
+        return `${day}/${month}/${year}`;
+      }
+    }
+
     const d = new Date(dateInput);
     if (isNaN(d.getTime())) return fallback;
     const dtf = new Intl.DateTimeFormat('es-MX', {

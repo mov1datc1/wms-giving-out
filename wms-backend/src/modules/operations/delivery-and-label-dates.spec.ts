@@ -1,4 +1,10 @@
-import { formatCalendarDate, formatWarehouseDateOnly, WAREHOUSE_TIMEZONE } from '../../../../wms-frontend/src/utils/dateUtils';
+import {
+  formatCalendarDate,
+  formatCalendarDateShort,
+  formatWarehouseDateOnly,
+  isPureCalendarDate,
+  WAREHOUSE_TIMEZONE
+} from '../../../../wms-frontend/src/utils/dateUtils';
 
 describe('Block 4: Delivery Timestamps & Historical Label Reprint Dates', () => {
   it('1. formatWarehouseDateOnly formats UTC timestamps in America/Mexico_City correctly', () => {
@@ -87,6 +93,41 @@ describe('Block 4: Delivery Timestamps & Historical Label Reprint Dates', () => 
         );
 
     expect(labelFecha).toBe('20/11/2026');
+  });
+
+  it('5. REC-2026-0024 timestamp formats to 23/11/2026 in America/Mexico_City', () => {
+    // REC-2026-0024 created in UTC: 2026-11-24T04:11:57.607Z
+    // In America/Mexico_City (UTC-6), local time was 2026-11-23 22:11:57 -> 23/11/2026
+    const rec24Timestamp = '2026-11-24T04:11:57.607Z';
+    expect(formatCalendarDate(rec24Timestamp)).toBe('23/11/2026');
+    expect(formatWarehouseDateOnly(rec24Timestamp)).toBe('23/11/2026');
+    expect(formatCalendarDateShort(rec24Timestamp)).toBe('23 nov 2026');
+  });
+
+  it('6. Expiration dates (pure calendar dates) preserve exact day without backward shift', () => {
+    const rawCalendarDate = '2027-06-30';
+    const midnightUtcIso = '2027-06-30T00:00:00.000Z';
+    const midnightDateObj = new Date(Date.UTC(2027, 5, 30, 0, 0, 0, 0));
+
+    // Pure calendar date detection
+    expect(isPureCalendarDate(rawCalendarDate)).toBe(true);
+    expect(isPureCalendarDate(midnightUtcIso)).toBe(true);
+    expect(isPureCalendarDate(midnightDateObj)).toBe(true);
+    expect(isPureCalendarDate('2026-11-24T04:11:57.607Z')).toBe(false);
+
+    // formatCalendarDate preserves 30/06/2027 (does NOT shift to 29/06/2027)
+    expect(formatCalendarDate(rawCalendarDate)).toBe('30/06/2027');
+    expect(formatCalendarDate(midnightUtcIso)).toBe('30/06/2027');
+    expect(formatCalendarDate(midnightDateObj)).toBe('30/06/2027');
+
+    // formatWarehouseDateOnly preserves 30/06/2027
+    expect(formatWarehouseDateOnly(rawCalendarDate)).toBe('30/06/2027');
+    expect(formatWarehouseDateOnly(midnightUtcIso)).toBe('30/06/2027');
+    expect(formatWarehouseDateOnly(midnightDateObj)).toBe('30/06/2027');
+
+    // formatCalendarDateShort preserves 30 jun 2027
+    expect(formatCalendarDateShort(rawCalendarDate)).toBe('30 jun 2027');
+    expect(formatCalendarDateShort(midnightUtcIso)).toBe('30 jun 2027');
   });
 });
 

@@ -4,6 +4,15 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.35] — 2026-11-23 (Normalización de Zona Horaria Oficial del Almacén America/Mexico_City)
+
+### 🕒 Zona Horaria Operativa y Discriminación de Fechas Calendario
+- **Resolución de Zona Horaria en Recepciones:** Se corrigió el helper `formatCalendarDate` y `formatWarehouseDateOnly` en `dateUtils.ts` para discriminar entre fechas puras de calendario (caducidades, fechas de vencimiento, compromisos) y timestamps operacionales con hora intradía (`fechaRecepcion`, `createdAt`, `updatedAt`, `fechaDespacho`).
+- **Eliminación del Salto UTC en Recepción:** Para recepciones creadas en horario nocturno local (como `REC-2026-0024` con timestamp UTC `2026-11-24T04:11:57.607Z`), el helper convierte dinámicamente la marca de tiempo a la zona horaria oficial del almacén (`America/Mexico_City`), mostrando de forma consistente y correcta `23/11/2026` tanto en la tabla principal de Recepción como en la cabecera/detalle del expediente.
+- **Protección Antidesfase de Caducidades (Sin "un día menos"):** Se implementó `isPureCalendarDate` para proteger strings de fecha pura (`YYYY-MM-DD` o `YYYY-MM-DDT00:00:00.000Z`) evitando que se resten 6 horas y se desfasen a `29/06/2027`; las fechas de caducidad se conservan estrictamente intactas (`30/06/2027`).
+- **Normalización de Modales Operativos:** Se actualizaron `RampArrivalModal.tsx`, `DualLabelModal.tsx` y `PutawayModal.tsx` sustituyendo llamadas `toLocaleString()` locales del navegador por `formatWarehouseDateTime` para asegurar la presentación unificada en `America/Mexico_City`.
+- **Suite de Pruebas de Fechas Ampliada:** Se agregaron pruebas automatizadas exhaustivas en `delivery-and-label-dates.spec.ts` validando la resolución de `REC-2026-0024` a `23/11/2026` y la preservación exacta de caducidades (15/15 suites PASS, 142/142 tests PASS).
+
 ## [1.9.34] — 2026-11-21 (Remediación Final Integral y Certificación Operativa — 11 Hallazgos Resueltos)
 
 ### 📦 Remediación Operativa de 11 Puntos Críticos y Certificación de Calidad

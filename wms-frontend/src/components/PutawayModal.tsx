@@ -7,7 +7,7 @@ import {
   Truck, QrCode, Search, CheckCheck, PackageCheck, Info, Lock
 } from 'lucide-react';
 import { API } from '../config/api';
-import { formatCalendarDate } from '../utils/dateUtils';
+import { formatCalendarDate, formatWarehouseDateTime } from '../utils/dateUtils';
 
 interface PutawayModalProps {
   receipt: any;
@@ -253,18 +253,12 @@ export function PutawayModal({
   let confirmedFormattedDate = 'No disponible';
   if (currentValidation.validatedAt) {
     try {
-      confirmedFormattedDate = new Date(currentValidation.validatedAt).toLocaleString('es-MX', {
-        dateStyle: 'medium',
-        timeStyle: 'medium',
-      });
+      confirmedFormattedDate = formatWarehouseDateTime(currentValidation.validatedAt);
     } catch {}
   } else if (currentValidation.detalle?.match(/Timestamp:\s*([^.]+)\./i)) {
     try {
       const rawTs = currentValidation.detalle.match(/Timestamp:\s*([^.]+)\./i)[1];
-      confirmedFormattedDate = new Date(rawTs).toLocaleString('es-MX', {
-        dateStyle: 'medium',
-        timeStyle: 'medium',
-      });
+      confirmedFormattedDate = formatWarehouseDateTime(rawTs);
     } catch {}
   }
 
