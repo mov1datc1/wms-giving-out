@@ -3136,7 +3136,7 @@ export function Receiving() {
 
             <form onSubmit={handleUpdateLine} style={{ padding: '24px' }}>
               <div className="form-group" style={{ marginBottom: 16 }}>
-                <label className="form-label" style={{ color: '#334155' }}>Cantidad Esperada <span className="required">*</span></label>
+                <label className="form-label" style={{ color: '#334155' }}>Cant. Esperada (Piezas) <span className="required">*</span></label>
                 <input 
                   type="number" 
                   className="form-input" 
@@ -3158,6 +3158,17 @@ export function Receiving() {
                   required 
                   style={{ background: '#FFFFFF', borderColor: '#CBD5E1', color: '#1E293B' }}
                 />
+                {(() => {
+                  const s = skus.find(item => item.id === editingLine.id || item.codigo === editingLine.codigo);
+                  const factor = Number(s?.capacidadEmpaque || 0);
+                  if (!s || factor <= 1) return null;
+                  const descEmpaque = s.descripcionEmpaque || `Caja x${factor}`;
+                  return (
+                    <div style={{ fontSize: 11, color: '#0D9488', marginTop: 4, fontWeight: 600 }}>
+                      {factor} PZA = 1 {descEmpaque}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="form-group" style={{ marginBottom: 24 }}>
@@ -3319,7 +3330,7 @@ export function Receiving() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Cantidad Esperada a Recibir <span className="required">*</span></label>
+                <label className="form-label">Cant. Esperada (Piezas) <span className="required">*</span></label>
                 <input 
                   type="number" 
                   className="form-input" 
@@ -3340,6 +3351,17 @@ export function Receiving() {
                   }}
                   required 
                 />
+                {(() => {
+                  const s = skus.find(item => item.id === newLineForm.skuId);
+                  const factor = Number(s?.capacidadEmpaque || 0);
+                  if (!s || factor <= 1) return null;
+                  const descEmpaque = s.descripcionEmpaque || `Caja x${factor}`;
+                  return (
+                    <div style={{ fontSize: 11, color: '#0D9488', marginTop: 4, fontWeight: 600 }}>
+                      {factor} PZA = 1 {descEmpaque}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="form-group">
@@ -4198,7 +4220,9 @@ export function Receiving() {
                     </div>
 
                     <div className="form-group" style={{ marginBottom: 0 }}>
-                      <label className="form-label" style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Cant. Esperada</label>
+                      <label className="form-label" style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>
+                        Cant. Esperada (Piezas)
+                      </label>
                       <input 
                         type="number" 
                         className="form-input" 
@@ -4219,9 +4243,20 @@ export function Receiving() {
                             setCurManualQty(1);
                           }
                         }}
-                        placeholder="1"
+                        placeholder="12"
                         style={{ fontSize: 13 }}
                       />
+                      {(() => {
+                        const selSku = skus.find(s => s.id === curManualSku);
+                        const packSize = Number(selSku?.capacidadEmpaque || 0);
+                        if (!selSku || packSize <= 1) return null;
+                        const descEmpaque = selSku.descripcionEmpaque || `Caja x${packSize}`;
+                        return (
+                          <div style={{ fontSize: 11, color: '#0D9488', marginTop: 4, fontWeight: 600 }}>
+                            {packSize} PZA = 1 {descEmpaque}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <div className="form-group" style={{ marginBottom: 0 }}>

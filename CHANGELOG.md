@@ -4,6 +4,19 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.36] — 2026-11-24 (Alineación de Cierre en REC-2026-0025 & Blindaje Preventivo en Previos)
+
+### 📦 Corrección Controlada de Datos en REC-2026-0025
+- **Alineación de Cantidad Esperada:** Corrección administrativa controlada en la partida `0833ecab-af06-4004-9a7f-89ae9842c0fe` de `REC-2026-0025`, ajustando `cantidadEsperada` de `1` a `12` PZA para reflejar con exactitud la factura física amparada (`FAC-DEMO-FINAL-003`, 1 caja de 12 piezas).
+- **Trazabilidad Inmutable:** Generado registro en `AuditLog` con motivo formal de la corrección y valores previos/nuevos preservados.
+- **Invariantes Operativas Intactas:** `cantidadRecibida` (12), `cantidadDanada` (0), `LOT-VIDEO-FINAL-2030` (12 PZA en G0001), `BOX-REC-2026-0025-0001` (12 PZA), `PLT-REC-2026-0025-01` (PALLET), movimientos de trasiego y recepciones históricas `REC-2026-0021` a `REC-2026-0024` permanecieron 100% inalterados.
+- **Cuadre Perfecto de Cierre:** El balance de cierre quedó en `Esperado: 12`, `Conforme: 12`, `Diferencia: 0`, desactivando el candado de discrepancias y habilitando el cierre limpio 100% conforme.
+
+### 🛡️ Blindaje Preventivo en Formularios de Previo de Recibo
+- **Claridad de Unidad de Medida en Formulario Manual:** Se actualizó la etiqueta de captura a `Cant. Esperada (Piezas)` en la creación manual de previos, en el modal de adición de partidas y en la edición de líneas de `Receiving.tsx`.
+- **Indicador Dinámico de Factor de Empaque:** Al seleccionar un SKU con empaque configurado (`capacidadEmpaque > 1`), se despliega una guía en tiempo real `{capacidadEmpaque} PZA = 1 {descripcionEmpaque}` (e.g. `12 PZA = 1 Caja x12`), eliminando la ambigüedad que inducía al operador a ingresar `1` pensando en cajas.
+- **Preservación de Principios de Auditoría:** La lógica de cierre continúa comparando estrictamente piezas contra piezas sin conversiones automáticas opacas.
+
 ## [1.9.35] — 2026-11-23 (Normalización de Zona Horaria Oficial del Almacén America/Mexico_City & Preparación Grabación Video)
 
 ### 🕒 Zona Horaria Operativa y Discriminación de Fechas Calendario
