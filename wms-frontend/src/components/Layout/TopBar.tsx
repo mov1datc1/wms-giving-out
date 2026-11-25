@@ -133,7 +133,7 @@ export function TopBar() {
 
       const [alertsRes, ordersRes, ccRes] = await Promise.all([
         canAlerts ? fetch(`${API}/alerts`, { headers }) : Promise.resolve(null),
-        canOrders ? fetch(`${API}/orders?estado=SOLICITADO,PENDIENTE_APROBACION,EN_PICKING,EN_PROGRESO`, { headers }) : Promise.resolve(null),
+        canOrders ? fetch(`${API}/orders?estado=SOLICITADO,PENDIENTE_APROBACION,APROBADO,EN_PICKING,EN_PROGRESO`, { headers }) : Promise.resolve(null),
         canCycleCounts ? fetch(`${API}/cycle-counts?estado=EN_PROGRESO`, { headers }) : Promise.resolve(null),
       ]);
 

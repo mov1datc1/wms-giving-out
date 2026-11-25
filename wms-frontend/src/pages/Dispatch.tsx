@@ -190,7 +190,7 @@ export function Dispatch() {
       CONSOLIDADO: { cls: 'info', icon: <PackageCheck size={11} />, label: 'Consolidado' },
       DESPACHADO: { cls: 'warning', icon: <Truck size={11} />, label: 'En Tránsito' },
       ENTREGADO: { cls: 'success', icon: <CheckCircle size={11} />, label: 'Entregado' },
-      RECHAZADO: { cls: 'error', icon: <ThumbsDown size={11} />, label: 'Rechazado' },
+      RECHAZADO: { cls: 'danger', icon: <ThumbsDown size={11} />, label: 'Rechazado' },
     };
     const b = map[estado] || { cls: 'default', icon: null, label: estado };
     return <span className={`badge badge-${b.cls}`}>{b.icon} {b.label}</span>;
@@ -334,7 +334,16 @@ export function Dispatch() {
                           </div>
                         )}
                       </div>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {canApproveReject && (
+                          <button
+                            className="btn btn-secondary"
+                            onClick={() => approveOrder(o.id)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                          >
+                            <ThumbsUp size={15} /> Aprobar
+                          </button>
+                        )}
                         {canPrepare && (
                           <button
                             className="btn btn-primary"
@@ -357,7 +366,7 @@ export function Dispatch() {
                         {canApproveReject && (
                           <button
                             className="btn"
-                            style={{ background: 'var(--error)', color: 'white' }}
+                            style={{ background: 'var(--danger)', color: 'white' }}
                             onClick={() => setRejectModal(o)}
                           >
                             <ThumbsDown size={15} /> Rechazar
@@ -432,15 +441,28 @@ export function Dispatch() {
                               </button>
                             )}
                           </div>
-                        ) : canPrepare ? (
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => setPreparationOrder(o)}
-                            style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                          >
-                            <Sliders size={13} /> Panel de Preparación
-                          </button>
-                        ) : null}
+                        ) : (
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            {canPrepare && (
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => setPreparationOrder(o)}
+                                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                              >
+                                <Sliders size={13} /> {o.preparadoPor ? 'Ajustar Lotes' : 'Panel de Preparación'}
+                              </button>
+                            )}
+                            {canExecutePicking && (
+                              <button
+                                className="btn btn-primary btn-sm"
+                                onClick={() => navigate('/picking')}
+                                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                              >
+                                <Package size={13} /> Terminal Surtidor
+                              </button>
+                            )}
+                          </div>
+                        )}
                         <button className="btn btn-ghost btn-sm" onClick={() => setDetailModal(o)}><Eye size={14} /> Detalle</button>
                       </div>
                     </div>

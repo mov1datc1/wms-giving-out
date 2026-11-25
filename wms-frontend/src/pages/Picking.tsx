@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { API } from '../config/api';
 import {
@@ -23,7 +23,8 @@ export function Picking() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [tab, setTab] = useState<'queue' | 'active' | 'done'>('active');
+  const [tab, setTab] = useState<'queue' | 'active' | 'done'>('queue');
+  const hasInitializedTabRef = useRef(false);
 
   // Terminal de Picking Activo (1 Pedido por Surtidor)
   const [activeOrder, setActiveOrder] = useState<any>(null);
@@ -82,6 +83,16 @@ export function Picking() {
           ['APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado)
         );
         setOrders(filtered);
+        if (!hasInitializedTabRef.current) {
+          hasInitializedTabRef.current = true;
+          const hasQueued = filtered.some((o: any) => o.estado === 'APROBADO');
+          const hasActive = filtered.some((o: any) => o.estado === 'EN_PICKING');
+          if (!hasQueued && hasActive) {
+            setTab('active');
+          } else if (hasQueued) {
+            setTab('queue');
+          }
+        }
       } else {
         const err = await res.json().catch(() => ({}));
         setErrorMsg(err.message || `Error HTTP ${res.status} al cargar cola de picking.`);
@@ -138,6 +149,7 @@ export function Picking() {
       }
 
       const updatedOrder = data.order || order;
+      setTab('active');
       openTerminal(updatedOrder);
       const ms = Math.round(performance.now() - tStart);
       console.log(`[Picking] Terminal de surtido abierta en ${ms}ms tras start-picking`);

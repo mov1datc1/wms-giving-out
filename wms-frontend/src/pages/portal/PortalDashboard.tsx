@@ -6,6 +6,7 @@ import {
   CheckCircle2, AlertTriangle, ArrowRight, Calendar, Building2
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { getPortalDashboardBadgeClass } from '../../utils/portalOrderTracking';
 
 export function PortalDashboard() {
   const { token, user } = useAuth();
@@ -34,18 +35,8 @@ export function PortalDashboard() {
   }
 
   const estadoBadge = (estado: string) => {
-    const map: any = {
-      SOLICITADO: 'info',
-      PENDIENTE_APROBACION: 'warning',
-      APROBADO: 'success',
-      EN_PICKING: 'warning',
-      CONSOLIDADO: 'info',
-      DESPACHADO: 'success',
-      ENTREGADO: 'success',
-      RECHAZADO: 'error',
-      CANCELADO: 'default',
-    };
-    return <span className={`badge badge-${map[estado] || 'default'}`}>{estado.replace(/_/g, ' ')}</span>;
+    const cls = getPortalDashboardBadgeClass(estado);
+    return <span className={`badge badge-${cls}`}>{estado.replace(/_/g, ' ')}</span>;
   };
 
   if (loading) return <div style={{ textAlign: 'center', padding: 80, color: 'var(--text-secondary)' }}>Cargando portal...</div>;

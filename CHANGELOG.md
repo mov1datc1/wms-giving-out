@@ -4,6 +4,37 @@ Todos los cambios notables y versiones del proyecto **Giving Out WMS (3PL Operad
 
 El formato sigue las directrices de [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y se adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
+## [1.9.37] — 2026-11-25 (Seguimiento Visual Progresivo en Portal Depositante, Etapa Aprobado Real & Auto-Refresco Ligero)
+
+### 🔄 Flujo Progresivo Real de Estados (Opción B — Etapa `Aprobado` Activa)
+- **Separación de Aprobación/Preparación vs Inicio de Picking (`operations.controller.ts`):**
+  - `POST /api/orders/:id/prepare` ahora deja las órdenes aprobadas y con lotes asignados en estado `APROBADO` (en cola de surtido), preservando `EN_PICKING` únicamente si la orden ya estaba en recolección activa antes del ajuste.
+  - `EN_PICKING` se activa estrictamente cuando el surtidor inicia la recolección vía `POST /api/orders/:id/start-picking` (o al registrar un pick parcial en `executeValidatedOrderPick`), habilitando el recorrido visual progresivo real paso por paso: `Solicitado (SOLICITADO) → Aprobado (APROBADO) → Preparando (EN_PICKING) → Listo (CONSOLIDADO) → Enviado (DESPACHADO) → Entregado (ENTREGADO)`.
+  - Se reforzó el guard de designación PNC en `master-data.controller.ts` para incluir órdenes en estado `APROBADO`.
+- **Alineación Operativa en UI Staff (`Dispatch.tsx`, `OrderPreparationModal.tsx`, `Picking.tsx`, `TopBar.tsx`):**
+  - Se habilitó el botón `Aprobar` (`POST /api/orders/:id/approve`) en la pestaña *Por Preparar / Aprobar* de `Dispatch.tsx` y se añadió acceso directo a `Terminal Surtidor` para órdenes en estado `APROBADO` en *En Surtido & Salida*.
+  - Se actualizó la etiqueta de confirmación del `OrderPreparationModal` a *"Aprobar y Enviar a Cola de Picking"*.
+  - En `Picking.tsx`, la carga inicial prioriza automáticamente la pestaña *Cola de Picking* (`APROBADO`) cuando existen pedidos en espera y cambia a *En Recolección Activa* al tomar un pedido (`start-picking`).
+  - En `TopBar.tsx`, las notificaciones operativas incluyen ahora órdenes en estado `APROBADO`.
+
+### 🌐 Portal del Depositante: Refresco Automático Ligero y Correcciones en Rechazado / Cancelado
+- **Helper Canónico Testable (`wms-frontend/src/utils/portalOrderTracking.ts`):** Centralización del mapeo de estados, cálculo del timeline de 6 etapas, conteo de filtros, banner de motivo y cálculo de `Reservado/Asignado`.
+- **Refresco Automático Ligero (`PortalOrders.tsx`):**
+  - Polling silencioso cada 30 segundos (`PORTAL_POLL_INTERVAL_MS = 30_000`) únicamente cuando la pestaña está visible (`document.visibilityState === 'visible'`), con guarda `inFlightRef` para evitar peticiones concurrentes.
+  - Actualización automática al recuperar visibilidad/foco de la pestaña (`visibilitychange` y `focus`) con throttle de 3 segundos (`PORTAL_FOCUS_THROTTLE_MS = 3_000`).
+  - Se conserva el botón manual **Actualizar** con indicador de carga no intrusivo sin colapsar tarjetas expandidas.
+- **Correcciones en Estados `RECHAZADO` y `CANCELADO` (`PortalOrders.tsx`, `PortalDashboard.tsx`, `Dispatch.tsx`):**
+  - Reemplazo de `badge-error` / `var(--error)` (no definidos en `index.css`) por los tokens reales del sistema de diseño (`badge-danger` / `var(--danger)` / `var(--danger-soft)`).
+  - La columna `Reservado/Asignado` muestra siempre `0` real para `RECHAZADO` y `CANCELADO`, y elimina el fallback erróneo hacia `cantidadSolicitada` cuando `cantidadAsignada = 0`.
+  - El banner de motivo se despliega tanto para `RECHAZADO` (*Motivo de rechazo*) como para `CANCELADO` (*Motivo de cancelación*).
+  - Se agregó el contador dinámico al filtro `Cancelados / Rechazados (N)`.
+
+### 🧪 Verificación Automatizada No Destructiva y Builds
+- **Nueva Suite de Pruebas (`portal-order-tracking.spec.ts`):** 4 pruebas integrales no destructivas en memoria validando los 9 estados (`SOLICITADO`, `PENDIENTE_APROBACION`, `APROBADO`, `EN_PICKING`, `CONSOLIDADO`, `DESPACHADO`, `ENTREGADO`, `RECHAZADO`, `CANCELADO`), reglas de `0` sin fallback, tokens `danger`, contadores y el flujo real E2E paso a paso en `OperationsController` + `getOrders`.
+- **Suite Actualizada (`block3-picking-dispatch.spec.ts`):** Ajustada al flujo progresivo `prepareOrder → APROBADO → startPicking → EN_PICKING`.
+- **Resultados Certificados:** `16/16 suites PASS` (`146/146 tests PASS`), backend build (`npx prisma generate && npx nest build`) **PASS**, frontend build (`tsc -b && vite build`, 2027 módulos) **PASS**, `git diff --check` **PASS**.
+- **Base de Datos:** Sin cambios DDL ni DML; 0 pedidos nuevos, 0 alteraciones a inventario, recepciones o `InventoryMovement`.
+
 ## [1.9.36] — 2026-11-24 (Alineación de Cierre en REC-2026-0025 & Blindaje Preventivo en Previos)
 
 ### 📦 Corrección Controlada de Datos en REC-2026-0025

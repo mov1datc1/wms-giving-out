@@ -1301,7 +1301,7 @@ export class MasterDataController {
         where: {
           OR: [{ ubicacionAsignada: loc.codigo }, { ubicacionEscaneada: loc.codigo }],
           pickingCompletado: false,
-          orden: { estado: { in: ['ASIGNADO', 'EN_PICKING'] } },
+          orden: { estado: { in: ['APROBADO', 'ASIGNADO', 'EN_PICKING'] } },
         },
       });
       if (activeOrderLines > 0) {

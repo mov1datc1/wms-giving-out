@@ -781,7 +781,7 @@ describe('Block 3A — Hardening Picking, Reservas, Staging, Despacho, Idempoten
       ),
     ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
 
-    // Case G: prepareOrder exacto 12/12 -> PASS (actor desde req.user, reserva se mantiene exacta en 12)
+    // Case G: prepareOrder exacto 12/12 -> PASS (deja estado en APROBADO en cola de picking, actor desde req.user, reserva exacta en 12)
     const prepared = await ctrl.prepareOrder(
       order.id,
       {
@@ -796,12 +796,14 @@ describe('Block 3A — Hardening Picking, Reservas, Staging, Despacho, Idempoten
       supervisorReq,
     );
     expect(prepared).toBeTruthy();
-    expect(prepared!.estado).toBe('EN_PICKING');
+    expect(prepared!.estado).toBe('APROBADO');
+    expect(prepared!.aprobado).toBe(true);
     expect(prepared!.preparadoPor).toBe('supervisor@givingout.com');
     expect(state.lots[0].cantidadReservada).toBe(12);
 
-    // Iniciar picking con actor real desde req.user
+    // Iniciar picking con actor real desde req.user -> ahora sí transiciona APROBADO -> EN_PICKING
     const started: any = await ctrl.startPicking(order.id, { surtidor: 'surtidor-falso@evil.com' }, pickingReq);
+    expect(started.order.estado).toBe('EN_PICKING');
     expect(started.order.surtidor).toBe('picking@givingout.com');
 
     // Case J: recordPick válido -> 1 movimiento TRASIEGO (G0001 -> STG-01), G0001 pasa a 12 disp / 0 res, STG-01 12 disp / 12 res
@@ -1079,10 +1081,10 @@ describe('Block 3A — Hardening Picking, Reservas, Staging, Despacho, Idempoten
     expect(slaExpired.badgeTexto).toContain('hoy');
   });
 
-  it('Pruebas Puente AA: Aprobación integrada en prepareOrder registra OrderApproval único y preserva flujo pre-aprobado /approve', async () => {
+  it('Pruebas Puente AA: Aprobación integrada en prepareOrder deja estado en APROBADO con OrderApproval único y startPicking activa EN_PICKING', async () => {
     const { state, ctrl } = createInMemoryWms();
 
-    // Camino 1 (UX oficial Panel de Preparación): SOLICITADO -> prepareOrder -> EN_PICKING con OrderApproval automático
+    // Camino 1 (UX oficial Panel de Preparación): SOLICITADO -> prepareOrder -> APROBADO con OrderApproval automático -> startPicking -> EN_PICKING
     const ord1 = await ctrl.createOrder(
       { clienteId: 'cli-alim', endCustomerId: 'ec-walmart', lineas: [{ skuId: 'sku-ace', cantidadSolicitada: 12 }] },
       undefined,
@@ -1096,21 +1098,26 @@ describe('Block 3A — Hardening Picking, Reservas, Staging, Despacho, Idempoten
       { asignaciones: [{ lineId: ord1.lineas[0].id, lotes: [{ lotId: 'lot-qa-001', cantidad: 12 }] }] },
       supervisorReq,
     );
-    expect(prep1!.estado).toBe('EN_PICKING');
+    expect(prep1!.estado).toBe('APROBADO');
     expect(prep1!.aprobado).toBe(true);
     expect(prep1!.aprobadoPor).toBe('supervisor@givingout.com');
     expect(state.approvals.filter((a: any) => a.orderId === ord1.id)).toHaveLength(1);
     expect(state.approvals.find((a: any) => a.orderId === ord1.id).estado).toBe('APROBADO');
 
-    // Repreparación previa al picking NO debe duplicar OrderApproval
-    await ctrl.prepareOrder(
+    // Repreparación previa al picking mantiene APROBADO y NO debe duplicar OrderApproval
+    const reprep1 = await ctrl.prepareOrder(
       ord1.id,
       { asignaciones: [{ lineId: ord1.lineas[0].id, lotes: [{ lotId: 'lot-qa-001', cantidad: 12 }] }] },
       adminReq,
     );
+    expect(reprep1!.estado).toBe('APROBADO');
     expect(state.approvals.filter((a: any) => a.orderId === ord1.id)).toHaveLength(1);
 
-    // Camino 2 (API /approve opcional antes de prepare): SOLICITADO -> APROBADO (1 OrderApproval) -> prepareOrder preserva 1 OrderApproval
+    // Solo al iniciar picking por el surtidor pasa a EN_PICKING
+    const started1: any = await ctrl.startPicking(ord1.id, {}, pickingReq);
+    expect(started1.order.estado).toBe('EN_PICKING');
+
+    // Camino 2 (API /approve antes de prepare): SOLICITADO -> APROBADO (1 OrderApproval) -> prepareOrder mantiene APROBADO y 1 OrderApproval -> startPicking -> EN_PICKING
     const ord2 = await ctrl.createOrder(
       { clienteId: 'cli-alim', endCustomerId: 'ec-walmart', lineas: [{ skuId: 'sku-ace', cantidadSolicitada: 12 }] },
       undefined,
@@ -1125,9 +1132,12 @@ describe('Block 3A — Hardening Picking, Reservas, Staging, Despacho, Idempoten
       { asignaciones: [{ lineId: ord2.lineas[0].id, lotes: [{ lotId: 'lot-qa-001', cantidad: 12 }] }] },
       adminReq,
     );
-    expect(prep2!.estado).toBe('EN_PICKING');
+    expect(prep2!.estado).toBe('APROBADO');
     expect(prep2!.aprobadoPor).toBe('supervisor@givingout.com');
     expect(state.approvals.filter((a: any) => a.orderId === ord2.id)).toHaveLength(1);
+
+    const started2: any = await ctrl.startPicking(ord2.id, {}, pickingReq);
+    expect(started2.order.estado).toBe('EN_PICKING');
   });
 
   it('Pruebas Puente AB–AC: Tarima Master 2 -> 1 tras salida parcial, cierre a DESPACHADO (cantidad=0) en última caja, G0001 LIBRE y 0 tarima fantasma', async () => {

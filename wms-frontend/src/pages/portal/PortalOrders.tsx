@@ -1,86 +1,150 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { API } from '../../config/api';
 import {
-  ShoppingCart, RefreshCw, Clock, CheckCircle, Send, ThumbsDown, ThumbsUp,
+  ShoppingCart, RefreshCw, Clock, CheckCircle, ThumbsDown, ThumbsUp,
   Package, Store, MapPin, ChevronDown, ChevronUp, Truck, UserCheck, ScanLine,
-  Calendar, Lock, Building2, Plus, FileText
+  Calendar, Lock, Plus, FileText
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { formatCalendarDate } from '../../utils/dateUtils';
+import {
+  PORTAL_FOCUS_THROTTLE_MS,
+  PORTAL_POLL_INTERVAL_MS,
+  PortalOrderIconKey,
+  filterPortalOrders,
+  getPortalLineAssignedQty,
+  getPortalOrderCounts,
+  getPortalOrderStatusMeta,
+  getPortalRejectionBanner,
+  getPortalTimelineState,
+} from '../../utils/portalOrderTracking';
+
+function renderStatusIcon(iconKey: PortalOrderIconKey, size = 12) {
+  switch (iconKey) {
+    case 'clock': return <Clock size={size} />;
+    case 'thumbsUp': return <ThumbsUp size={size} />;
+    case 'scanLine': return <ScanLine size={size} />;
+    case 'package': return <Package size={size} />;
+    case 'truck': return <Truck size={size} />;
+    case 'checkCircle': return <CheckCircle size={size} />;
+    case 'thumbsDown': return <ThumbsDown size={size} />;
+    default: return null;
+  }
+}
 
 export function PortalOrders() {
   const { token, user } = useAuth();
   const navigate = useNavigate();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
-  const headers: any = { Authorization: `Bearer ${token}` };
 
-  useEffect(() => { loadData(); }, []);
+  const inFlightRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
 
-  async function loadData() {
-    setLoading(true);
+  const loadData = useCallback(async (opts: { silent?: boolean; initial?: boolean } = {}) => {
+    if (!token || inFlightRef.current) return;
+    inFlightRef.current = true;
+
+    if (opts.initial) {
+      setLoading(true);
+    } else if (!opts.silent) {
+      setRefreshing(true);
+    }
+
     try {
-      const res = await fetch(`${API}/orders?clienteId=${user?.clienteId}`, { headers });
-      if (res.ok) setOrders(await res.json());
-    } catch (err) { console.error(err); }
-    setLoading(false);
-  }
+      const res = await fetch(`${API}/orders?clienteId=${user?.clienteId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setOrders(await res.json());
+        lastFetchAtRef.current = Date.now();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      inFlightRef.current = false;
+      if (opts.initial) setLoading(false);
+      if (!opts.silent) setRefreshing(false);
+    }
+  }, [token, user?.clienteId]);
 
-  const estadoInfo = (estado: string) => {
-    const map: any = {
-      SOLICITADO: { cls: 'info', icon: <Clock size={12} />, label: 'Solicitado', desc: 'Pedido recibido con stock reservado. Pendiente de validación.', step: 1 },
-      PENDIENTE_APROBACION: { cls: 'warning', icon: <Clock size={12} />, label: 'En Revisión', desc: 'Giving Out está validando tu pedido', step: 1 },
-      APROBADO: { cls: 'success', icon: <ThumbsUp size={12} />, label: 'Aprobado', desc: 'Pedido aprobado. Stock formalmente reservado para preparación.', step: 2 },
-      EN_PICKING: { cls: 'warning', icon: <ScanLine size={12} />, label: 'En Preparación', desc: 'Tu pedido está siendo recolectado en racks', step: 3 },
-      CONSOLIDADO: { cls: 'info', icon: <Package size={12} />, label: 'Listo para Envío', desc: 'Tu pedido está embalado y etiquetado para el transporte', step: 4 },
-      DESPACHADO: { cls: 'warning', icon: <Truck size={12} />, label: 'En Tránsito', desc: 'Tu pedido fue despachado y va en camino', step: 5 },
-      ENTREGADO: { cls: 'success', icon: <CheckCircle size={12} />, label: 'Entregado', desc: 'Tu pedido fue recibido de conformidad en destino', step: 6 },
-      RECHAZADO: { cls: 'error', icon: <ThumbsDown size={12} />, label: 'Rechazado', desc: 'Tu pedido fue cancelado o rechazado (stock liberado)', step: 0 },
-      CANCELADO: { cls: 'default', icon: <ThumbsDown size={12} />, label: 'Cancelado', desc: 'Tu pedido fue cancelado (stock liberado)', step: 0 },
+  useEffect(() => {
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
+    loadData({ initial: true });
+
+    const refreshIfStale = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastFetchAtRef.current < PORTAL_FOCUS_THROTTLE_MS) return;
+      loadData({ silent: true });
     };
-    return map[estado] || { cls: 'default', icon: null, label: estado, desc: '', step: 0 };
-  };
 
-  const filtered = orders.filter(o => {
-    if (filter === 'all') return true;
-    if (filter === 'active') return ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO', 'DESPACHADO'].includes(o.estado);
-    if (filter === 'delivered') return o.estado === 'ENTREGADO';
-    if (filter === 'rejected') return o.estado === 'RECHAZADO' || o.estado === 'CANCELADO';
-    return true;
-  });
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadData({ silent: true });
+      }
+    }, PORTAL_POLL_INTERVAL_MS);
 
-  const activeCount = orders.filter(o => ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO', 'DESPACHADO'].includes(o.estado)).length;
-  const reservedCount = orders.filter(o => ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado)).length;
-  const deliveredCount = orders.filter(o => o.estado === 'ENTREGADO').length;
-  const transitCount = orders.filter(o => o.estado === 'DESPACHADO').length;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshIfStale();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      refreshIfStale();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [token, loadData]);
+
+  const filtered = filterPortalOrders(orders, filter);
+  const { total, activeCount, reservedCount, deliveredCount, rejectedCount } = getPortalOrderCounts(orders);
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <h1 className="page-title">Mis Pedidos de Salida</h1>
-          <p className="page-subtitle">{orders.length} pedidos registrados · {activeCount} activos ({reservedCount} con stock reservado)</p>
+          <p className="page-subtitle">{total} pedidos registrados · {activeCount} activos ({reservedCount} con stock reservado)</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={() => navigate('/portal/nuevo-pedido')}>
             <Plus size={16} /> Nuevo Pedido
           </button>
-          <button className="btn btn-secondary" onClick={loadData}><RefreshCw size={16} /> Actualizar</button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => loadData({ silent: false })}
+            disabled={refreshing}
+          >
+            <RefreshCw size={16} className={refreshing ? 'animate-spin' : undefined} /> Actualizar
+          </button>
         </div>
       </div>
 
       {/* Filter chips */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
-          { key: 'all', label: `Todos (${orders.length})` },
+          { key: 'all', label: `Todos (${total})` },
           { key: 'active', label: `Activos (${activeCount})` },
           { key: 'delivered', label: `Entregados (${deliveredCount})` },
-          { key: 'rejected', label: `Cancelados / Rechazados` },
+          { key: 'rejected', label: `Cancelados / Rechazados (${rejectedCount})` },
         ].map(f => (
-          <button 
+          <button
             key={f.key}
             className={`btn btn-sm ${filter === f.key ? 'btn-primary' : 'btn-ghost'}`}
             style={{ borderRadius: 20, fontSize: 12, padding: '6px 14px' }}
@@ -108,9 +172,11 @@ export function PortalOrders() {
       ) : (
         <div style={{ display: 'grid', gap: 14 }}>
           {filtered.map((o, i) => {
-            const info = estadoInfo(o.estado);
-            const isDispatched = o.estado === 'DESPACHADO' || o.estado === 'ENTREGADO';
-            const hasReservedStock = ['SOLICITADO', 'PENDIENTE_APROBACION', 'APROBADO', 'EN_PICKING', 'CONSOLIDADO'].includes(o.estado);
+            const info = getPortalOrderStatusMeta(o.estado);
+            const timeline = getPortalTimelineState(o.estado);
+            const rejectionBanner = getPortalRejectionBanner(o);
+            const isDispatched = info.isDispatched;
+            const hasReservedStock = info.hasReservedStock;
 
             return (
               <div key={o.id} className="card animate-fade-in" style={{ animationDelay: `${i * 0.03}s` }}>
@@ -120,7 +186,7 @@ export function PortalOrders() {
                     <div style={{ flex: 1, minWidth: 260 }}>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 700, fontSize: 16 }}>{o.codigo}</span>
-                        <span className={`badge badge-${info.cls}`}>{info.icon} {info.label}</span>
+                        <span className={`badge badge-${info.cls}`}>{renderStatusIcon(info.iconKey, 12)} {info.label}</span>
                         {hasReservedStock && (
                           <span className="badge badge-default" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                             <Lock size={11} /> Stock Reservado
@@ -133,7 +199,7 @@ export function PortalOrders() {
                         )}
                       </div>
                       <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>{info.desc}</div>
-                      
+
                       <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
                         {o.endCustomer && <span><Store size={12} /> Destino: <strong>{o.endCustomer.nombre}</strong></span>}
                         {o.endCustomer?.ciudad && <span><MapPin size={12} /> {o.endCustomer.ciudad}</span>}
@@ -154,16 +220,16 @@ export function PortalOrders() {
                   </div>
 
                   {/* Progress Timeline */}
-                  {info.step > 0 && (
+                  {timeline.visible && (
                     <div style={{ marginTop: 14 }}>
-                      <OrderTimeline step={info.step} />
+                      <OrderTimeline estado={o.estado} />
                     </div>
                   )}
 
-                  {/* Rejection reason */}
-                  {o.estado === 'RECHAZADO' && o.motivoRechazo && (
-                    <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(239,68,68,0.08)', borderRadius: 8, fontSize: 13, color: 'var(--error)', border: '1px solid rgba(239,68,68,0.2)' }}>
-                      <strong>Motivo de rechazo:</strong> {o.motivoRechazo}
+                  {/* Rejection / Cancellation reason */}
+                  {rejectionBanner.visible && (
+                    <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--danger-soft)', borderRadius: 8, fontSize: 13, color: 'var(--danger)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                      <strong>{rejectionBanner.label}:</strong> {rejectionBanner.reason}
                     </div>
                   )}
 
@@ -215,16 +281,19 @@ export function PortalOrders() {
                             </tr>
                           </thead>
                           <tbody>
-                            {o.lineas?.map((l: any) => (
-                              <tr key={l.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                                <td style={{ padding: '10px 12px', fontWeight: 500 }}>{l.sku?.descripcion}</td>
-                                <td style={{ padding: '10px 12px' }}><code style={{ fontSize: 12 }}>{l.sku?.codigo}</code></td>
-                                <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 600 }}>{l.cantidadSolicitada}</td>
-                                <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, color: 'var(--emerald)' }}>
-                                  {l.cantidadAsignada || l.cantidadSolicitada}
-                                </td>
-                              </tr>
-                            ))}
+                            {o.lineas?.map((l: any) => {
+                              const assignedQty = getPortalLineAssignedQty(o.estado, l);
+                              return (
+                                <tr key={l.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                                  <td style={{ padding: '10px 12px', fontWeight: 500 }}>{l.sku?.descripcion}</td>
+                                  <td style={{ padding: '10px 12px' }}><code style={{ fontSize: 12 }}>{l.sku?.codigo}</code></td>
+                                  <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 600 }}>{l.cantidadSolicitada}</td>
+                                  <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, color: assignedQty > 0 ? 'var(--emerald)' : 'var(--text-tertiary)' }}>
+                                    {assignedQty}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -246,37 +315,35 @@ export function PortalOrders() {
 }
 
 // ===== Order Progress Timeline Component =====
-function OrderTimeline({ step }: { step: number }) {
-  const steps = [
-    { num: 1, label: 'Solicitado', icon: <Clock size={11} /> },
-    { num: 2, label: 'Aprobado', icon: <ThumbsUp size={11} /> },
-    { num: 3, label: 'Preparando', icon: <ScanLine size={11} /> },
-    { num: 4, label: 'Listo', icon: <Package size={11} /> },
-    { num: 5, label: 'Enviado', icon: <Truck size={11} /> },
-    { num: 6, label: 'Entregado', icon: <CheckCircle size={11} /> },
-  ];
+function OrderTimeline({ estado }: { estado: string }) {
+  const timeline = getPortalTimelineState(estado);
+  if (!timeline.visible) return null;
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 0, overflowX: 'auto', padding: '4px 0' }}>
-      {steps.map((s, i) => (
+      {timeline.steps.map((s, i) => (
         <div key={s.num} style={{ display: 'flex', alignItems: 'center' }}>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20,
             fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
-            background: s.num <= step
-              ? (s.num === step ? 'var(--primary)' : 'rgba(13,148,136,0.15)')
-              : 'var(--bg-secondary)',
-            color: s.num <= step
-              ? (s.num === step ? 'white' : 'var(--primary)')
-              : 'var(--text-tertiary)',
+            background: s.status === 'active'
+              ? 'var(--primary)'
+              : s.status === 'completed'
+                ? 'rgba(13,148,136,0.15)'
+                : 'var(--bg-secondary)',
+            color: s.status === 'active'
+              ? 'white'
+              : s.status === 'completed'
+                ? 'var(--primary)'
+                : 'var(--text-tertiary)',
             transition: 'all 0.3s',
           }}>
-            {s.icon} {s.label}
+            {renderStatusIcon(s.iconKey, 11)} {s.label}
           </div>
-          {i < steps.length - 1 && (
+          {i < timeline.steps.length - 1 && (
             <div style={{
               width: 16, height: 2,
-              background: s.num < step ? 'var(--primary)' : 'var(--border)',
+              background: s.connectorActive ? 'var(--primary)' : 'var(--border)',
               transition: 'all 0.3s',
             }} />
           )}

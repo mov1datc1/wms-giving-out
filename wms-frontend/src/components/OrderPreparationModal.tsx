@@ -1047,7 +1047,7 @@ export function OrderPreparationModal({
               ) : (
                 <>
                   <Check size={16} />
-                  Confirmar Asignación y Enviar a Picking
+                  Aprobar y Enviar a Cola de Picking
                 </>
               )}
             </button>

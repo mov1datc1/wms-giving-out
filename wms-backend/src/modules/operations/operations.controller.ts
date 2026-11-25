@@ -7946,9 +7946,9 @@ export class OperationsController {
     const actor = getRequestActor(req, 'Sistema');
 
     const CANONICAL_ENDPOINT_BY_STATUS: Record<string, string> = {
-      APROBADO: 'POST /api/orders/:id/approve',
+      APROBADO: 'POST /api/orders/:id/approve o /prepare',
       EN_PREPARACION: 'POST /api/orders/:id/prepare',
-      EN_PICKING: 'POST /api/orders/:id/prepare o /start-picking',
+      EN_PICKING: 'POST /api/orders/:id/start-picking',
       CONSOLIDADO: 'POST /api/orders/:id/record-pick',
       DESPACHADO: 'POST /api/orders/:id/dispatch',
       ENTREGADO: 'POST /api/orders/:id/confirm-delivery',
@@ -8542,11 +8542,12 @@ export class OperationsController {
         }
 
         const wasAlreadyApproved = Boolean(order.aprobado);
+        const nextEstado = order.estado === 'EN_PICKING' ? 'EN_PICKING' : 'APROBADO';
 
         await tx.salesOrder.update({
           where: { id: order.id },
           data: {
-            estado: 'EN_PICKING',
+            estado: nextEstado,
             preparadoPor: actor,
             fechaPreparacion: new Date(),
             asignacionModo: data.modo || 'AUTO_FEFO',
@@ -8574,7 +8575,7 @@ export class OperationsController {
           'PREPARAR_ORDEN',
           'SalesOrder',
           order.id,
-          `Orden ${order.codigo} preparada y asignada: modo ${data.modo || 'AUTO_FEFO'}`,
+          `Orden ${order.codigo} aprobada y preparada (${nextEstado}): modo ${data.modo || 'AUTO_FEFO'}`,
           tx,
         );
 
@@ -9672,6 +9673,16 @@ export class OperationsController {
           entidadId: line.orderId,
           detalle: `Pedido ${order.codigo} consolidado al 100% en ${stagingTransferResult.stagingLocation.codigo}`,
         },
+      });
+    } else if (order.estado === 'APROBADO' || order.estado === 'EN_PREPARACION') {
+      updatedOrder = await tx.salesOrder.update({
+        where: { id: line.orderId },
+        data: {
+          estado: 'EN_PICKING',
+          surtidor: order.surtidor || actor,
+          fechaInicioPicking: order.fechaInicioPicking || new Date(),
+        },
+        include: { cliente: true, endCustomer: true, lineas: { include: { sku: true, lote: true } } },
       });
     }
 
